@@ -3,6 +3,7 @@ import { execFile } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { openConversationViewer } from "./conversationView";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -250,7 +251,19 @@ class SessionItem extends vscode.TreeItem {
       out.push(projItem);
     }
 
-    // A small "Resume" action row at the bottom.
+    // "View conversation" — open the rich timeline webview.
+    const viewItem = new vscode.TreeItem("🔍 View conversation");
+    viewItem.iconPath = new vscode.ThemeIcon("preview");
+    viewItem.tooltip =
+      "Open a per-turn timeline: user prompt, assistant response, every tool call with input/output, durations, and subagent details.";
+    viewItem.command = {
+      command: "claudeSessions.viewConversation",
+      title: "View conversation",
+      arguments: [this],
+    };
+    out.push(viewItem);
+
+    // "Resume" — opens the conversation back in the Claude panel.
     const resumeItem = new vscode.TreeItem("▶ Resume in Claude");
     resumeItem.iconPath = new vscode.ThemeIcon("play");
     resumeItem.contextValue = "sessionResume";
@@ -261,8 +274,8 @@ class SessionItem extends vscode.TreeItem {
     };
     out.push(resumeItem);
 
-    // "Open transcript" as a quick child too.
-    const txItem = new vscode.TreeItem("📜 Open transcript (JSONL)");
+    // "Open raw JSONL" as a quick child too.
+    const txItem = new vscode.TreeItem("📜 Open raw JSONL");
     txItem.iconPath = new vscode.ThemeIcon("file-text");
     txItem.command = {
       command: "claudeSessions.openTranscript",
@@ -614,21 +627,22 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("claudeSessions.openTranscript", async (item: SessionItem) => {
-      const projectsRoot = path.join(os.homedir(), ".claude", "projects");
-      const dirs = await vscode.workspace.fs.readDirectory(vscode.Uri.file(projectsRoot));
-      for (const [dirName, kind] of dirs) {
-        if (kind !== vscode.FileType.Directory) continue;
-        const candidate = path.join(projectsRoot, dirName, `${item.row.session}.jsonl`);
-        try {
-          await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
-          const doc = await vscode.workspace.openTextDocument(candidate);
-          await vscode.window.showTextDocument(doc);
-          return;
-        } catch {
-          // not in this project; keep searching
-        }
+      const jsonl = await locateSessionJsonl(item.row.session);
+      if (!jsonl) {
+        vscode.window.showWarningMessage(`Transcript not found for session ${item.row.session}`);
+        return;
       }
-      vscode.window.showWarningMessage(`Transcript not found for session ${item.row.session}`);
+      const doc = await vscode.workspace.openTextDocument(jsonl);
+      await vscode.window.showTextDocument(doc);
+    }),
+
+    vscode.commands.registerCommand("claudeSessions.viewConversation", async (item: SessionItem) => {
+      const jsonl = await locateSessionJsonl(item.row.session);
+      if (!jsonl) {
+        vscode.window.showWarningMessage(`Transcript not found for session ${item.row.session}`);
+        return;
+      }
+      openConversationViewer(ctx, jsonl, item.row.session, item.row.title);
     }),
 
     vscode.commands.registerCommand("claudeKbChanges.openFile", (c: FileChange) => openChangedFile(c)),
@@ -697,6 +711,27 @@ async function showDiff(c: FileChange) {
       `${path.basename(c.abs)} (${ref} vs working)`,
     );
   }
+}
+
+async function locateSessionJsonl(sessionId: string): Promise<string | null> {
+  const projectsRoot = path.join(os.homedir(), ".claude", "projects");
+  let dirs: [string, vscode.FileType][];
+  try {
+    dirs = await vscode.workspace.fs.readDirectory(vscode.Uri.file(projectsRoot));
+  } catch {
+    return null;
+  }
+  for (const [dirName, kind] of dirs) {
+    if (kind !== vscode.FileType.Directory) continue;
+    const candidate = path.join(projectsRoot, dirName, `${sessionId}.jsonl`);
+    try {
+      await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
+      return candidate;
+    } catch {
+      // not in this project; keep searching
+    }
+  }
+  return null;
 }
 
 function findRepoRoot(file: string): string | null {
