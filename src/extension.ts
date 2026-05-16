@@ -123,9 +123,15 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         arr.push(r);
         byBucket.set(b, arr);
       }
-      return BUCKET_ORDER.filter((b) => byBucket.has(b)).map(
-        (b) => new BucketItem(b, byBucket.get(b)!.length, "session"),
-      );
+      return BUCKET_ORDER.filter((b) => byBucket.has(b)).map((b) => {
+        const arr = byBucket.get(b)!;
+        const totals = {
+          tokens: arr.reduce((n, r) => n + r.tokens_total, 0),
+          cost: arr.reduce((n, r) => n + r.cost_usd, 0),
+          subagents: arr.reduce((n, r) => n + (r.subagents || 0), 0),
+        };
+        return new BucketItem(b, arr.length, "session", totals);
+      });
     }
 
     if (el instanceof BucketItem && el.kind === "session") {
@@ -134,8 +140,18 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         .sort((a, b) => b.mtime_epoch - a.mtime_epoch);
       return rows.map((r) => new SessionItem(r));
     }
+    if (el instanceof SessionItem) {
+      return el.metricsChildren();
+    }
     return [];
   }
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return `${n}`;
 }
 
 class BucketItem extends vscode.TreeItem {
@@ -143,9 +159,29 @@ class BucketItem extends vscode.TreeItem {
     public readonly bucket: ReturnType<typeof dayBucket>,
     public readonly count: number,
     public readonly kind: "session" | "kb" | "project",
+    public readonly totals?: {
+      tokens?: number;
+      cost?: number;
+      subagents?: number;
+      commits?: number;
+    },
   ) {
+    let label = BUCKET_LABEL[bucket];
+    if (kind === "session" && totals) {
+      const parts = [`${count} sessions`];
+      if (totals.cost && totals.cost > 0) parts.push(`$${totals.cost.toFixed(2)}`);
+      if (totals.tokens && totals.tokens > 0) parts.push(`${formatTokens(totals.tokens)} tok`);
+      if (totals.subagents && totals.subagents > 0) parts.push(`🪄${totals.subagents}`);
+      label = `${BUCKET_LABEL[bucket]} — ${parts.join(" · ")}`;
+    } else if ((kind === "kb" || kind === "project") && totals) {
+      const parts = [`${count} files`];
+      if (totals.commits && totals.commits > 0) parts.push(`${totals.commits} commits`);
+      label = `${BUCKET_LABEL[bucket]} — ${parts.join(" · ")}`;
+    } else {
+      label = `${BUCKET_LABEL[bucket]} (${count})`;
+    }
     super(
-      `${BUCKET_LABEL[bucket]} (${count})`,
+      label,
       bucket === "today"
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed,
@@ -157,16 +193,17 @@ class BucketItem extends vscode.TreeItem {
 
 class SessionItem extends vscode.TreeItem {
   constructor(public readonly row: SessionRow) {
-    super(row.title || row.session, vscode.TreeItemCollapsibleState.None);
+    super(
+      row.title || row.session,
+      // Auto-expand active sessions; older ones stay collapsed to keep the tree readable.
+      row.active === "*"
+        ? vscode.TreeItemCollapsibleState.Expanded
+        : vscode.TreeItemCollapsibleState.Collapsed,
+    );
     const cost = row.cost_usd.toFixed(2);
     const mins = Math.max(0, Math.round((Date.now() / 1000 - row.mtime_epoch) / 60));
-    const projects =
-      row.projects_touched && row.projects_touched.length > 0
-        ? row.projects_touched.slice(0, 4).join(", ") +
-          (row.projects_touched.length > 4 ? "…" : "")
-        : row.project;
-    const subagentTag = row.subagents > 0 ? `${row.subagents}🪄 ` : "";
-    this.description = `${subagentTag}${projects} · ${row.messages} msgs · $${cost} · ${mins}m ago`;
+    // Description: smallest-possible summary so the title is the headline.
+    this.description = `$${cost} · ${mins}m`;
     this.tooltip = new vscode.MarkdownString(
       [
         `**${row.title || "(no title)"}**`,
@@ -184,11 +221,57 @@ class SessionItem extends vscode.TreeItem {
       row.active === "*" ? "pulse" : "comment-discussion",
     );
     this.contextValue = "session";
-    this.command = {
+    // No `command` here: clicking expands the children. Use the explicit
+    // "Resume" command via the inline action / right-click instead.
+  }
+
+  /**
+   * Children: a compact metrics row + a one-liner projects row.
+   * Clicking the "Resume" child triggers the resume command.
+   */
+  metricsChildren(): vscode.TreeItem[] {
+    const r = this.row;
+    const out: vscode.TreeItem[] = [];
+
+    const cost = r.cost_usd.toFixed(2);
+    const mins = Math.max(0, Math.round((Date.now() / 1000 - r.mtime_epoch) / 60));
+    const sub = r.subagents > 0 ? ` · 🪄${r.subagents}` : "";
+    const stats = new vscode.TreeItem(
+      `💬 ${r.messages.toLocaleString()} msgs  ·  $${cost}  ·  ${formatTokens(r.tokens_total)} tok${sub}  ·  ${mins}m ago`,
+    );
+    stats.iconPath = new vscode.ThemeIcon("graph");
+    stats.contextValue = "sessionMetric";
+    out.push(stats);
+
+    if (r.projects_touched && r.projects_touched.length > 0) {
+      const projItem = new vscode.TreeItem(`📁 ${r.projects_touched.join(", ")}`);
+      projItem.iconPath = new vscode.ThemeIcon("folder-library");
+      projItem.tooltip = `Projects touched in this session:\n${r.projects_touched.join("\n")}`;
+      out.push(projItem);
+    }
+
+    // A small "Resume" action row at the bottom.
+    const resumeItem = new vscode.TreeItem("▶ Resume in Claude");
+    resumeItem.iconPath = new vscode.ThemeIcon("play");
+    resumeItem.contextValue = "sessionResume";
+    resumeItem.command = {
       command: "claudeSessions.resume",
       title: "Resume",
-      arguments: [row],
+      arguments: [r],
     };
+    out.push(resumeItem);
+
+    // "Open transcript" as a quick child too.
+    const txItem = new vscode.TreeItem("📜 Open transcript (JSONL)");
+    txItem.iconPath = new vscode.ThemeIcon("file-text");
+    txItem.command = {
+      command: "claudeSessions.openTranscript",
+      title: "Open transcript",
+      arguments: [this],
+    };
+    out.push(txItem);
+
+    return out;
   }
 }
 
@@ -348,9 +431,11 @@ class KbChangesProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         arr.push(c);
         byBucket.set(b, arr);
       }
-      return BUCKET_ORDER.filter((b) => byBucket.has(b)).map(
-        (b) => new BucketItem(b, byBucket.get(b)!.length, "kb"),
-      );
+      return BUCKET_ORDER.filter((b) => byBucket.has(b)).map((b) => {
+        const arr = byBucket.get(b)!;
+        const commits = new Set(arr.map((c) => c.commit)).size;
+        return new BucketItem(b, arr.length, "kb", { commits });
+      });
     }
     if (el instanceof BucketItem && el.kind === "kb") {
       return this.changes
@@ -443,8 +528,10 @@ class ProjectsActivityProvider implements vscode.TreeDataProvider<vscode.TreeIte
       const buckets = BUCKET_ORDER.filter((b) => this.grouped.has(b));
       return buckets.map((b) => {
         const projMap = this.grouped.get(b)!;
-        const count = Array.from(projMap.values()).reduce((n, arr) => n + arr.length, 0);
-        return new BucketItem(b, count, "project");
+        const flat = Array.from(projMap.values()).flat();
+        const count = flat.length;
+        const commits = new Set(flat.map((c) => c.commit)).size;
+        return new BucketItem(b, count, "project", { commits });
       });
     }
     if (el instanceof BucketItem && el.kind === "project") {
@@ -495,7 +582,30 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand("claudeKbChanges.refresh", () => kb.refresh()),
     vscode.commands.registerCommand("claudeProjectsActivity.refresh", () => projects.refresh()),
 
-    vscode.commands.registerCommand("claudeSessions.resume", (row: SessionRow) => {
+    vscode.commands.registerCommand("claudeSessions.resume", async (row: SessionRow) => {
+      // Prefer the official Claude Code VS Code extension panel.
+      // Discovered signature (from extension internals):
+      //   claude-vscode.primaryEditor.open(sessionId, prompt?, viewColumn?)
+      //   claude-vscode.editor.open(sessionId, prompt?, viewColumn?)
+      // Both call createPanel(sessionId, prompt, viewColumn) under the hood.
+      const candidates = [
+        "claude-vscode.primaryEditor.open",
+        "claude-vscode.editor.open",
+      ];
+      for (const cmd of candidates) {
+        try {
+          await vscode.commands.executeCommand(
+            cmd,
+            row.session,
+            undefined,
+            vscode.ViewColumn.Active,
+          );
+          return;
+        } catch {
+          // try the next one
+        }
+      }
+      // Fallback: open in a terminal (e.g., if anthropic.claude-code isn't installed).
       const term = vscode.window.createTerminal({
         name: `claude:${row.session.slice(0, 8)}`,
       });

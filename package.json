@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -11,7 +11,9 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "main": "./out/extension.js",
   "activationEvents": [
     "onView:claudeSessions",
@@ -152,7 +154,10 @@
         },
         "claudeProjectsActivity.repoPaths": {
           "type": "array",
-          "default": ["~/projects/unpolarize", "~/projects/ai/otelo"],
+          "default": [
+            "~/projects/unpolarize",
+            "~/projects/ai/otelo"
+          ],
           "description": "Explicit list of project repos to watch. Auto-discovery is also applied (any ~/projects/* with commits in the lookback)."
         },
         "claudeProjectsActivity.autoDiscover": {
