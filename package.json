@@ -1,0 +1,186 @@
+{
+  "name": "claude-sessions",
+  "displayName": "Claude Sessions",
+  "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
+  "version": "0.1.0",
+  "publisher": "zhirafovod",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhirafovod/claude-sessions-vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onView:claudeSessions",
+    "onView:claudeKbChanges",
+    "onView:claudeProjectsActivity"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claude-activity",
+          "title": "Claude Activity",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "views": {
+      "claude-activity": [
+        {
+          "id": "claudeSessions",
+          "name": "Sessions",
+          "icon": "$(history)",
+          "contextualTitle": "Claude Sessions"
+        },
+        {
+          "id": "claudeKbChanges",
+          "name": "KB changes",
+          "icon": "$(book)",
+          "contextualTitle": "Knowledge base file changes"
+        },
+        {
+          "id": "claudeProjectsActivity",
+          "name": "Projects",
+          "icon": "$(folder-active)",
+          "contextualTitle": "Per-project file changes"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeSessions.refresh",
+        "title": "Refresh sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeSessions.resume",
+        "title": "Resume session"
+      },
+      {
+        "command": "claudeSessions.openTranscript",
+        "title": "Open transcript (JSONL)"
+      },
+      {
+        "command": "claudeKbChanges.refresh",
+        "title": "Refresh KB changes",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeKbChanges.openFile",
+        "title": "Open file"
+      },
+      {
+        "command": "claudeKbChanges.diff",
+        "title": "Show diff against HEAD~1"
+      },
+      {
+        "command": "claudeProjectsActivity.refresh",
+        "title": "Refresh project activity",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeProjectsActivity.openFile",
+        "title": "Open file"
+      },
+      {
+        "command": "claudeProjectsActivity.diff",
+        "title": "Show diff against HEAD~1"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudeSessions.refresh",
+          "when": "view == claudeSessions",
+          "group": "navigation"
+        },
+        {
+          "command": "claudeKbChanges.refresh",
+          "when": "view == claudeKbChanges",
+          "group": "navigation"
+        },
+        {
+          "command": "claudeProjectsActivity.refresh",
+          "when": "view == claudeProjectsActivity",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "claudeSessions.openTranscript",
+          "when": "view == claudeSessions && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "claudeKbChanges.diff",
+          "when": "view == claudeKbChanges && viewItem == fileChange",
+          "group": "inline"
+        },
+        {
+          "command": "claudeProjectsActivity.diff",
+          "when": "view == claudeProjectsActivity && viewItem == fileChange",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Sessions",
+      "properties": {
+        "claudeSessions.limit": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum number of most-recent sessions to load."
+        },
+        "claudeSessions.scriptPath": {
+          "type": "string",
+          "default": "~/.claude/skills/sessions/session-center.sh",
+          "description": "Path to session-center.sh."
+        },
+        "claudeKbChanges.repoPath": {
+          "type": "string",
+          "default": "~/docs",
+          "description": "Path to the KB git repo whose changes will be listed."
+        },
+        "claudeKbChanges.lookbackDays": {
+          "type": "number",
+          "default": 14,
+          "description": "How many days of git history to load."
+        },
+        "claudeProjectsActivity.repoPaths": {
+          "type": "array",
+          "default": ["~/projects/unpolarize", "~/projects/ai/otelo"],
+          "description": "Explicit list of project repos to watch. Auto-discovery is also applied (any ~/projects/* with commits in the lookback)."
+        },
+        "claudeProjectsActivity.autoDiscover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Walk ~/projects/ (depth 2) and include any git repo with commits in the lookback window."
+        },
+        "claudeProjectsActivity.discoveryRoot": {
+          "type": "string",
+          "default": "~/projects",
+          "description": "Root for auto-discovery (depth 2)."
+        },
+        "claudeProjectsActivity.lookbackDays": {
+          "type": "number",
+          "default": 14,
+          "description": "How many days of git history to load per project."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  }
+}
