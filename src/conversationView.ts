@@ -84,7 +84,7 @@ function renderToolCall(tc: ToolCall): string {
         <summary>input</summary>
         <pre>${escapeHtml(inputJson)}</pre>
       </details>
-      <details class="block" open>
+      <details class="block">
         <summary>output (${outputText.length.toLocaleString()} chars${
     outputText.length > outputPreview.length ? ", truncated" : ""
   })</summary>
@@ -133,10 +133,10 @@ function renderTurn(t: Turn): string {
     }
     ${
       t.toolCalls.length > 0
-        ? `<section class="tools">
-        <div class="role">TOOLS</div>
+        ? `<details class="tools-wrap">
+        <summary><span class="role">TOOLS</span> <span class="count">${t.toolCalls.length} calls</span></summary>
         ${t.toolCalls.map(renderToolCall).join("\n")}
-      </section>`
+      </details>`
         : ""
     }
   </article>`;
@@ -166,7 +166,12 @@ const STYLE = `
   .turn-idx { color: var(--accent); font-weight: 600; }
   .sep { opacity: 0.5; }
   .role { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--muted); margin-bottom: 4px; }
-  .user, .assistant, .tools { margin-bottom: 12px; }
+  .user, .assistant, .tools-wrap { margin-bottom: 12px; }
+  details.tools-wrap { padding: 8px 0; }
+  details.tools-wrap > summary { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px; font-size: 11px; padding: 4px 0; }
+  details.tools-wrap > summary .role { font-weight: 700; letter-spacing: 1px; color: var(--muted); }
+  details.tools-wrap > summary .count { color: var(--accent); }
+  details.tools-wrap > details.tool { margin-top: 6px; }
   pre.msg { background: var(--tool-bg); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; margin: 0; white-space: pre-wrap; word-wrap: break-word; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); max-height: 320px; overflow-y: auto; }
   details.tool { background: var(--tool-bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; margin-bottom: 6px; }
   details.tool.subagent { background: var(--subagent-bg); border-color: rgba(155, 89, 182, 0.5); }

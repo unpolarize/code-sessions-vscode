@@ -71,6 +71,46 @@ interface SessionRow {
   title: string;
   subagents: number;
   projects_touched: string[];
+  first_ts_epoch?: number;
+}
+
+/**
+ * Format a "Nm ago" / "Nh ago" / "Nd ago" relative timestamp.
+ * Uses minute thresholds up to 90 min, then hours up to 36 h, then days.
+ */
+function formatRelative(epochSec: number): string {
+  if (!epochSec) return "—";
+  const diffSec = Math.max(0, Math.floor(Date.now() / 1000 - epochSec));
+  if (diffSec < 60) return "just now";
+  const min = Math.floor(diffSec / 60);
+  if (min < 90) return `${min}m ago`;
+  const hr = Math.floor(diffSec / 3600);
+  if (hr < 36) return `${hr}h ago`;
+  const day = Math.floor(diffSec / 86400);
+  if (day < 14) return `${day}d ago`;
+  const week = Math.floor(diffSec / (7 * 86400));
+  if (week < 8) return `${week}w ago`;
+  const month = Math.floor(diffSec / (30 * 86400));
+  return `${month}mo ago`;
+}
+
+/**
+ * Format a duration in seconds as a compact "1h 23m" / "45m" / "12s" string.
+ */
+function formatDurationSec(sec: number): string {
+  if (sec < 1) return "<1s";
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) {
+    const rem = Math.round(sec - min * 60);
+    return rem >= 5 ? `${min}m ${rem}s` : `${min}m`;
+  }
+  const hr = Math.floor(sec / 3600);
+  const remMin = Math.floor((sec - hr * 3600) / 60);
+  if (hr < 24) return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
+  const day = Math.floor(sec / 86400);
+  const remHr = Math.floor((sec - day * 86400) / 3600);
+  return remHr > 0 ? `${day}d ${remHr}h` : `${day}d`;
 }
 
 class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
@@ -202,9 +242,17 @@ class SessionItem extends vscode.TreeItem {
         : vscode.TreeItemCollapsibleState.Collapsed,
     );
     const cost = row.cost_usd.toFixed(2);
-    const mins = Math.max(0, Math.round((Date.now() / 1000 - row.mtime_epoch) / 60));
-    // Description: smallest-possible summary so the title is the headline.
-    this.description = `$${cost} · ${mins}m`;
+    const ago = formatRelative(row.mtime_epoch);
+    const durSec =
+      row.first_ts_epoch && row.first_ts_epoch > 0
+        ? Math.max(0, row.mtime_epoch - row.first_ts_epoch)
+        : 0;
+    const durStr = durSec > 0 ? formatDurationSec(durSec) : null;
+    // Description: msgs · cost · duration · ago. Always-visible summary.
+    const parts = [`💬${row.messages.toLocaleString()}`, `$${cost}`];
+    if (durStr) parts.push(`⏱${durStr}`);
+    parts.push(ago);
+    this.description = parts.join(" · ");
     this.tooltip = new vscode.MarkdownString(
       [
         `**${row.title || "(no title)"}**`,
@@ -235,10 +283,15 @@ class SessionItem extends vscode.TreeItem {
     const out: vscode.TreeItem[] = [];
 
     const cost = r.cost_usd.toFixed(2);
-    const mins = Math.max(0, Math.round((Date.now() / 1000 - r.mtime_epoch) / 60));
+    const ago = formatRelative(r.mtime_epoch);
+    const durSec =
+      r.first_ts_epoch && r.first_ts_epoch > 0
+        ? Math.max(0, r.mtime_epoch - r.first_ts_epoch)
+        : 0;
+    const durStr = durSec > 0 ? ` · ⏱${formatDurationSec(durSec)}` : "";
     const sub = r.subagents > 0 ? ` · 🪄${r.subagents}` : "";
     const stats = new vscode.TreeItem(
-      `💬 ${r.messages.toLocaleString()} msgs  ·  $${cost}  ·  ${formatTokens(r.tokens_total)} tok${sub}  ·  ${mins}m ago`,
+      `💬 ${r.messages.toLocaleString()} msgs · $${cost} · ${formatTokens(r.tokens_total)} tok${sub}${durStr} · ${ago}`,
     );
     stats.iconPath = new vscode.ThemeIcon("graph");
     stats.contextValue = "sessionMetric";
