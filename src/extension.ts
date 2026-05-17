@@ -72,6 +72,8 @@ interface SessionRow {
   subagents: number;
   projects_touched: string[];
   first_ts_epoch?: number;
+  entrypoint?: string;
+  is_automated?: boolean;
 }
 
 /**
@@ -156,27 +158,47 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return [it];
     }
 
+    const cfg = vscode.workspace.getConfiguration("claudeSessions");
+    const showAutomated = cfg.get<boolean>("showAutomated", false);
+
     if (!el) {
+      // Filter automated rows up front so bucket totals match the displayed rows.
+      const visibleRows = this.rows.filter((r) => showAutomated || !r.is_automated);
+      const automatedCount = this.rows.length - visibleRows.length;
       const byBucket = new Map<string, SessionRow[]>();
-      for (const r of this.rows) {
+      for (const r of visibleRows) {
         const b = dayBucket(new Date(r.mtime_epoch * 1000));
         const arr = byBucket.get(b) ?? [];
         arr.push(r);
         byBucket.set(b, arr);
       }
-      return BUCKET_ORDER.filter((b) => byBucket.has(b)).map((b) => {
+      const buckets = BUCKET_ORDER.filter((b) => byBucket.has(b)).map((b) => {
         const arr = byBucket.get(b)!;
         const totals = {
           tokens: arr.reduce((n, r) => n + r.tokens_total, 0),
           cost: arr.reduce((n, r) => n + r.cost_usd, 0),
           subagents: arr.reduce((n, r) => n + (r.subagents || 0), 0),
         };
-        return new BucketItem(b, arr.length, "session", totals);
+        return new BucketItem(b, arr.length, "session", totals) as vscode.TreeItem;
       });
+      if (!showAutomated && automatedCount > 0) {
+        const tip = new vscode.TreeItem(
+          `${automatedCount} automated/cron sessions hidden`,
+          vscode.TreeItemCollapsibleState.None,
+        );
+        tip.iconPath = new vscode.ThemeIcon("eye-closed");
+        tip.tooltip = new vscode.MarkdownString(
+          "Sessions whose `entrypoint` is not interactive (e.g. `sdk-cli`) are hidden.\n\nToggle **Settings → Claude Sessions: Show Automated** to include them.",
+        );
+        tip.contextValue = "automatedHidden";
+        buckets.push(tip);
+      }
+      return buckets;
     }
 
     if (el instanceof BucketItem && el.kind === "session") {
       const rows = this.rows
+        .filter((r) => showAutomated || !r.is_automated)
         .filter((r) => dayBucket(new Date(r.mtime_epoch * 1000)) === el.bucket)
         .sort((a, b) => b.mtime_epoch - a.mtime_epoch);
       return rows.map((r) => new SessionItem(r));
@@ -267,9 +289,13 @@ class SessionItem extends vscode.TreeItem {
       ].join("\n"),
     );
     this.iconPath = new vscode.ThemeIcon(
-      row.active === "*" ? "pulse" : "comment-discussion",
+      row.is_automated
+        ? "watch"
+        : row.active === "*"
+          ? "pulse"
+          : "comment-discussion",
     );
-    this.contextValue = "session";
+    this.contextValue = row.is_automated ? "sessionAutomated" : "session";
     // No `command` here: clicking expands the children. Use the explicit
     // "Resume" command via the inline action / right-click instead.
   }
@@ -719,6 +745,15 @@ export function activate(ctx: vscode.ExtensionContext) {
   watcher.onDidChange(queueRefresh);
   watcher.onDidCreate(queueRefresh);
   ctx.subscriptions.push(watcher);
+
+  // Re-render trees when relevant settings flip (e.g. showAutomated).
+  ctx.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("claudeSessions")) sessions.refresh();
+      if (e.affectsConfiguration("claudeKbChanges")) kb.refresh();
+      if (e.affectsConfiguration("claudeProjectsActivity")) projects.refresh();
+    }),
+  );
 }
 
 async function openChangedFile(c: FileChange) {

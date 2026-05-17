@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -146,6 +146,11 @@
           "type": "string",
           "default": "~/.claude/skills/sessions/session-center.sh",
           "description": "Path to session-center.sh."
+        },
+        "claudeSessions.showAutomated": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show automated / cron-triggered sessions (entrypoint = sdk-cli, sdk, routine, etc.). Hidden by default since they're usually scheduled jobs (Google Doc digests, KB ingest, daily reports) rather than interactive work."
         },
         "claudeKbChanges.repoPath": {
           "type": "string",
