@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -72,6 +72,11 @@
         "icon": "$(preview)"
       },
       {
+        "command": "claudeSessions.openInsights",
+        "title": "Open insights dashboard",
+        "icon": "$(graph)"
+      },
+      {
         "command": "claudeKbChanges.refresh",
         "title": "Refresh KB changes",
         "icon": "$(refresh)"
@@ -101,9 +106,14 @@
     "menus": {
       "view/title": [
         {
+          "command": "claudeSessions.openInsights",
+          "when": "view == claudeSessions",
+          "group": "navigation@1"
+        },
+        {
           "command": "claudeSessions.refresh",
           "when": "view == claudeSessions",
-          "group": "navigation"
+          "group": "navigation@2"
         },
         {
           "command": "claudeKbChanges.refresh",
@@ -151,6 +161,16 @@
           "type": "boolean",
           "default": false,
           "description": "Show automated / cron-triggered sessions (entrypoint = sdk-cli, sdk, routine, etc.). Hidden by default since they're usually scheduled jobs (Google Doc digests, KB ingest, daily reports) rather than interactive work."
+        },
+        "claudeSessions.insightsLookbackDays": {
+          "type": "number",
+          "default": 14,
+          "description": "Insights dashboard: how many days of activity to chart."
+        },
+        "claudeSessions.insightsDeepParse": {
+          "type": "number",
+          "default": 20,
+          "description": "Insights dashboard: how many most-recent sessions to parse deeply for thinking-time / tool-mix / burst-rate metrics. Higher = better stats, slower load."
         },
         "claudeKbChanges.repoPath": {
           "type": "string",

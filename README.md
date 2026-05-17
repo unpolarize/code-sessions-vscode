@@ -66,6 +66,21 @@ The same `git log` view, but two-level: **day → project → files**.
 - **Auto-discovers** additional repos: walks `~/projects/<depth-2>` and includes any git repo with commits in the lookback window (so `openclaw`, `inference-service`, etc. show up automatically as you touch them).
 - Same open/diff actions as KB.
 
+### Insights dashboard (webview)
+
+Click the **📊 graph icon** in the Sessions title bar to open a per-account dashboard:
+
+- **KPI row**: total cost, total tokens, total messages, total subagents, **median user thinking time** (gap between Claude finishing and your next reply), **burst rate** (% of replies in <5s — flow-state indicator) — across the lookback window.
+- **Daily cost** bar chart.
+- **Daily tokens by type** stacked bars (input / output / cache read / cache write).
+- **"When you Claude"** heatmap — 7 days × 24 hours, cell intensity = session count. Reveals your real work rhythm.
+- **Cost distribution histogram** — how many sessions in each $-bucket.
+- **Top projects by cost** horizontal bar chart (uses `projects_touched`, not just session cwd).
+- **Tool usage** horizontal bar chart — top 12 tools by call count, computed by deep-parsing the most-recent N sessions (default 20). Bash usually wins.
+- **Top 10 expensive sessions** clickable table.
+
+All charts are inline SVG. No external libraries, no scripts, no fetches. Colors come from VS Code theme variables so dark and light themes both render correctly.
+
 ### Conversation viewer (webview)
 
 Click **🔍 View conversation** on any session → opens an editor tab with a full timeline:

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 — 2026-05-16
+
+- **Insights dashboard** (`📊` button on the Sessions title bar). New webview with:
+  - **KPI row**: cost, tokens, messages, subagents, median user thinking time, burst rate (% of replies in <5s) across the lookback window.
+  - **Daily cost** bar chart.
+  - **Daily tokens by type** stacked bar chart (input / output / cache read / cache write).
+  - **When you Claude** heatmap — 7 days × 24 hours, cell intensity = session count.
+  - **Cost distribution histogram** — how many sessions in each $-bucket.
+  - **Top projects by cost** horizontal bar chart (using `projects_touched` per session).
+  - **Tool usage** horizontal bar chart, computed from deep-parsing the top N most-recent JSONLs (default 20).
+  - **Top 10 expensive sessions** table.
+- All charts are inline SVG with VS Code theme variables — no scripts in the webview, no external assets, no CSP issues.
+- New settings: `claudeSessions.insightsLookbackDays` (default 14), `claudeSessions.insightsDeepParse` (default 20).
+- Parser extended: `ConversationSummary` now carries `userThinkingMsList[]` (per-turn user-thinking gaps, ms) and `toolCountsByName` (tool name → call count) for deep dashboard metrics.
+
 ## 0.5.0 — 2026-05-16
 
 - **Automated/cron sessions hidden by default.** Detected via JSONL `entrypoint` field: `sdk-cli` / `sdk` / `routine` / `headless` etc. are automated; `cli` / `claude-vscode` / `claude-jetbrains` / empty are interactive. Setting `claudeSessions.showAutomated` (default `false`) toggles. When hidden, a single info row at the bottom of the tree reports the hidden count.

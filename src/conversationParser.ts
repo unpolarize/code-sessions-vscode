@@ -43,6 +43,12 @@ export interface ConversationSummary {
   // Time-related aggregates (ms)
   totalTurnDurationMs: number;
   totalToolDurationMs: number;
+  // Per-turn "user thinking time": gap between previous turn's end and this
+  // turn's user message, in ms. Length = totalTurns - 1 (no value for the
+  // first turn).
+  userThinkingMsList: number[];
+  // Tool counts by name across the whole session.
+  toolCountsByName: Record<string, number>;
 }
 
 export interface ParsedConversation {
@@ -194,8 +200,11 @@ export function parseConversation(filePath: string): ParsedConversation {
   let totalToolDurationMs = 0;
   let startMs: number | null = null;
   let endMs: number | null = null;
+  const userThinkingMsList: number[] = [];
+  const toolCountsByName: Record<string, number> = {};
 
-  for (const t of turns) {
+  for (let i = 0; i < turns.length; i++) {
+    const t = turns[i];
     if (startMs == null || (t.userTimestampMs && t.userTimestampMs < startMs)) {
       startMs = t.userTimestampMs || null;
     }
@@ -207,6 +216,18 @@ export function parseConversation(filePath: string): ParsedConversation {
     for (const tc of t.toolCalls) {
       if (tc.isSubagent) totalSubagents += 1;
       if (tc.durationMs) totalToolDurationMs += tc.durationMs;
+      toolCountsByName[tc.name] = (toolCountsByName[tc.name] ?? 0) + 1;
+    }
+    // user thinking time: gap from previous turn's end to this turn's user message
+    if (i > 0) {
+      const prev = turns[i - 1];
+      if (prev.turnEndMs && t.userTimestampMs) {
+        const gap = t.userTimestampMs - prev.turnEndMs;
+        if (gap >= 0 && gap < 7 * 24 * 3600 * 1000) {
+          // Clamp pathological gaps (e.g., a session resumed days later).
+          userThinkingMsList.push(gap);
+        }
+      }
     }
   }
 
@@ -221,6 +242,8 @@ export function parseConversation(filePath: string): ParsedConversation {
       totalAssistantTextChars,
       totalTurnDurationMs,
       totalToolDurationMs,
+      userThinkingMsList,
+      toolCountsByName,
     },
     startMs,
     endMs,

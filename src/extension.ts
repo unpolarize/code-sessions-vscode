@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { openConversationViewer } from "./conversationView";
+import { openInsightsView } from "./insightsView";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -671,6 +672,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.window.registerTreeDataProvider("claudeProjectsActivity", projects),
 
     vscode.commands.registerCommand("claudeSessions.refresh", () => sessions.refresh()),
+    vscode.commands.registerCommand("claudeSessions.openInsights", () => openInsightsView(ctx)),
     vscode.commands.registerCommand("claudeKbChanges.refresh", () => kb.refresh()),
     vscode.commands.registerCommand("claudeProjectsActivity.refresh", () => projects.refresh()),
 
