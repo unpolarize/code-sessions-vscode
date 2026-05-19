@@ -705,6 +705,11 @@ class ProjectGroupItem extends vscode.TreeItem {
 // --------------------------------------------------------------------------- //
 
 export function activate(ctx: vscode.ExtensionContext) {
+  // Output channel for diagnostics — visible under View → Output → "Claude Sessions".
+  const log = vscode.window.createOutputChannel("Claude Sessions");
+  ctx.subscriptions.push(log);
+  log.appendLine(`[activate] claude-sessions starting (VS Code ${vscode.version})`);
+
   // Open the SQLite cache. If the user has disabled it, leave store null
   // and the providers will fall back to running session-center.sh.
   let store: SessionStore | null = null;
@@ -714,11 +719,22 @@ export function activate(ctx: vscode.ExtensionContext) {
       .get<boolean>("cacheEnabled", true);
     if (cacheEnabled) {
       store = SessionStore.open(ctx.globalStorageUri.fsPath);
+      log.appendLine(`[activate] SQLite cache opened at ${ctx.globalStorageUri.fsPath}`);
+    } else {
+      log.appendLine(`[activate] cacheEnabled = false; using shell-script fallback`);
     }
   } catch (e: any) {
-    vscode.window.showWarningMessage(
-      `claude-sessions: SQLite cache failed to open (${e.message}). Falling back to shell-script mode.`,
-    );
+    const msg = `SQLite cache failed to open: ${e?.message || e}`;
+    log.appendLine(`[activate] ERROR ${msg}`);
+    log.appendLine(String(e?.stack || ""));
+    vscode.window
+      .showWarningMessage(
+        `claude-sessions: ${msg}. Falling back to shell-script mode.`,
+        "Show log",
+      )
+      .then((sel) => {
+        if (sel === "Show log") log.show(true);
+      });
     store = null;
   }
 
@@ -828,22 +844,26 @@ export function activate(ctx: vscode.ExtensionContext) {
           return;
         }
         const cfg = vscode.workspace.getConfiguration("claudeSessions");
-        const model = cfg.get<string>("classify.model", "claude-haiku-4-5");
+        const backend = cfg.get<"ollama" | "claude-p">("classify.backend", "ollama");
+        const model = cfg.get<string>("classify.model", "llama3.2:3b");
         const batchSize = cfg.get<number>("classify.batchSize", 20);
         const claudeBin = cfg.get<string>("classify.claudeBin", "") || undefined;
+        const ollamaUrl = cfg.get<string>("embedding.ollamaUrl", "http://127.0.0.1:11434");
 
         await vscode.window.withProgress(
           {
             location: vscode.ProgressLocation.Notification,
-            title: `Classifying topics (${model})…`,
+            title: `Classifying topics (${backend}/${model})…`,
             cancellable: false,
           },
           async (progress) => {
             try {
               const result = await classifySession(store!, sessionId, {
+                backend,
                 model,
                 batchSize,
                 claudeBin,
+                ollamaUrl,
                 onProgress: (done, total) =>
                   progress.report({ message: `${done}/${total} turns` }),
               });

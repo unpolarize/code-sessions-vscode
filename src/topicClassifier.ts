@@ -10,17 +10,32 @@
 
 import { execFile } from "child_process";
 import * as crypto from "crypto";
+import * as http from "http";
 import { SessionStore, TurnRow } from "./db";
 
-const PROMPT_REV = 1;
+const PROMPT_REV = 2;
 
-const SYSTEM_PROMPT = `You classify Claude Code conversation turns into short topic labels (2-5 words, lowercase, dashes between words). For each turn in "turns", output exactly one JSONL line {"id":"<uuid>","topic":"<label>"}. Prefer concrete domain phrases ("opentelemetry-collector-config", "vscode-extension-webview") over vague ones ("coding-help"). Reuse labels across turns when the topic is the same. Output ONLY JSONL, one object per line, no preamble, no markdown fences, no explanation.`;
+const SYSTEM_PROMPT_CLAUDE = `You classify Claude Code conversation turns into short topic labels (2-5 words, lowercase, dashes between words). For each turn in "turns", output exactly one JSONL line {"id":"<uuid>","topic":"<label>"}. Prefer concrete domain phrases ("opentelemetry-collector-config", "vscode-extension-webview") over vague ones ("coding-help"). Reuse labels across turns when the topic is the same. Output ONLY JSONL, one object per line, no preamble, no markdown fences, no explanation.`;
+
+const SYSTEM_PROMPT_OLLAMA = `You classify Claude Code conversation turns into short topic labels. Each topic is 2-5 words, lowercase, hyphen-separated. Prefer concrete domain phrases ("opentelemetry-collector-config", "vscode-extension-webview") over vague ones ("coding-help"). Reuse the same label across consecutive turns when the topic is unchanged.
+
+Respond with EXACTLY this JSON shape — no preamble, no fences, no commentary:
+{"topics":[{"id":"<turn-id>","topic":"<label>"}, ...]}
+
+Include one entry per input turn.`;
+
+export type ClassifyBackend = "claude-p" | "ollama";
 
 export interface ClassifyOpts {
+  /** Which backend to dispatch through. */
+  backend: ClassifyBackend;
+  /** Model id to pass to the backend. For ollama this is e.g. "llama3.2:3b". */
   model: string;
   batchSize: number;
   /** Override the path to the claude CLI (default: 'claude' on PATH). */
   claudeBin?: string;
+  /** Ollama base URL (e.g. http://127.0.0.1:11434). */
+  ollamaUrl?: string;
   /** Called with (done, total) every batch. */
   onProgress?: (done: number, total: number) => void;
 }
@@ -132,9 +147,95 @@ function parseClaudeOutput(stdout: string): ParsedOut {
   return out;
 }
 
+/** Call Ollama's /api/chat with format=json. Returns parsed topics + token usage. */
+function invokeOllama(
+  url: string,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  timeoutMs = 180_000,
+): Promise<{ ok: boolean; topics: Array<{ id: string; topic: string }>; inputTokens: number; outputTokens: number; error?: string }> {
+  return new Promise((resolve) => {
+    let u: URL;
+    try {
+      u = new URL("/api/chat", url);
+    } catch (e: any) {
+      return resolve({ ok: false, topics: [], inputTokens: 0, outputTokens: 0, error: `bad url: ${e.message}` });
+    }
+    const payload = JSON.stringify({
+      model,
+      stream: false,
+      format: "json",
+      options: { temperature: 0 },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+    const req = http.request(
+      {
+        hostname: u.hostname,
+        port: u.port || 80,
+        path: u.pathname,
+        method: "POST",
+        timeout: timeoutMs,
+        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf-8");
+        res.on("data", (c) => (body += c));
+        res.on("end", () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            return resolve({ ok: false, topics: [], inputTokens: 0, outputTokens: 0, error: `HTTP ${res.statusCode}: ${body.slice(0, 300)}` });
+          }
+          try {
+            const env = JSON.parse(body);
+            const content: string = env?.message?.content ?? "";
+            const topics: Array<{ id: string; topic: string }> = [];
+            try {
+              const parsed = JSON.parse(content);
+              const arr = Array.isArray(parsed?.topics) ? parsed.topics : Array.isArray(parsed) ? parsed : [];
+              for (const item of arr) {
+                if (item && typeof item.id === "string" && typeof item.topic === "string") {
+                  topics.push({ id: item.id, topic: item.topic.trim().slice(0, 80) });
+                }
+              }
+            } catch (parseErr: any) {
+              return resolve({
+                ok: false,
+                topics: [],
+                inputTokens: env?.prompt_eval_count || 0,
+                outputTokens: env?.eval_count || 0,
+                error: `bad JSON from model: ${parseErr.message}`,
+              });
+            }
+            resolve({
+              ok: true,
+              topics,
+              inputTokens: env?.prompt_eval_count || 0,
+              outputTokens: env?.eval_count || 0,
+            });
+          } catch (e: any) {
+            resolve({ ok: false, topics: [], inputTokens: 0, outputTokens: 0, error: e.message });
+          }
+        });
+      },
+    );
+    req.on("error", (e) => resolve({ ok: false, topics: [], inputTokens: 0, outputTokens: 0, error: e.message }));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve({ ok: false, topics: [], inputTokens: 0, outputTokens: 0, error: "ollama timeout" });
+    });
+    req.write(payload);
+    req.end();
+  });
+}
+
 /**
  * Classify all unclassified turns of one session. Idempotent: turns that
- * already have a topic in the DB are skipped.
+ * already have a topic (under the current model + prompt_rev) in the DB are
+ * skipped. Dispatches to claude-p or ollama based on opts.backend.
  */
 export async function classifySession(
   store: SessionStore,
@@ -158,71 +259,94 @@ export async function classifySession(
 
   if (todo.length === 0) return result;
 
+  const backend = opts.backend;
+  const modelTag = `${backend}/${opts.model}`;
   const claudeBin = opts.claudeBin || "claude";
+  const ollamaUrl = opts.ollamaUrl || "http://127.0.0.1:11434";
   const batches = chunk(todo, opts.batchSize);
 
   for (let bi = 0; bi < batches.length; bi++) {
     const batch = batches[bi];
     const batchId = makeBatchId();
-    store.createBatch(batchId, batch.length, opts.model);
+    store.createBatch(batchId, batch.length, modelTag);
 
-    const systemPlusUser =
-      SYSTEM_PROMPT + "\n\n" + buildPromptBody(batch);
+    let topics: Array<{ id: string; topic: string }> = [];
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let batchError: string | null = null;
+    let rateLimited = false;
 
-    // `claude -p --model X --output-format json --max-turns 1` accepts stdin.
-    const args = [
-      "-p",
-      "--model", opts.model,
-      "--output-format", "json",
-      "--max-turns", "1",
-      "--permission-mode", "bypassPermissions",
-    ];
+    if (backend === "claude-p") {
+      const systemPlusUser = SYSTEM_PROMPT_CLAUDE + "\n\n" + buildPromptBody(batch);
+      const args = [
+        "-p",
+        "--model", opts.model,
+        "--output-format", "json",
+        "--max-turns", "1",
+        "--permission-mode", "bypassPermissions",
+      ];
+      const { stdout, stderr, code } = await invokeClaude(args, systemPlusUser, claudeBin);
+      if (code !== 0) {
+        batchError = `claude exit ${code}: ${stderr.slice(0, 500)}`;
+        if (/rate.?limit|429|usage.?cap/i.test(stderr)) rateLimited = true;
+      } else {
+        const parsed = parseClaudeOutput(stdout);
+        topics = parsed.topics;
+        inputTokens = parsed.inputTokens;
+        outputTokens = parsed.outputTokens;
+      }
+    } else {
+      const userBody = buildPromptBody(batch);
+      const res = await invokeOllama(ollamaUrl, opts.model, SYSTEM_PROMPT_OLLAMA, userBody);
+      inputTokens = res.inputTokens;
+      outputTokens = res.outputTokens;
+      if (!res.ok) {
+        batchError = res.error || "ollama call failed";
+      } else {
+        topics = res.topics;
+      }
+    }
 
-    const { stdout, stderr, code } = await invokeClaude(args, systemPlusUser, claudeBin);
-    if (code !== 0) {
-      const errSnippet = stderr.slice(0, 500);
-      result.errors.push(`batch ${batchId}: claude exit ${code}: ${errSnippet}`);
-      store.finishBatch(batchId, "failed", errSnippet);
-      // Rate limit? Bail rather than burn more quota.
-      if (/rate.?limit|429|usage.?cap/i.test(stderr)) {
+    result.inputTokens += inputTokens;
+    result.outputTokens += outputTokens;
+
+    if (batchError) {
+      result.errors.push(`batch ${batchId}: ${batchError}`);
+      store.finishBatch(batchId, "failed", batchError, inputTokens, outputTokens);
+      if (rateLimited) {
         result.errors.push("rate-limited; stopping further batches");
         break;
       }
+      if (opts.onProgress) opts.onProgress(result.classified, todo.length);
       continue;
     }
 
-    const parsed = parseClaudeOutput(stdout);
-    result.inputTokens += parsed.inputTokens;
-    result.outputTokens += parsed.outputTokens;
     result.batches += 1;
-
-    // Cross-check: which turn ids did we miss?
-    const got = new Set(parsed.topics.map((t) => t.id));
+    const got = new Set(topics.map((t) => t.id));
     const missed = batch.filter((t) => !got.has(t.turn_uuid));
 
     store.upsertTopics(
-      parsed.topics.map((p) => ({
+      topics.map((p) => ({
         turn_uuid: p.id,
         topic: p.topic,
-        model: opts.model,
+        model: modelTag,
         prompt_rev: PROMPT_REV,
         batch_id: batchId,
       })),
     );
-    result.classified += parsed.topics.length;
+    result.classified += topics.length;
 
     if (missed.length === 0) {
-      store.finishBatch(batchId, "ok", undefined, parsed.inputTokens, parsed.outputTokens);
+      store.finishBatch(batchId, "ok", undefined, inputTokens, outputTokens);
     } else {
       store.finishBatch(
         batchId,
         "partial",
         `${missed.length} turns missing in response`,
-        parsed.inputTokens,
-        parsed.outputTokens,
+        inputTokens,
+        outputTokens,
       );
       result.errors.push(`batch ${batchId}: ${missed.length}/${batch.length} turns missing`);
-      // For Phase 1A we don't retry the missed turns. Phase 2 will binary-split.
     }
 
     if (opts.onProgress) opts.onProgress(result.classified, todo.length);

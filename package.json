@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -224,20 +224,26 @@
           "default": 14,
           "description": "How many days of git history to load per project."
         },
+        "claudeSessions.classify.backend": {
+          "type": "string",
+          "enum": ["ollama", "claude-p"],
+          "default": "ollama",
+          "description": "Where topic classification runs. `ollama` calls a local Ollama daemon (free, offline). `claude-p` invokes the Claude CLI in headless mode, using your subscription."
+        },
         "claudeSessions.classify.model": {
           "type": "string",
-          "default": "claude-haiku-4-5",
-          "description": "Model used for topic classification. Runs through `claude -p` (your subscription, NOT the API). Haiku is recommended for cost/speed."
+          "default": "llama3.2:3b",
+          "description": "Model id passed to the chosen classification backend. For `ollama`, try `llama3.2:3b`, `qwen2.5:3b`, `gemma2:2b`. For `claude-p`, try `claude-haiku-4-5`."
         },
         "claudeSessions.classify.batchSize": {
           "type": "number",
           "default": 20,
-          "description": "How many turns to classify per `claude -p` invocation."
+          "description": "How many turns to classify per backend invocation."
         },
         "claudeSessions.classify.claudeBin": {
           "type": "string",
           "default": "",
-          "description": "Optional override for the `claude` CLI path. Leave empty to use PATH."
+          "description": "Optional override for the `claude` CLI path. Only used when `classify.backend = claude-p`. Empty = use PATH."
         },
         "claudeSessions.embedding.preferred": {
           "type": "string",
@@ -269,9 +275,12 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "rebuild-native": "electron-rebuild --version 39.8.8 --module-dir . --types prod",
+    "package": "npm run compile && npm run rebuild-native && vsce package --allow-missing-repository",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
     "typescript": "^5.4.0"
