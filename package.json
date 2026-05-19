@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -84,6 +84,10 @@
         "command": "claudeSessions.showAgentGraph",
         "title": "Show 2D agent graph",
         "icon": "$(circuit-board)"
+      },
+      {
+        "command": "claudeSessions.showTrajectory",
+        "title": "Show conversation trajectory"
       },
       {
         "command": "claudeKbChanges.refresh",
@@ -268,6 +272,21 @@
           "type": "string",
           "default": "Xenova/bge-small-en-v1.5",
           "description": "Transformers.js fallback model id."
+        },
+        "claudeSessions.cluster.minPts": {
+          "type": "number",
+          "default": 5,
+          "description": "DBSCAN minPts for clustering sessions on the agent graph."
+        },
+        "claudeSessions.cluster.epsScale": {
+          "type": "number",
+          "default": 0.04,
+          "description": "DBSCAN eps as a fraction of the agent graph's axis range. Smaller = tighter clusters."
+        },
+        "claudeSessions.trajectory.driftPercentile": {
+          "type": "number",
+          "default": 90,
+          "description": "Segments above this percentile of cosine distance between consecutive turns are flagged as topic drift in the trajectory view."
         }
       }
     }

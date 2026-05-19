@@ -21,6 +21,56 @@ interface GraphPoint {
   costUsd: number;
   msgs: number;
   isAutomated: boolean;
+  cluster: number;
+}
+
+interface ClusterLabel {
+  cluster: number;
+  cx: number;
+  cy: number;
+  label: string;
+  count: number;
+}
+
+/** 2D DBSCAN. eps in same units as coords. minPts cluster size. */
+function dbscan2d(points: Array<{ x: number; y: number }>, eps: number, minPts: number): number[] {
+  const n = points.length;
+  const cluster = new Array<number>(n).fill(-2); // -2 = unvisited
+  const eps2 = eps * eps;
+  const neighbors = (i: number): number[] => {
+    const out: number[] = [];
+    const pi = points[i];
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue;
+      const dx = pi.x - points[j].x;
+      const dy = pi.y - points[j].y;
+      if (dx * dx + dy * dy <= eps2) out.push(j);
+    }
+    return out;
+  };
+  let cid = 0;
+  for (let i = 0; i < n; i++) {
+    if (cluster[i] !== -2) continue;
+    const nb = neighbors(i);
+    if (nb.length + 1 < minPts) {
+      cluster[i] = -1; // noise
+      continue;
+    }
+    cluster[i] = cid;
+    const queue = [...nb];
+    while (queue.length > 0) {
+      const j = queue.shift()!;
+      if (cluster[j] === -1) cluster[j] = cid; // promote noise → border
+      if (cluster[j] !== -2) continue;
+      cluster[j] = cid;
+      const nb2 = neighbors(j);
+      if (nb2.length + 1 >= minPts) {
+        for (const k of nb2) if (cluster[k] === -2) queue.push(k);
+      }
+    }
+    cid++;
+  }
+  return cluster;
 }
 
 /** Build the per-session embedding input. Cheap and fully deterministic. */
@@ -37,8 +87,9 @@ function embedInput(s: SessionRow): string {
 async function buildLayout(
   store: SessionStore,
   cfg: EmbedConfig,
+  clusterCfg: { minPts: number; epsScale: number },
   progress: vscode.Progress<{ message?: string; increment?: number }>,
-): Promise<{ points: GraphPoint[]; embeddingModel: string }> {
+): Promise<{ points: GraphPoint[]; embeddingModel: string; clusterLabels: ClusterLabel[] }> {
   // Decide the model id first by probing (single round-trip). We don't yet
   // know whether Ollama is up; embedMany will probe and pick. To avoid a
   // double-probe, just embed the first session immediately so the returned
@@ -46,7 +97,7 @@ async function buildLayout(
   // need embedding.
   const allSessions = store.listRecent(100_000, false); // exclude automated
   if (allSessions.length === 0) {
-    return { points: [], embeddingModel: "(none)" };
+    return { points: [], embeddingModel: "(none)", clusterLabels: [] };
   }
 
   // Try Ollama-or-fallback on the first session so we get the model id.
@@ -72,7 +123,7 @@ async function buildLayout(
   // Pull every embedding back and project to 2D.
   progress.report({ message: "Fitting 2D layout (UMAP)…" });
   const all = store.embeddingsByModel(modelId);
-  if (all.length === 0) return { points: [], embeddingModel: modelId };
+  if (all.length === 0) return { points: [], embeddingModel: modelId, clusterLabels: [] };
 
   const ids = all.map((e) => e.session_id);
   const vectors = all.map((e) => Array.from(e.embedding));
@@ -87,8 +138,6 @@ async function buildLayout(
       nNeighbors: Math.min(30, vectors.length - 1),
       minDist: 0.05,
       nComponents: 2,
-      // umap-js default metric is euclidean; close-enough on L2-normalized
-      // vectors. Cosine would require monkey-patching the lib.
     });
     coords = umap.fit(vectors);
   }
@@ -98,6 +147,26 @@ async function buildLayout(
     coords.map((c, i) => ({ session_id: ids[i], x: c[0], y: c[1] })),
     Date.now(),
   );
+
+  // ---- Clustering (DBSCAN in 2D) ---------------------------------------- //
+  progress.report({ message: "Clustering…" });
+  let minXc = Infinity, maxXc = -Infinity, minYc = Infinity, maxYc = -Infinity;
+  for (const c of coords) {
+    if (c[0] < minXc) minXc = c[0]; if (c[0] > maxXc) maxXc = c[0];
+    if (c[1] < minYc) minYc = c[1]; if (c[1] > maxYc) maxYc = c[1];
+  }
+  const spanX = Math.max(1e-6, maxXc - minXc);
+  const spanY = Math.max(1e-6, maxYc - minYc);
+  const eps = clusterCfg.epsScale * Math.max(spanX, spanY);
+  const clusters =
+    coords.length >= clusterCfg.minPts
+      ? dbscan2d(
+          coords.map((c) => ({ x: c[0], y: c[1] })),
+          eps,
+          clusterCfg.minPts,
+        )
+      : coords.map(() => -1);
+  store.setClusterIds(ids.map((id, i) => ({ session_id: id, cluster_id: clusters[i] })));
 
   // Build a session_id → SessionRow map for tooltips.
   const sessByid = new Map<string, SessionRow>();
@@ -115,10 +184,50 @@ async function buildLayout(
       costUsd: s?.cost_usd ?? 0,
       msgs: s?.message_count ?? 0,
       isAutomated: s?.is_automated ?? false,
+      cluster: clusters[i],
     };
   });
 
-  return { points, embeddingModel: modelId };
+  // ---- Cluster labels: most frequent topic_norm per cluster ------------- //
+  progress.report({ message: "Labeling clusters…" });
+  const byCluster = new Map<number, GraphPoint[]>();
+  for (const p of points) {
+    if (p.cluster < 0) continue;
+    const arr = byCluster.get(p.cluster) ?? [];
+    arr.push(p);
+    byCluster.set(p.cluster, arr);
+  }
+  const clusterLabels: ClusterLabel[] = [];
+  if (byCluster.size > 0) {
+    // Pull topics for every session id in any cluster, in one batch
+    const allMemberIds: string[] = [];
+    for (const arr of byCluster.values()) for (const p of arr) allMemberIds.push(p.session_id);
+    const topicsBySession = store.topTopicsBySession(allMemberIds, 5);
+    for (const [cid, arr] of byCluster) {
+      if (arr.length < 3) continue;
+      let cx = 0, cy = 0;
+      const counts = new Map<string, number>();
+      for (const p of arr) {
+        cx += p.x;
+        cy += p.y;
+        const t = topicsBySession.get(p.session_id);
+        if (!t) continue;
+        for (const [topic, n] of t.counts) counts.set(topic, (counts.get(topic) ?? 0) + n);
+      }
+      cx /= arr.length;
+      cy /= arr.length;
+      let bestTopic = "";
+      let bestN = 0;
+      for (const [t, n] of counts) {
+        if (n > bestN) { bestTopic = t; bestN = n; }
+      }
+      if (bestTopic) {
+        clusterLabels.push({ cluster: cid, cx, cy, label: bestTopic, count: arr.length });
+      }
+    }
+  }
+
+  return { points, embeddingModel: modelId, clusterLabels };
 }
 
 /** Open the agent-graph webview. */
@@ -132,6 +241,10 @@ export async function openAgentGraph(
     preferred: cfg.get<"ollama" | "transformersjs" | "fallback">("embedding.preferred", "ollama"),
     ollamaUrl: cfg.get<string>("embedding.ollamaUrl", "http://127.0.0.1:11434"),
     ollamaModel: cfg.get<string>("embedding.ollamaModel", "nomic-embed-text"),
+  };
+  const clusterCfg = {
+    minPts: cfg.get<number>("cluster.minPts", 5),
+    epsScale: cfg.get<number>("cluster.epsScale", 0.04),
   };
 
   const panel = vscode.window.createWebviewPanel(
@@ -147,7 +260,7 @@ export async function openAgentGraph(
   // Show a placeholder immediately so the user sees something while we work.
   panel.webview.html = placeholderHtml(panel.webview);
 
-  let built: { points: GraphPoint[]; embeddingModel: string };
+  let built: { points: GraphPoint[]; embeddingModel: string; clusterLabels: ClusterLabel[] };
   try {
     built = await vscode.window.withProgress(
       {
@@ -155,14 +268,14 @@ export async function openAgentGraph(
         title: "Building agent graph",
         cancellable: false,
       },
-      async (progress) => buildLayout(store, embedCfg, progress),
+      async (progress) => buildLayout(store, embedCfg, clusterCfg, progress),
     );
   } catch (e: any) {
     panel.webview.html = errorHtml(panel.webview, e?.message || String(e));
     return panel;
   }
 
-  panel.webview.html = graphHtml(panel.webview, built.points, built.embeddingModel);
+  panel.webview.html = graphHtml(panel.webview, built.points, built.clusterLabels, built.embeddingModel);
 
   panel.webview.onDidReceiveMessage((msg) => {
     if (msg?.command === "open" && typeof msg.id === "string") {
@@ -203,7 +316,7 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function graphHtml(webview: vscode.Webview, points: GraphPoint[], modelId: string): string {
+function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels: ClusterLabel[], modelId: string): string {
   const nonce = nonceStr();
   const csp = [
     `default-src 'none'`,
@@ -214,15 +327,18 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], modelId: strin
   ].join("; ");
 
   const data = JSON.stringify(points);
+  const labelsData = JSON.stringify(clusterLabels);
 
   return `<!doctype html><html><head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>
   body { font-family: var(--vscode-font-family); color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); margin: 0; padding: 12px 16px; overflow: hidden; }
-  header { display: flex; gap: 16px; align-items: baseline; margin-bottom: 8px; }
+  header { display: flex; gap: 16px; align-items: baseline; margin-bottom: 8px; flex-wrap: wrap; }
   h1 { margin: 0; font-size: 16px; }
   .sub { color: var(--vscode-descriptionForeground); font-size: 11px; }
+  .toolbar { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .toolbar label { font-size: 11px; color: var(--vscode-descriptionForeground); user-select: none; }
   #wrap { position: relative; width: 100vw; height: calc(100vh - 60px); }
   canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
   #tip { position: absolute; pointer-events: none; padding: 4px 8px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 3px; font-size: 11px; max-width: 320px; white-space: pre-wrap; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
@@ -231,7 +347,11 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], modelId: strin
 <body>
 <header>
   <h1>Agent graph</h1>
-  <span class="sub">${points.length} sessions · embedder: ${escapeHtml(modelId)} · hover for details · click to open</span>
+  <span class="sub">${points.length} sessions · ${clusterLabels.length} clusters · embedder: ${escapeHtml(modelId)} · hover for details · click to open</span>
+  <span class="toolbar">
+    <label><input type="checkbox" id="colorByCluster" checked> color by cluster</label>
+    <label><input type="checkbox" id="showLabels" checked> cluster labels</label>
+  </span>
 </header>
 <div id="wrap">
   <canvas id="c"></canvas>
@@ -240,12 +360,17 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], modelId: strin
 <script nonce="${nonce}">
 (function() {
   const data = ${data};
+  const labels = ${labelsData};
   const vscode = acquireVsCodeApi();
   const canvas = document.getElementById('c');
   const tip = document.getElementById('tip');
+  const cbCluster = document.getElementById('colorByCluster');
+  const cbLabels = document.getElementById('showLabels');
   const ctx = canvas.getContext('2d');
   let W = 0, H = 0;
   const PAD = 24;
+  // 12-color qualitative palette (theme-agnostic, decent contrast on dark+light)
+  const PALETTE = ['#e57373','#81c784','#64b5f6','#ffb74d','#ba68c8','#4db6ac','#f06292','#9575cd','#aed581','#7986cb','#ffd54f','#a1887f'];
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const p of data) {
     if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
@@ -264,6 +389,10 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], modelId: strin
     if (ageDays < 30) return '#b08bff';
     return '#888';
   }
+  function clusterColor(c) {
+    if (c < 0) return '#888';
+    return PALETTE[c % PALETTE.length];
+  }
 
   function project(p) {
     const sx = PAD + ((p.x - minX) / (maxX - minX)) * (W - 2 * PAD);
@@ -279,16 +408,32 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], modelId: strin
     canvas.height = H * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
+    const useCluster = cbCluster.checked;
     for (const p of data) {
       const [sx, sy] = project(p);
-      ctx.fillStyle = ageColor(p.endedAt);
-      ctx.globalAlpha = 0.75;
+      ctx.fillStyle = useCluster ? clusterColor(p.cluster) : ageColor(p.endedAt);
+      ctx.globalAlpha = p.cluster < 0 && useCluster ? 0.35 : 0.78;
       ctx.beginPath();
-      ctx.arc(sx, sy, 3.2, 0, Math.PI * 2);
+      ctx.arc(sx, sy, 3.4, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
+    // Cluster labels
+    if (cbLabels.checked && useCluster) {
+      ctx.font = '11px var(--vscode-font-family)';
+      ctx.textAlign = 'center';
+      for (const lbl of labels) {
+        const [sx, sy] = project({ x: lbl.cx, y: lbl.cy });
+        ctx.fillStyle = clusterColor(lbl.cluster);
+        ctx.globalAlpha = 0.95;
+        ctx.fillText(lbl.label + ' · ' + lbl.count, sx, sy - 8);
+      }
+      ctx.globalAlpha = 1;
+      ctx.textAlign = 'start';
+    }
   }
+  cbCluster.addEventListener('change', draw);
+  cbLabels.addEventListener('change', draw);
 
   function findNear(mx, my) {
     let best = null, bestD2 = 64; // ~8 px radius

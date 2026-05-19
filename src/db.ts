@@ -102,6 +102,20 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_emb_model ON session_embedding(embedding_model);
   `,
+
+  // v4 — per-turn embeddings + cluster_id on session_embedding
+  `
+  CREATE TABLE turn_embedding (
+    turn_uuid       TEXT PRIMARY KEY REFERENCES turn(turn_uuid) ON DELETE CASCADE,
+    embedding       BLOB NOT NULL,
+    embedding_model TEXT NOT NULL,
+    embedding_dim   INTEGER NOT NULL,
+    computed_at     INTEGER NOT NULL
+  );
+  CREATE INDEX idx_turn_emb_model ON turn_embedding(embedding_model);
+
+  ALTER TABLE session_embedding ADD COLUMN cluster_id INTEGER;
+  `,
 ];
 
 export interface SessionRow {
@@ -455,6 +469,92 @@ export class SessionStore {
       umap_x: r.umap_x,
       umap_y: r.umap_y,
     }));
+  }
+
+  /** Pull every embedding back + cluster_id for the given model. */
+  embeddingsWithClustersByModel(model: string): Array<{ session_id: string; embedding: Float32Array; umap_x: number | null; umap_y: number | null; cluster_id: number | null }> {
+    return (this.db
+      .prepare("SELECT session_id, embedding, umap_x, umap_y, cluster_id FROM session_embedding WHERE embedding_model = ?")
+      .all(model) as any[]).map((r) => ({
+      session_id: r.session_id,
+      embedding: new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4),
+      umap_x: r.umap_x,
+      umap_y: r.umap_y,
+      cluster_id: r.cluster_id,
+    }));
+  }
+
+  setClusterIds(rows: Array<{ session_id: string; cluster_id: number }>): void {
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare("UPDATE session_embedding SET cluster_id = ? WHERE session_id = ?");
+    const tx = this.db.transaction((items: typeof rows) => {
+      for (const r of items) stmt.run(r.cluster_id, r.session_id);
+    });
+    tx(rows);
+  }
+
+  // ---- turn-embedding queries (Phase 1D) -------------------------------- //
+
+  turnEmbeddingsForSession(sessionId: string, model: string): Map<string, Float32Array> {
+    const rows = this.db
+      .prepare(`
+        SELECT te.turn_uuid, te.embedding
+        FROM turn t
+        JOIN turn_embedding te ON te.turn_uuid = t.turn_uuid AND te.embedding_model = ?
+        WHERE t.session_id = ?
+      `)
+      .all(model, sessionId) as any[];
+    return new Map(
+      rows.map((r) => [
+        r.turn_uuid,
+        new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4),
+      ]),
+    );
+  }
+
+  upsertTurnEmbeddings(rows: Array<{ turn_uuid: string; embedding: Float32Array; model: string }>): void {
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare(`
+      INSERT INTO turn_embedding (turn_uuid, embedding, embedding_model, embedding_dim, computed_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(turn_uuid) DO UPDATE SET
+        embedding = excluded.embedding,
+        embedding_model = excluded.embedding_model,
+        embedding_dim = excluded.embedding_dim,
+        computed_at = excluded.computed_at
+    `);
+    const now = Date.now();
+    const tx = this.db.transaction((items: typeof rows) => {
+      for (const r of items) {
+        stmt.run(r.turn_uuid, Buffer.from(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength), r.model, r.embedding.length, now);
+      }
+    });
+    tx(rows);
+  }
+
+  // ---- topic aggregates per session (Phase 1D) -------------------------- //
+
+  topTopicsBySession(sessionIds: string[], limit = 3): Map<string, { top: string[]; counts: Map<string, number> }> {
+    const out = new Map<string, { top: string[]; counts: Map<string, number> }>();
+    if (sessionIds.length === 0) return out;
+    const placeholders = sessionIds.map(() => "?").join(",");
+    const rows = this.db
+      .prepare(`
+        SELECT t.session_id AS sid, tt.topic_norm AS topic, COUNT(*) AS n
+        FROM turn t
+        JOIN turn_topic tt ON tt.turn_uuid = t.turn_uuid
+        WHERE t.session_id IN (${placeholders})
+        GROUP BY t.session_id, tt.topic_norm
+        ORDER BY t.session_id, n DESC
+      `)
+      .all(...sessionIds) as any[];
+    for (const r of rows) {
+      const entry = out.get(r.sid) ?? { top: [], counts: new Map<string, number>() };
+      entry.counts.set(r.topic, Number(r.n));
+      if (entry.top.length < limit) entry.top.push(r.topic);
+      out.set(r.sid, entry);
+    }
+    return out;
   }
 
   sessionsMissingEmbedding(model: string): SessionRow[] {

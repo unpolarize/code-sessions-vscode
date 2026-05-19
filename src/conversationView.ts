@@ -222,6 +222,8 @@ function renderHtml(
 
   const classifyArg = encodeURIComponent(JSON.stringify([c.sessionId, jsonlPath, c.title || ""]));
   const classifyUrl = `command:claudeSessions.classifyTopics?${classifyArg}`;
+  const trajectoryArg = encodeURIComponent(JSON.stringify([c.sessionId, c.title || ""]));
+  const trajectoryUrl = `command:claudeSessions.showTrajectory?${trajectoryArg}`;
   const classifiedCount = topics?.size ?? 0;
   const eligibleCount = c.turns.filter((t) => t.userText.trim().length > 0).length;
   const meta =
@@ -257,6 +259,7 @@ function renderHtml(
 </div>
 <div class="toolbar">
   <a class="btn" href="${classifyUrl}">${classifiedCount > 0 ? "Re-analyze topics" : "Analyze topics"}</a>
+  <a class="btn" href="${trajectoryUrl}">Show trajectory</a>
   <span class="topic-meta">${escapeHtml(meta)}</span>
 </div>
 <div class="totals">

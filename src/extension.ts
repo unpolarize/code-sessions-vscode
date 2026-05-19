@@ -9,6 +9,7 @@ import { SessionStore } from "./db";
 import { syncToStore } from "./jsonlIndexer";
 import { classifySession } from "./topicClassifier";
 import { openAgentGraph } from "./agentGraph";
+import { openTrajectoryView } from "./trajectoryView";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -79,6 +80,8 @@ interface SessionRow {
   first_ts_epoch?: number;
   entrypoint?: string;
   is_automated?: boolean;
+  top_topics?: string[];
+  topic_counts?: Array<[string, number]>;
 }
 
 /**
@@ -167,6 +170,19 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       try {
         const dbRows = this.store.listRecent(limit, true);
         this.rows = dbRows.map(dbRowToSessionRow);
+        // Decorate with top_topics in one batched query.
+        try {
+          const topics = this.store.topTopicsBySession(this.rows.map((r) => r.session), 3);
+          for (const r of this.rows) {
+            const entry = topics.get(r.session);
+            if (entry) {
+              r.top_topics = entry.top;
+              r.topic_counts = Array.from(entry.counts.entries()).sort((a, b) => b[1] - a[1]);
+            }
+          }
+        } catch {
+          // topics are decorative; ignore errors
+        }
         this.lastError = null;
         return;
       } catch (e: any) {
@@ -321,8 +337,19 @@ class SessionItem extends vscode.TreeItem {
     // Description: msgs · cost · duration · ago. Always-visible summary.
     const parts = [`💬${row.messages.toLocaleString()}`, `$${cost}`];
     if (durStr) parts.push(`⏱${durStr}`);
+    if (row.top_topics && row.top_topics.length > 0) {
+      parts.push(`🏷 ${row.top_topics.join(", ")}`);
+    }
     parts.push(ago);
     this.description = parts.join(" · ");
+    const topicLines =
+      row.topic_counts && row.topic_counts.length > 0
+        ? [
+            "",
+            "**Topics:**",
+            ...row.topic_counts.slice(0, 12).map(([t, n]) => `- \`${t}\` _(${n})_`),
+          ]
+        : [];
     this.tooltip = new vscode.MarkdownString(
       [
         `**${row.title || "(no title)"}**`,
@@ -333,6 +360,7 @@ class SessionItem extends vscode.TreeItem {
         `Tokens: ${row.tokens_total.toLocaleString()} (in ${row.tokens_input}, out ${row.tokens_output}, cache R ${row.tokens_cache_read}, cache W ${row.tokens_cache_write})`,
         `Cost: $${cost}`,
         `Projects touched: ${row.projects_touched?.join(", ") || "(none recorded)"}`,
+        ...topicLines,
         row.active === "*" ? `\n_Active (mtime < 2 min)_` : "",
       ].join("\n"),
     );
@@ -897,6 +925,23 @@ export function activate(ctx: vscode.ExtensionContext) {
             }
           },
         );
+      },
+    ),
+
+    vscode.commands.registerCommand(
+      "claudeSessions.showTrajectory",
+      async (sessionId: string, title: string) => {
+        if (!store) {
+          vscode.window.showWarningMessage(
+            "Trajectory view requires the SQLite cache. Enable claudeSessions.cacheEnabled.",
+          );
+          return;
+        }
+        try {
+          await openTrajectoryView(ctx, store, sessionId, title || "");
+        } catch (e: any) {
+          vscode.window.showErrorMessage(`Trajectory failed: ${e.message}`);
+        }
       },
     ),
 
