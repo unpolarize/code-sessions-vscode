@@ -129,8 +129,8 @@ function svgBarChart(
         <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="2">
           <title>${escapeHtml(titleText)}</title>
         </rect>
-        <text x="${(x + barW / 2).toFixed(1)}" y="${(pad.t + ch + 14).toFixed(0)}" class="bar-label">${escapeHtml(v.label)}</text>
-        ${v.value > 0 ? `<text x="${(x + barW / 2).toFixed(1)}" y="${(y - 4).toFixed(0)}" class="bar-value">${escapeHtml(fmt(v.value))}</text>` : ""}`;
+        <text x="${(x + barW / 2).toFixed(1)}" y="${(pad.t + ch + 14).toFixed(0)}" text-anchor="middle" class="bar-label">${escapeHtml(v.label)}</text>
+        ${v.value > 0 ? `<text x="${(x + barW / 2).toFixed(1)}" y="${(y - 4).toFixed(0)}" text-anchor="middle" class="bar-value">${escapeHtml(fmt(v.value))}</text>` : ""}`;
     })
     .join("");
   return `<svg viewBox="0 0 ${W} ${H}" class="chart bar">${bars}</svg>`;
@@ -164,8 +164,8 @@ function svgStackedBarChart(
         .join("");
       return `
         ${segs}
-        <text x="${(x + barW / 2).toFixed(1)}" y="${(pad.t + ch + 14).toFixed(0)}" class="bar-label">${escapeHtml(v.label)}</text>
-        ${total > 0 ? `<text x="${(x + barW / 2).toFixed(1)}" y="${(pad.t + ch - (total / max) * ch - 4).toFixed(0)}" class="bar-value">${escapeHtml(fmt(total))}</text>` : ""}`;
+        <text x="${(x + barW / 2).toFixed(1)}" y="${(pad.t + ch + 14).toFixed(0)}" text-anchor="middle" class="bar-label">${escapeHtml(v.label)}</text>
+        ${total > 0 ? `<text x="${(x + barW / 2).toFixed(1)}" y="${(pad.t + ch - (total / max) * ch - 4).toFixed(0)}" text-anchor="middle" class="bar-value">${escapeHtml(fmt(total))}</text>` : ""}`;
     })
     .join("");
   return `<svg viewBox="0 0 ${W} ${H}" class="chart bar">${bars}</svg>`;
@@ -177,25 +177,31 @@ function svgHBarChart(
 ): string {
   const W = opts.width ?? 720;
   const rowH = opts.rowH ?? 18;
-  const labelW = 140;
-  const valLabelW = 60;
+  const labelW = 220;
+  const valLabelW = 70;
   const trackX = labelW;
   const trackW = W - labelW - valLabelW - 8;
   const max = Math.max(1, ...values.map((v) => v.value));
   const color = opts.color ?? "var(--accent)";
   const fmt = opts.format ?? ((v) => v.toFixed(0));
   const H = rowH * values.length + 4;
+  // Truncate labels that won't fit (e.g. mcp__claude-in-chrome__browser_batch).
+  // Allow ~32 chars (roughly the labelW budget at 10px font on a 720 viewBox).
+  const MAX_LABEL = 32;
   const rows = values
     .map((v, i) => {
       const y = i * rowH + 2;
       const barW = (v.value / max) * trackW;
+      const labelText =
+        v.label.length > MAX_LABEL ? v.label.slice(0, MAX_LABEL - 1) + "…" : v.label;
+      const labelTitle = v.label !== labelText ? `<title>${escapeHtml(v.label)}</title>` : "";
       return `
-        <text x="${labelW - 6}" y="${(y + rowH * 0.66).toFixed(1)}" text-anchor="end" class="bar-label">${escapeHtml(v.label)}</text>
+        <text x="${labelW - 6}" y="${(y + rowH * 0.66).toFixed(1)}" text-anchor="end" class="bar-label">${escapeHtml(labelText)}${labelTitle}</text>
         <rect x="${trackX}" y="${(y + 3).toFixed(0)}" width="${trackW}" height="${(rowH - 6).toFixed(0)}" class="hbar-track"/>
         <rect x="${trackX}" y="${(y + 3).toFixed(0)}" width="${barW.toFixed(1)}" height="${(rowH - 6).toFixed(0)}" fill="${color}" rx="2">
           <title>${escapeHtml(v.tooltip ?? `${v.label}: ${fmt(v.value)}`)}</title>
         </rect>
-        <text x="${(trackX + trackW + 4).toFixed(0)}" y="${(y + rowH * 0.66).toFixed(1)}" class="bar-value">${escapeHtml(fmt(v.value))}</text>`;
+        <text x="${(trackX + trackW + 4).toFixed(0)}" y="${(y + rowH * 0.66).toFixed(1)}" text-anchor="start" class="bar-value">${escapeHtml(fmt(v.value))}</text>`;
     })
     .join("");
   return `<svg viewBox="0 0 ${W} ${H}" class="chart hbar">${rows}</svg>`;
@@ -232,13 +238,13 @@ function svgHeatmap(
   const hourTicks = [0, 6, 12, 18, 23]
     .map(
       (h) =>
-        `<text x="${(padL + h * cellW + cellW / 2).toFixed(1)}" y="${(padT + 7 * cellH + 14).toFixed(0)}" class="bar-label" text-anchor="middle">${String(h).padStart(2, "0")}</text>`,
+        `<text x="${(padL + h * cellW + cellW / 2).toFixed(1)}" y="${(padT + 7 * cellH + 14).toFixed(0)}" text-anchor="middle" class="bar-label">${String(h).padStart(2, "0")}</text>`,
     )
     .join("");
   const dayTicks = dayLabels
     .map(
       (d, i) =>
-        `<text x="${(padL - 4).toFixed(0)}" y="${(padT + i * cellH + cellH * 0.66).toFixed(1)}" class="bar-label" text-anchor="end">${d}</text>`,
+        `<text x="${(padL - 4).toFixed(0)}" y="${(padT + i * cellH + cellH * 0.66).toFixed(1)}" text-anchor="end" class="bar-label">${d}</text>`,
     )
     .join("");
   return `<svg viewBox="0 0 ${W} ${H}" class="chart heatmap">${cells}${hourTicks}${dayTicks}</svg>`;
@@ -442,8 +448,9 @@ h2 { margin: 24px 0 8px 0; font-size: 14px; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 900px) { .row2 { grid-template-columns: 1fr; } }
 svg.chart { width: 100%; height: auto; display: block; }
-svg .bar-label { fill: var(--muted); font-size: 10px; text-anchor: middle; font-family: var(--vscode-font-family); }
-svg .bar-value { fill: var(--fg); font-size: 9px; text-anchor: middle; font-family: var(--vscode-font-family); }
+/* No text-anchor here — set inline so vertical (middle) and horizontal (end) charts don't fight CSS specificity. */
+svg .bar-label { fill: var(--muted); font-size: 10px; font-family: var(--vscode-font-family); }
+svg .bar-value { fill: var(--fg); font-size: 9px; font-family: var(--vscode-font-family); }
 svg .hbar-track { fill: var(--border); fill-opacity: 0.4; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--muted); }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
