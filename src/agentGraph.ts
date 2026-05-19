@@ -30,6 +30,27 @@ interface ClusterLabel {
   cy: number;
   label: string;
   count: number;
+  hull: Array<{ x: number; y: number }>;
+}
+
+/** Andrew's monotone chain. Returns CCW hull (≥3 unique input points). */
+function convexHull(pts: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+  if (pts.length < 3) return pts.slice();
+  const sorted = [...pts].sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) =>
+    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: Array<{ x: number; y: number }> = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper: Array<{ x: number; y: number }> = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
 }
 
 /** 2D DBSCAN. eps in same units as coords. minPts cluster size. */
@@ -230,8 +251,9 @@ async function buildLayout(
       for (const [t, n] of counts) {
         if (n > bestN) { bestTopic = t; bestN = n; }
       }
+      const hull = convexHull(arr.map((p) => ({ x: p.x, y: p.y })));
       if (bestTopic) {
-        clusterLabels.push({ cluster: cid, cx, cy, label: bestTopic, count: arr.length });
+        clusterLabels.push({ cluster: cid, cx, cy, label: bestTopic, count: arr.length, hull });
       }
     }
   }
@@ -409,6 +431,97 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     return [sx, sy];
   }
 
+  // Screen-space label positions (recomputed every layout()).
+  // Each entry holds: cluster id, anchor (centroid in screen px), pos (placed
+  // position), size (text bbox). Force layout runs once per draw().
+  let labelPlaced = [];
+  let focusedCluster = null;
+
+  function measureLabelText(text) {
+    ctx.font = '11px var(--vscode-font-family)';
+    return ctx.measureText(text).width;
+  }
+
+  function placeLabels() {
+    labelPlaced = labels.map(l => {
+      const [ax, ay] = project({ x: l.cx, y: l.cy });
+      const text = l.label + ' · ' + l.count;
+      const w = measureLabelText(text) + 8;
+      const h = 14;
+      return {
+        cluster: l.cluster,
+        text,
+        ax, ay,                  // anchor (centroid)
+        x: ax, y: ay - 10,       // current position (top-left of bbox)
+        w, h,
+      };
+    });
+    if (labelPlaced.length < 2) return;
+    const MAX_ITER = 20;
+    for (let it = 0; it < MAX_ITER; it++) {
+      let moved = 0;
+      for (let i = 0; i < labelPlaced.length; i++) {
+        const a = labelPlaced[i];
+        let fx = 0, fy = 0;
+        for (let j = 0; j < labelPlaced.length; j++) {
+          if (i === j) continue;
+          const b = labelPlaced[j];
+          // bbox-overlap repulsion (axis-aligned)
+          const dx = (a.x + a.w / 2) - (b.x + b.w / 2);
+          const dy = (a.y + a.h / 2) - (b.y + b.h / 2);
+          const overlapX = (a.w + b.w) / 2 - Math.abs(dx);
+          const overlapY = (a.h + b.h) / 2 - Math.abs(dy);
+          if (overlapX > 0 && overlapY > 0) {
+            // push along the smaller-overlap axis
+            if (overlapX < overlapY) {
+              fx += (dx === 0 ? 1 : Math.sign(dx)) * (overlapX + 1) * 0.5;
+            } else {
+              fy += (dy === 0 ? 1 : Math.sign(dy)) * (overlapY + 1) * 0.5;
+            }
+          }
+        }
+        // gentle pull back toward anchor
+        fx += ((a.ax) - (a.x + a.w / 2)) * 0.04;
+        fy += ((a.ay - 10) - (a.y)) * 0.04;
+        a.x += fx;
+        a.y += fy;
+        moved += Math.abs(fx) + Math.abs(fy);
+      }
+      if (moved < 0.5) break;
+    }
+  }
+
+  function pointInPolygon(mx, my, hull) {
+    // ray-cast in screen space; hull verts are in DATA space → project them
+    let inside = false;
+    for (let i = 0, j = hull.length - 1; i < hull.length; j = i++) {
+      const [xi, yi] = project(hull[i]);
+      const [xj, yj] = project(hull[j]);
+      const intersect = ((yi > my) !== (yj > my)) &&
+        (mx < (xj - xi) * (my - yi) / ((yj - yi) || 1e-9) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  function hitTestHull(mx, my) {
+    for (const lbl of labels) {
+      if (lbl.hull && lbl.hull.length >= 3 && pointInPolygon(mx, my, lbl.hull)) return lbl.cluster;
+    }
+    return null;
+  }
+
+  function hitTestLabel(mx, my) {
+    for (const lp of labelPlaced) {
+      if (mx >= lp.x && mx <= lp.x + lp.w && my >= lp.y && my <= lp.y + lp.h) return lp.cluster;
+    }
+    return null;
+  }
+
+  function bgColor() {
+    return getComputedStyle(document.body).backgroundColor || '#1e1e1e';
+  }
+
   function draw() {
     const dpr = window.devicePixelRatio || 1;
     W = canvas.clientWidth;
@@ -418,31 +531,89 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     const useCluster = cbCluster.checked;
+
+    // --- Hulls (behind dots) ---
+    if (useCluster) {
+      for (const lbl of labels) {
+        if (!lbl.hull || lbl.hull.length < 3) continue;
+        const dim = focusedCluster != null && focusedCluster !== lbl.cluster;
+        ctx.fillStyle = clusterColor(lbl.cluster);
+        ctx.strokeStyle = clusterColor(lbl.cluster);
+        ctx.beginPath();
+        for (let i = 0; i < lbl.hull.length; i++) {
+          const [hx, hy] = project(lbl.hull[i]);
+          if (i === 0) ctx.moveTo(hx, hy); else ctx.lineTo(hx, hy);
+        }
+        ctx.closePath();
+        ctx.globalAlpha = dim ? 0.04 : 0.12;
+        ctx.fill();
+        ctx.globalAlpha = dim ? 0.15 : 0.4;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // --- Dots ---
     for (const p of data) {
       const [sx, sy] = project(p);
       ctx.fillStyle = useCluster ? clusterColor(p.cluster) : ageColor(p.endedAt);
-      ctx.globalAlpha = p.cluster < 0 && useCluster ? 0.35 : 0.78;
+      let alpha;
+      if (focusedCluster != null) {
+        alpha = p.cluster === focusedCluster ? 0.95 : 0.25;
+      } else {
+        alpha = p.cluster < 0 && useCluster ? 0.35 : 0.78;
+      }
+      ctx.globalAlpha = alpha;
       ctx.beginPath();
       ctx.arc(sx, sy, 3.4, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
-    // Cluster labels
-    if (cbLabels.checked && useCluster) {
+
+    // --- Labels (force-placed) ---
+    if (cbLabels.checked && useCluster && labelPlaced.length > 0) {
       ctx.font = '11px var(--vscode-font-family)';
-      ctx.textAlign = 'center';
-      for (const lbl of labels) {
-        const [sx, sy] = project({ x: lbl.cx, y: lbl.cy });
-        ctx.fillStyle = clusterColor(lbl.cluster);
-        ctx.globalAlpha = 0.95;
-        ctx.fillText(lbl.label + ' · ' + lbl.count, sx, sy - 8);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      const bg = bgColor();
+      for (const lp of labelPlaced) {
+        const dim = focusedCluster != null && focusedCluster !== lp.cluster;
+        ctx.globalAlpha = dim ? 0.25 : 0.95;
+        // leader line if label moved noticeably off its anchor
+        const dx = (lp.x + lp.w / 2) - lp.ax;
+        const dy = (lp.y + lp.h / 2) - (lp.ay - 10);
+        const offset = Math.sqrt(dx * dx + dy * dy);
+        if (offset > 12) {
+          ctx.strokeStyle = clusterColor(lp.cluster);
+          ctx.globalAlpha = dim ? 0.15 : 0.45;
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(lp.ax, lp.ay);
+          ctx.lineTo(lp.x + lp.w / 2, lp.y + lp.h / 2);
+          ctx.stroke();
+          ctx.globalAlpha = dim ? 0.25 : 0.95;
+        }
+        // halo
+        ctx.strokeStyle = bg;
+        ctx.lineWidth = 3;
+        ctx.strokeText(lp.text, lp.x + 4, lp.y + 1);
+        ctx.fillStyle = clusterColor(lp.cluster);
+        ctx.fillText(lp.text, lp.x + 4, lp.y + 1);
       }
       ctx.globalAlpha = 1;
       ctx.textAlign = 'start';
+      ctx.textBaseline = 'alphabetic';
     }
   }
-  cbCluster.addEventListener('change', draw);
-  cbLabels.addEventListener('change', draw);
+
+  function relayoutAndDraw() {
+    placeLabels();
+    draw();
+  }
+
+  cbCluster.addEventListener('change', relayoutAndDraw);
+  cbLabels.addEventListener('change', relayoutAndDraw);
 
   function findNear(mx, my) {
     let best = null, bestD2 = 64; // ~8 px radius
@@ -469,16 +640,29 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
       canvas.style.cursor = 'pointer';
     } else {
       tip.style.display = 'none';
-      canvas.style.cursor = 'crosshair';
+      const hit = hitTestLabel(mx, my) ?? hitTestHull(mx, my);
+      canvas.style.cursor = hit != null ? 'pointer' : 'crosshair';
     }
   });
   canvas.addEventListener('click', (e) => {
     const rect = canvas.getBoundingClientRect();
-    const p = findNear(e.clientX - rect.left, e.clientY - rect.top);
-    if (p) vscode.postMessage({ command: 'open', id: p.session_id });
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const p = findNear(mx, my);
+    if (p) {
+      vscode.postMessage({ command: 'open', id: p.session_id });
+      return;
+    }
+    const cid = hitTestLabel(mx, my) ?? hitTestHull(mx, my);
+    if (cid != null) {
+      focusedCluster = focusedCluster === cid ? null : cid;
+    } else {
+      focusedCluster = null;
+    }
+    draw();
   });
-  window.addEventListener('resize', draw);
-  draw();
+  window.addEventListener('resize', relayoutAndDraw);
+  relayoutAndDraw();
 })();
 </script>
 </body></html>`;
