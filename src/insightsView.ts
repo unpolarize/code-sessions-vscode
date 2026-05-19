@@ -647,10 +647,11 @@ function renderDashboard(opts: {
 // Entry point
 // --------------------------------------------------------------------------- //
 
-export async function openInsightsView(ctx: vscode.ExtensionContext): Promise<void> {
+export async function openInsightsView(ctx: vscode.ExtensionContext, store?: import("./db").SessionStore | null): Promise<void> {
   const cfg = vscode.workspace.getConfiguration("claudeSessions");
   const limit = cfg.get<number>("limit", 100);
   const showAutomated = cfg.get<boolean>("showAutomated", false);
+  const cacheEnabled = cfg.get<boolean>("cacheEnabled", true);
   const scriptPath = expandHome(
     cfg.get<string>("scriptPath", "~/.claude/skills/sessions/session-center.sh"),
   );
@@ -665,17 +666,51 @@ export async function openInsightsView(ctx: vscode.ExtensionContext): Promise<vo
   );
   panel.webview.html = `<body style="padding:24px;font-family:var(--vscode-font-family);color:var(--vscode-editor-foreground);background:var(--vscode-editor-background);">Loading…</body>`;
 
-  const { stdout, code, stderr } = await exec("bash", [scriptPath, "recent", String(limit), "json"]);
-  if (code !== 0) {
-    panel.webview.html = `<pre style="padding:24px;">session-center.sh failed (exit ${code})\n\n${escapeHtml(stderr)}</pre>`;
-    return;
-  }
   let allRows: SessionRow[];
-  try {
-    allRows = JSON.parse(stdout) as SessionRow[];
-  } catch (e: any) {
-    panel.webview.html = `<pre style="padding:24px;">JSON parse failed: ${escapeHtml(e?.message || String(e))}</pre>`;
-    return;
+
+  // Fast path: SQLite cache (default).
+  if (cacheEnabled && store) {
+    try {
+      const dbRows = store.listRecent(limit, true);
+      allRows = dbRows.map((r) => ({
+        mtime_epoch: Math.floor(r.mtime_ns / 1e9),
+        active: " ",
+        project: r.project_id || "",
+        session: r.session_id,
+        modified: r.ended_at
+          ? new Date(r.ended_at).toISOString().slice(0, 16)
+          : new Date(r.mtime_ns / 1e6).toISOString().slice(0, 16),
+        messages: r.message_count,
+        tokens_input: r.input_tokens,
+        tokens_output: r.output_tokens,
+        tokens_cache_read: r.cache_read_tokens,
+        tokens_cache_write: r.cache_write_tokens,
+        tokens_total: r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens,
+        cost_usd: r.cost_usd,
+        title: r.title || (r.first_user_msg ?? "").slice(0, 70),
+        subagents: r.subagent_count,
+        projects_touched: r.projects_touched,
+        first_ts_epoch: r.started_at ? Math.floor(r.started_at / 1000) : 0,
+        entrypoint: r.entrypoint ?? "",
+        is_automated: r.is_automated,
+      }));
+    } catch (e: any) {
+      panel.webview.html = `<pre style="padding:24px;">SQLite read failed: ${escapeHtml(e?.message || String(e))}</pre>`;
+      return;
+    }
+  } else {
+    // Fallback: shell script (v0.6.x behavior).
+    const { stdout, code, stderr } = await exec("bash", [scriptPath, "recent", String(limit), "json"]);
+    if (code !== 0) {
+      panel.webview.html = `<pre style="padding:24px;">session-center.sh failed (exit ${code})\n\n${escapeHtml(stderr)}</pre>`;
+      return;
+    }
+    try {
+      allRows = JSON.parse(stdout) as SessionRow[];
+    } catch (e: any) {
+      panel.webview.html = `<pre style="padding:24px;">JSON parse failed: ${escapeHtml(e?.message || String(e))}</pre>`;
+      return;
+    }
   }
 
   // Filter to interactive vs. include automated based on the same setting the

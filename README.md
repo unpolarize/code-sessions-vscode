@@ -104,12 +104,13 @@ The webview uses VS Code theme variables so dark and light themes both render co
 
 ## How it works under the hood
 
-See [`docs/architecture.md`](docs/architecture.md) for details. In short:
+See [`docs/architecture.md`](docs/architecture.md) and [`specs/001-cache-topics-graph/spec.md`](specs/001-cache-topics-graph/spec.md). In short:
 
-- The **Sessions** view shells out to `~/.claude/skills/sessions/session-center.sh recent <N> json` — the same script the `sessions` shell alias uses. One source of truth.
+- **SQLite cache** at `<globalStorageUri>/sessions-cache.db` (WAL mode, `better-sqlite3`). The cache is the source of truth for the Sessions tree and insights dashboard. An incremental `(mtime, size)` indexer keeps it in sync with `~/.claude/projects/*.jsonl`. Toggle off via `claudeSessions.cacheEnabled = false` to fall back to spawning `session-center.sh`.
+- **Topic detection** runs `claude -p --model claude-haiku-4-5 --output-format json` on demand from the conversation viewer. Topics are persisted in `turn_topic` keyed by `turn_uuid`. The spawned `claude` env is curated (`PATH`, `HOME`, `USER` only) so `ANTHROPIC_API_KEY` from your parent shell **never** leaks in — your subscription does the work, not the API.
+- **Agent graph** embeds every non-automated session into a vector (Ollama `nomic-embed-text` if reachable; otherwise a built-in hashed bag-of-words fallback), projects to 2D with `umap-js`, persists `umap_x/umap_y`, renders a Canvas scatter. Hover for tooltip, click to open the conversation viewer.
 - The **KB / Projects** views shell out to `git log --name-status` + `git status --porcelain`. No git library, no GitHub API.
-- The **Conversation viewer** parses the session JSONL in pure TypeScript and renders an HTML page using VS Code theme variables. No fetches, no scripts.
-- A `vscode.FileSystemWatcher` on `~/.claude/projects/**/*.jsonl` auto-refreshes the Sessions view (1.5s throttle).
+- A `vscode.FileSystemWatcher` on `~/.claude/projects/**/*.jsonl` auto-refreshes the Sessions view (1.5 s throttle), running the incremental indexer first.
 
 ## Install
 
@@ -131,7 +132,14 @@ For build / contribute / release flow see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | Setting | Default | What it does |
 |---|---|---|
 | `claudeSessions.limit` | `100` | Maximum number of recent sessions to load. |
-| `claudeSessions.scriptPath` | `~/.claude/skills/sessions/session-center.sh` | Path to the helper script. |
+| `claudeSessions.cacheEnabled` | `true` | Read from SQLite. Set `false` to fall back to spawning `session-center.sh` (v0.6.x). |
+| `claudeSessions.scriptPath` | `~/.claude/skills/sessions/session-center.sh` | Path to the helper script (used only when cache is disabled). |
+| `claudeSessions.classify.model` | `claude-haiku-4-5` | Model for topic classification (`claude -p`, your subscription). |
+| `claudeSessions.classify.batchSize` | `20` | Turns per `claude -p` call. |
+| `claudeSessions.classify.claudeBin` | _empty_ | Override path to the `claude` CLI. Empty = `PATH`. |
+| `claudeSessions.embedding.preferred` | `ollama` | Preferred embedding backend (`ollama` or `transformersjs`). Falls back to a hashed bag-of-words if neither is available. |
+| `claudeSessions.embedding.ollamaUrl` | `http://127.0.0.1:11434` | Ollama base URL. |
+| `claudeSessions.embedding.ollamaModel` | `nomic-embed-text` | Ollama model name. |
 | `claudeKbChanges.repoPath` | `~/docs` | KB repo path. |
 | `claudeKbChanges.lookbackDays` | `14` | Days of git history. |
 | `claudeProjectsActivity.repoPaths` | `["~/projects/unpolarize","~/projects/ai/otelo"]` | Explicit list of project repos. |

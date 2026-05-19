@@ -5,6 +5,10 @@ import * as os from "os";
 import * as path from "path";
 import { openConversationViewer } from "./conversationView";
 import { openInsightsView } from "./insightsView";
+import { SessionStore } from "./db";
+import { syncToStore } from "./jsonlIndexer";
+import { classifySession } from "./topicClassifier";
+import { openAgentGraph } from "./agentGraph";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -116,11 +120,38 @@ function formatDurationSec(sec: number): string {
   return remHr > 0 ? `${day}d ${remHr}h` : `${day}d`;
 }
 
+function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
+  return {
+    mtime_epoch: Math.floor(r.mtime_ns / 1e9),
+    active: r.indexed_at && Date.now() / 1000 - r.mtime_ns / 1e9 < 120 ? "*" : " ",
+    project: r.project_id || "",
+    session: r.session_id,
+    modified: r.ended_at
+      ? new Date(r.ended_at).toISOString().slice(0, 16)
+      : new Date(r.mtime_ns / 1e6).toISOString().slice(0, 16),
+    messages: r.message_count,
+    tokens_input: r.input_tokens,
+    tokens_output: r.output_tokens,
+    tokens_cache_read: r.cache_read_tokens,
+    tokens_cache_write: r.cache_write_tokens,
+    tokens_total: r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens,
+    cost_usd: r.cost_usd,
+    title: r.title || (r.first_user_msg ?? "").slice(0, 70),
+    subagents: r.subagent_count,
+    projects_touched: r.projects_touched,
+    first_ts_epoch: r.started_at ? Math.floor(r.started_at / 1000) : 0,
+    entrypoint: r.entrypoint ?? "",
+    is_automated: r.is_automated,
+  };
+}
+
 class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChange.event;
   private rows: SessionRow[] = [];
   private lastError: string | null = null;
+
+  constructor(private readonly store: SessionStore | null) {}
 
   refresh(): Promise<void> {
     return this.load().then(() => this._onDidChange.fire());
@@ -129,6 +160,22 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private async load(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration("claudeSessions");
     const limit = cfg.get<number>("limit", 100);
+    const cacheEnabled = cfg.get<boolean>("cacheEnabled", true);
+
+    // Fast path: SQLite cache.
+    if (cacheEnabled && this.store) {
+      try {
+        const dbRows = this.store.listRecent(limit, true);
+        this.rows = dbRows.map(dbRowToSessionRow);
+        this.lastError = null;
+        return;
+      } catch (e: any) {
+        this.lastError = `SQLite read failed, falling back to script: ${e.message}`;
+        // fall through to script path
+      }
+    }
+
+    // Fallback: run session-center.sh (v0.6.x behavior).
     const scriptPath = expandHome(
       cfg.get<string>("scriptPath", "~/.claude/skills/sessions/session-center.sh"),
     );
@@ -658,13 +705,52 @@ class ProjectGroupItem extends vscode.TreeItem {
 // --------------------------------------------------------------------------- //
 
 export function activate(ctx: vscode.ExtensionContext) {
-  const sessions = new SessionsProvider();
+  // Open the SQLite cache. If the user has disabled it, leave store null
+  // and the providers will fall back to running session-center.sh.
+  let store: SessionStore | null = null;
+  try {
+    const cacheEnabled = vscode.workspace
+      .getConfiguration("claudeSessions")
+      .get<boolean>("cacheEnabled", true);
+    if (cacheEnabled) {
+      store = SessionStore.open(ctx.globalStorageUri.fsPath);
+    }
+  } catch (e: any) {
+    vscode.window.showWarningMessage(
+      `claude-sessions: SQLite cache failed to open (${e.message}). Falling back to shell-script mode.`,
+    );
+    store = null;
+  }
+
+  const sessions = new SessionsProvider(store);
   const kb = new KbChangesProvider();
   const projects = new ProjectsActivityProvider();
+
+  // Keep track of open conversation viewers so the classifyTopics command can
+  // refresh them after upserting new topics.
+  const openViewerPanels = new Map<string, vscode.WebviewPanel>();
 
   sessions.refresh();
   kb.refresh();
   projects.refresh();
+
+  // Initial background sync (incremental: mtime+size diff). First paint may
+  // come from yesterday's cache while a fresh sync runs in parallel.
+  if (store) {
+    const s = store;
+    setTimeout(() => {
+      try {
+        const stats = syncToStore(s);
+        // Refresh providers when the sync finishes so they see new rows.
+        sessions.refresh();
+        console.log(`[claude-sessions] sync: ${JSON.stringify(stats)}`);
+      } catch (e: any) {
+        console.error("[claude-sessions] sync failed:", e);
+      }
+    }, 200);
+  }
+
+  ctx.subscriptions.push({ dispose: () => store?.close() });
 
   ctx.subscriptions.push(
     vscode.window.registerTreeDataProvider("claudeSessions", sessions),
@@ -672,7 +758,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.window.registerTreeDataProvider("claudeProjectsActivity", projects),
 
     vscode.commands.registerCommand("claudeSessions.refresh", () => sessions.refresh()),
-    vscode.commands.registerCommand("claudeSessions.openInsights", () => openInsightsView(ctx)),
+    vscode.commands.registerCommand("claudeSessions.openInsights", () => openInsightsView(ctx, store)),
     vscode.commands.registerCommand("claudeKbChanges.refresh", () => kb.refresh()),
     vscode.commands.registerCommand("claudeProjectsActivity.refresh", () => projects.refresh()),
 
@@ -723,7 +809,98 @@ export function activate(ctx: vscode.ExtensionContext) {
         vscode.window.showWarningMessage(`Transcript not found for session ${item.row.session}`);
         return;
       }
-      openConversationViewer(ctx, jsonl, item.row.session, item.row.title);
+      const panel = openConversationViewer(ctx, jsonl, item.row.session, item.row.title, store);
+      openViewerPanels.set(item.row.session, panel);
+      panel.onDidDispose(() => {
+        if (openViewerPanels.get(item.row.session) === panel) {
+          openViewerPanels.delete(item.row.session);
+        }
+      });
+    }),
+
+    vscode.commands.registerCommand(
+      "claudeSessions.classifyTopics",
+      async (sessionId: string, jsonlPath: string, title: string) => {
+        if (!store) {
+          vscode.window.showWarningMessage(
+            "Topic classification requires the SQLite cache. Enable claudeSessions.cacheEnabled.",
+          );
+          return;
+        }
+        const cfg = vscode.workspace.getConfiguration("claudeSessions");
+        const model = cfg.get<string>("classify.model", "claude-haiku-4-5");
+        const batchSize = cfg.get<number>("classify.batchSize", 20);
+        const claudeBin = cfg.get<string>("classify.claudeBin", "") || undefined;
+
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Classifying topics (${model})…`,
+            cancellable: false,
+          },
+          async (progress) => {
+            try {
+              const result = await classifySession(store!, sessionId, {
+                model,
+                batchSize,
+                claudeBin,
+                onProgress: (done, total) =>
+                  progress.report({ message: `${done}/${total} turns` }),
+              });
+              const msg = `Classified ${result.classified} turns in ${result.batches} batches (in ${result.inputTokens} / out ${result.outputTokens} tokens)${
+                result.errors.length ? `; ${result.errors.length} warnings` : ""
+              }`;
+              if (result.errors.length > 0) {
+                vscode.window.showWarningMessage(
+                  msg + ". First: " + result.errors[0].slice(0, 200),
+                );
+              } else {
+                vscode.window.showInformationMessage(msg);
+              }
+            } catch (e: any) {
+              vscode.window.showErrorMessage(`Classify failed: ${e.message}`);
+              return;
+            }
+            // Re-render the viewer if it's open. Otherwise open it fresh.
+            const existing = openViewerPanels.get(sessionId);
+            if (existing && (existing as any).__refresh) {
+              (existing as any).__refresh();
+              existing.reveal();
+            } else {
+              const panel = openConversationViewer(ctx, jsonlPath, sessionId, title, store);
+              openViewerPanels.set(sessionId, panel);
+              panel.onDidDispose(() => {
+                if (openViewerPanels.get(sessionId) === panel) {
+                  openViewerPanels.delete(sessionId);
+                }
+              });
+            }
+          },
+        );
+      },
+    ),
+
+    vscode.commands.registerCommand("claudeSessions.showAgentGraph", async () => {
+      if (!store) {
+        vscode.window.showWarningMessage(
+          "Agent graph requires the SQLite cache. Enable claudeSessions.cacheEnabled.",
+        );
+        return;
+      }
+      await openAgentGraph(ctx, store, async (sessionId) => {
+        const jsonl = await locateSessionJsonl(sessionId);
+        if (!jsonl) {
+          vscode.window.showWarningMessage(`Transcript not found for ${sessionId}`);
+          return;
+        }
+        const row = store!.getById(sessionId);
+        const title = row?.title || sessionId.slice(0, 8);
+        const panel = openConversationViewer(ctx, jsonl, sessionId, title, store);
+        openViewerPanels.set(sessionId, panel);
+        panel.onDidDispose(() => {
+          if (openViewerPanels.get(sessionId) === panel) openViewerPanels.delete(sessionId);
+        });
+      });
     }),
 
     vscode.commands.registerCommand("claudeKbChanges.openFile", (c: FileChange) => openChangedFile(c)),
@@ -742,7 +919,17 @@ export function activate(ctx: vscode.ExtensionContext) {
   let refreshTimer: NodeJS.Timeout | undefined;
   const queueRefresh = () => {
     if (refreshTimer) clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => sessions.refresh(), 1500);
+    refreshTimer = setTimeout(() => {
+      // Re-sync only the changed JSONLs into SQLite, then refresh the view.
+      if (store) {
+        try {
+          syncToStore(store);
+        } catch (e: any) {
+          console.error("[claude-sessions] sync failed in watcher:", e);
+        }
+      }
+      sessions.refresh();
+    }, 1500);
   };
   watcher.onDidChange(queueRefresh);
   watcher.onDidCreate(queueRefresh);

@@ -7,6 +7,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { ParsedConversation, parseConversation, ToolCall, Turn } from "./conversationParser";
+import { SessionStore } from "./db";
 
 function fmtClock(ms: number): string {
   if (!ms) return "—";
@@ -94,7 +95,7 @@ function renderToolCall(tc: ToolCall): string {
   </details>`;
 }
 
-function renderTurn(t: Turn): string {
+function renderTurn(t: Turn, topic?: string, topicChanged?: boolean): string {
   const turnDuration =
     t.userTimestampMs && t.turnEndMs ? t.turnEndMs - t.userTimestampMs : null;
   const toolsByKind = new Map<string, number>();
@@ -104,8 +105,15 @@ function renderTurn(t: Turn): string {
   const toolSummary = Array.from(toolsByKind.entries())
     .map(([k, v]) => `${k}×${v}`)
     .join(" · ");
+  const topicChip = topic
+    ? `<span class="topic-chip" title="${escapeHtml(topic)}">${escapeHtml(topic)}</span>`
+    : "";
+  const topicDivider = topicChanged
+    ? `<div class="topic-change">↪ topic changed</div>`
+    : "";
 
   return `
+  ${topicDivider}
   <article class="turn">
     <header class="turn-head">
       <span class="turn-idx">#${t.index + 1}</span>
@@ -116,6 +124,7 @@ function renderTurn(t: Turn): string {
       <span class="tools-count">${t.toolCalls.length} tools${
     toolSummary ? ` (${toolSummary})` : ""
   }</span>
+      ${topicChip}
     </header>
     <section class="user">
       <div class="role">USER</div>
@@ -189,17 +198,51 @@ const STYLE = `
   details.block { margin-top: 6px; }
   details.block > summary { font-size: 11px; color: var(--muted); cursor: pointer; }
   details.block pre { background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 8px; margin-top: 4px; font-size: 11px; max-height: 360px; overflow: auto; white-space: pre-wrap; word-wrap: break-word; }
+  .topic-chip { margin-left: auto; padding: 1px 8px; border-radius: 10px; background: var(--subagent-bg); border: 1px solid rgba(155, 89, 182, 0.5); color: var(--fg); font-size: 11px; font-variant: small-caps; letter-spacing: 0.3px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topic-change { display: flex; align-items: center; gap: 10px; color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: 0.5px; margin: 18px 0 6px; padding: 0 2px; }
+  .topic-change::before, .topic-change::after { content: ""; flex: 1; height: 1px; background: var(--accent); opacity: 0.4; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
+  .toolbar a.btn { display: inline-block; padding: 4px 12px; border: 1px solid var(--border); border-radius: 4px; color: var(--fg); text-decoration: none; font-size: 12px; background: var(--tool-bg); }
+  .toolbar a.btn:hover { border-color: var(--accent); color: var(--accent); }
+  .toolbar .topic-meta { font-size: 11px; color: var(--muted); align-self: center; }
 `;
 
-function renderHtml(c: ParsedConversation, jsonlPath: string): string {
+function renderHtml(
+  c: ParsedConversation,
+  jsonlPath: string,
+  topics?: Map<string, { topic: string; topic_norm: string }>,
+): string {
   const totalTurns = c.summary.totalTurns;
   const totalTools = c.summary.totalTools;
   const totalSubagents = c.summary.totalSubagents;
-  const turnDur = c.summary.totalTurnDurationMs;
   const toolDur = c.summary.totalToolDurationMs;
   const sessionDur =
     c.startMs && c.endMs ? c.endMs - c.startMs : null;
   const waitingDur = sessionDur != null ? Math.max(0, sessionDur - toolDur) : null;
+
+  const classifyArg = encodeURIComponent(JSON.stringify([c.sessionId, jsonlPath, c.title || ""]));
+  const classifyUrl = `command:claudeSessions.classifyTopics?${classifyArg}`;
+  const classifiedCount = topics?.size ?? 0;
+  const eligibleCount = c.turns.filter((t) => t.userText.trim().length > 0).length;
+  const meta =
+    classifiedCount > 0
+      ? `${classifiedCount}/${eligibleCount} turns classified`
+      : eligibleCount > 0
+        ? `${eligibleCount} turns to classify`
+        : "no turns to classify";
+
+  let prevTopicNorm: string | undefined;
+  const turnsHtml = c.turns
+    .map((t) => {
+      const tid = `${c.sessionId}#${t.index}`;
+      const entry = topics?.get(tid);
+      const topicLabel = entry?.topic;
+      const topicNorm = entry?.topic_norm;
+      const changed = !!(prevTopicNorm && topicNorm && prevTopicNorm !== topicNorm);
+      if (topicNorm) prevTopicNorm = topicNorm;
+      return renderTurn(t, topicLabel, changed);
+    })
+    .join("\n");
 
   return `<!doctype html>
 <html><head>
@@ -212,6 +255,10 @@ function renderHtml(c: ParsedConversation, jsonlPath: string): string {
   <code>${escapeHtml(c.sessionId)}</code>
   · ${escapeHtml(jsonlPath)}
 </div>
+<div class="toolbar">
+  <a class="btn" href="${classifyUrl}">${classifiedCount > 0 ? "Re-analyze topics" : "Analyze topics"}</a>
+  <span class="topic-meta">${escapeHtml(meta)}</span>
+</div>
 <div class="totals">
   <div class="stat"><span class="label">Turns</span><span class="value">${totalTurns}</span></div>
   <div class="stat"><span class="label">Tool calls</span><span class="value">${totalTools}</span></div>
@@ -222,7 +269,7 @@ function renderHtml(c: ParsedConversation, jsonlPath: string): string {
   <div class="stat"><span class="label">First user msg</span><span class="value">${fmtClock(c.startMs ?? 0)}</span></div>
   <div class="stat"><span class="label">Last activity</span><span class="value">${fmtClock(c.endMs ?? 0)}</span></div>
 </div>
-${c.turns.map(renderTurn).join("\n")}
+${turnsHtml}
 </body></html>`;
 }
 
@@ -235,6 +282,7 @@ export function openConversationViewer(
   jsonlPath: string,
   sessionId: string,
   title: string,
+  store?: SessionStore | null,
 ): vscode.WebviewPanel {
   const panelTitle = `${title || sessionId.slice(0, 8)} · conversation`;
   const panel = vscode.window.createWebviewPanel(
@@ -243,16 +291,24 @@ export function openConversationViewer(
     vscode.ViewColumn.Active,
     {
       enableScripts: false,
+      enableCommandUris: true,
       retainContextWhenHidden: true,
     },
   );
-  try {
-    const parsed = parseConversation(jsonlPath);
-    if (!parsed.title) parsed.title = title;
-    if (!parsed.sessionId) parsed.sessionId = sessionId;
-    panel.webview.html = renderHtml(parsed, jsonlPath);
-  } catch (e: any) {
-    panel.webview.html = `<pre>Failed to parse ${escapeHtml(jsonlPath)}\n\n${escapeHtml(e?.message || String(e))}</pre>`;
-  }
+  const render = () => {
+    try {
+      const parsed = parseConversation(jsonlPath);
+      if (!parsed.title) parsed.title = title;
+      if (!parsed.sessionId) parsed.sessionId = sessionId;
+      const topics = store ? store.topicsForSession(parsed.sessionId) : undefined;
+      panel.webview.html = renderHtml(parsed, jsonlPath, topics);
+    } catch (e: any) {
+      panel.webview.html = `<pre>Failed to parse ${escapeHtml(jsonlPath)}\n\n${escapeHtml(e?.message || String(e))}</pre>`;
+    }
+  };
+  render();
+  // Expose a refresh hook so the classifier command can re-render after
+  // upserting topics.
+  (panel as any).__refresh = render;
   return panel;
 }

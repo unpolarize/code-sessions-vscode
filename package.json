@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -77,6 +77,15 @@
         "icon": "$(graph)"
       },
       {
+        "command": "claudeSessions.classifyTopics",
+        "title": "Analyze conversation topics"
+      },
+      {
+        "command": "claudeSessions.showAgentGraph",
+        "title": "Show 2D agent graph",
+        "icon": "$(circuit-board)"
+      },
+      {
         "command": "claudeKbChanges.refresh",
         "title": "Refresh KB changes",
         "icon": "$(refresh)"
@@ -111,9 +120,14 @@
           "group": "navigation@1"
         },
         {
-          "command": "claudeSessions.refresh",
+          "command": "claudeSessions.showAgentGraph",
           "when": "view == claudeSessions",
           "group": "navigation@2"
+        },
+        {
+          "command": "claudeSessions.refresh",
+          "when": "view == claudeSessions",
+          "group": "navigation@3"
         },
         {
           "command": "claudeKbChanges.refresh",
@@ -155,7 +169,12 @@
         "claudeSessions.scriptPath": {
           "type": "string",
           "default": "~/.claude/skills/sessions/session-center.sh",
-          "description": "Path to session-center.sh."
+          "description": "Path to session-center.sh (fallback when cacheEnabled is false)."
+        },
+        "claudeSessions.cacheEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the SQLite cache. When true (default), the sidebar reads from a local DB and only re-parses JSONLs whose (mtime,size) changed. When false, falls back to spawning session-center.sh on every refresh (v0.6.x behavior)."
         },
         "claudeSessions.showAutomated": {
           "type": "boolean",
@@ -204,6 +223,45 @@
           "type": "number",
           "default": 14,
           "description": "How many days of git history to load per project."
+        },
+        "claudeSessions.classify.model": {
+          "type": "string",
+          "default": "claude-haiku-4-5",
+          "description": "Model used for topic classification. Runs through `claude -p` (your subscription, NOT the API). Haiku is recommended for cost/speed."
+        },
+        "claudeSessions.classify.batchSize": {
+          "type": "number",
+          "default": 20,
+          "description": "How many turns to classify per `claude -p` invocation."
+        },
+        "claudeSessions.classify.claudeBin": {
+          "type": "string",
+          "default": "",
+          "description": "Optional override for the `claude` CLI path. Leave empty to use PATH."
+        },
+        "claudeSessions.embedding.preferred": {
+          "type": "string",
+          "enum": [
+            "ollama",
+            "transformersjs"
+          ],
+          "default": "ollama",
+          "description": "Which embedding backend to try first for the agent graph."
+        },
+        "claudeSessions.embedding.ollamaUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "description": "Base URL for a local Ollama daemon."
+        },
+        "claudeSessions.embedding.ollamaModel": {
+          "type": "string",
+          "default": "nomic-embed-text",
+          "description": "Ollama embedding model name."
+        },
+        "claudeSessions.embedding.transformersjsModel": {
+          "type": "string",
+          "default": "Xenova/bge-small-en-v1.5",
+          "description": "Transformers.js fallback model id."
         }
       }
     }
@@ -217,5 +275,10 @@
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.10.0",
+    "umap-js": "^1.4.0"
   }
 }
