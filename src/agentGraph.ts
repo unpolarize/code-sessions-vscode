@@ -148,7 +148,10 @@ async function buildLayout(
     Date.now(),
   );
 
-  // ---- Clustering (DBSCAN in 2D) ---------------------------------------- //
+  // ---- Clustering (DBSCAN in 2D, adaptive eps) -------------------------- //
+  // The configured epsScale is the starting point. If that yields zero
+  // clusters (common when corpus is small or embeddings are noisy), step
+  // eps up until ≥1 cluster forms or we hit 0.30 of the axis range.
   progress.report({ message: "Clustering…" });
   let minXc = Infinity, maxXc = -Infinity, minYc = Infinity, maxYc = -Infinity;
   for (const c of coords) {
@@ -157,15 +160,21 @@ async function buildLayout(
   }
   const spanX = Math.max(1e-6, maxXc - minXc);
   const spanY = Math.max(1e-6, maxYc - minYc);
-  const eps = clusterCfg.epsScale * Math.max(spanX, spanY);
-  const clusters =
-    coords.length >= clusterCfg.minPts
-      ? dbscan2d(
-          coords.map((c) => ({ x: c[0], y: c[1] })),
-          eps,
-          clusterCfg.minPts,
-        )
-      : coords.map(() => -1);
+  const axisSpan = Math.max(spanX, spanY);
+  const pts2d = coords.map((c) => ({ x: c[0], y: c[1] }));
+  let clusters: number[] = coords.map(() => -1);
+  if (coords.length >= clusterCfg.minPts) {
+    const scales = [clusterCfg.epsScale, clusterCfg.epsScale * 1.5, clusterCfg.epsScale * 2, clusterCfg.epsScale * 3, clusterCfg.epsScale * 5];
+    for (const s of scales) {
+      if (s > 0.30) break;
+      const trial = dbscan2d(pts2d, s * axisSpan, clusterCfg.minPts);
+      const clusterCount = new Set(trial.filter((c) => c >= 0)).size;
+      if (clusterCount >= 1) {
+        clusters = trial;
+        break;
+      }
+    }
+  }
   store.setClusterIds(ids.map((id, i) => ({ session_id: id, cluster_id: clusters[i] })));
 
   // Build a session_id → SessionRow map for tooltips.

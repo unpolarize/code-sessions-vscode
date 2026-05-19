@@ -568,6 +568,16 @@ export class SessionStore {
     return rows.map(rowToSession);
   }
 
+  /** Delete every session_embedding row whose model id is not `keepModel`. */
+  deleteEmbeddingsExceptModel(keepModel: string): number {
+    return this.db.prepare("DELETE FROM session_embedding WHERE embedding_model != ?").run(keepModel).changes;
+  }
+
+  /** Delete every turn_embedding row whose model id is not `keepModel`. */
+  deleteTurnEmbeddingsExceptModel(keepModel: string): number {
+    return this.db.prepare("DELETE FROM turn_embedding WHERE embedding_model != ?").run(keepModel).changes;
+  }
+
   // ---- maintenance ----------------------------------------------------- //
 
   close(): void {

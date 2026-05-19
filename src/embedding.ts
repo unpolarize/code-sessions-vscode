@@ -22,14 +22,16 @@ const FALLBACK_DIM = 256;
 
 /**
  * Probe the Ollama daemon, return true if reachable AND the requested model is
- * available. 250 ms timeout — we don't want to hang the user's session.
+ * available. 2 s timeout — Electron's first call on cold start can spend a
+ * couple hundred ms in process setup; 250 ms was too tight and produced
+ * false-negatives (the agent graph silently fell back to hashed-BoW).
  */
 export async function probeOllama(cfg: EmbedConfig): Promise<boolean> {
   return new Promise((resolve) => {
     try {
       const u = new URL("/api/tags", cfg.ollamaUrl);
       const req = http.get(
-        { hostname: u.hostname, port: u.port || 80, path: u.pathname, timeout: 250 },
+        { hostname: u.hostname, port: u.port || 80, path: u.pathname, timeout: 2000 },
         (res) => {
           let body = "";
           res.setEncoding("utf-8");

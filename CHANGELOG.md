@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.1 — 2026-05-18
+
+Fixes the "fallback/hash-bow-256 · 0 clusters" symptom on the agent graph:
+
+- **Ollama probe timeout 250 ms → 2000 ms.** Electron's cold start on the
+  first webview open often pushed the round-trip past 250 ms, so the probe
+  reported "not reachable" and the embedder silently fell back to hashed-BoW.
+  Two seconds is still imperceptible and easily survives a sluggish system.
+- **Adaptive DBSCAN eps.** If the configured `cluster.epsScale` yields zero
+  clusters, the algorithm steps eps up (×1.5 → ×2 → ×3 → ×5, capped at 0.30
+  of the axis range) until at least one cluster forms. Small corpora and
+  hashed-BoW embeddings now produce clusters instead of all-noise.
+- **`Drop cached embeddings and re-embed` command.** Sometimes you switch
+  embedding models (or pull a model after the first build) and the cached
+  embeddings under the old model id stay around. The new command nukes
+  every embedding row whose model id is not the current
+  `ollama/<embedding.ollamaModel>`, so the next agent-graph open re-embeds
+  cleanly.
+
 ## 0.8.0 — 2026-05-18
 
 Three additions on top of v0.7.1:

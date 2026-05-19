@@ -945,6 +945,27 @@ export function activate(ctx: vscode.ExtensionContext) {
       },
     ),
 
+    vscode.commands.registerCommand("claudeSessions.reembedSessions", async () => {
+      if (!store) {
+        vscode.window.showWarningMessage("Re-embed requires the SQLite cache.");
+        return;
+      }
+      const cfg = vscode.workspace.getConfiguration("claudeSessions");
+      const wantedOllama = cfg.get<string>("embedding.ollamaModel", "nomic-embed-text");
+      const choice = await vscode.window.showInformationMessage(
+        `Drop cached embeddings and re-embed on next graph open?\nCurrent model: ollama/${wantedOllama}`,
+        { modal: false },
+        "Drop all",
+        "Cancel",
+      );
+      if (choice !== "Drop all") return;
+      const keepModel = `ollama/${wantedOllama}`;
+      const dropped = store.deleteEmbeddingsExceptModel(keepModel) + store.deleteTurnEmbeddingsExceptModel(keepModel);
+      vscode.window.showInformationMessage(
+        `Dropped ${dropped} stale embedding row(s). Open the agent graph to re-embed.`,
+      );
+    }),
+
     vscode.commands.registerCommand("claudeSessions.showAgentGraph", async () => {
       if (!store) {
         vscode.window.showWarningMessage(
