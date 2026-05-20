@@ -76,13 +76,22 @@ function createLiveStatusBar(
   item.name = "Claude · Live";
   item.show();
 
+  const fmtTok = (n: number): string => {
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(n);
+  };
+
   const tooltipFor = (p: UpdatePayload): vscode.MarkdownString => {
     const md = new vscode.MarkdownString();
     md.isTrusted = true;
     md.supportThemeIcons = true;
     md.appendMarkdown(`**Claude · Live** &nbsp; *(updated ${new Date().toLocaleTimeString()})*\n\n`);
     md.appendMarkdown(
-      `$(pulse) **${p.activeCount}** active · $(tools) **${p.toolsPerMin}** tools/min · $(credit-card) **\\$${p.costToday.toFixed(2)}** today\n\n`,
+      `$(pulse) **${p.activeCount}** active · $(tools) **${p.toolsPerMin}** tools/min · ` +
+        `$(symbol-numeric) **${fmtTok(p.tokensToday)}** tokens · $(rocket) **${p.subagentsToday}** subagents · ` +
+        `$(credit-card) **\\$${p.costToday.toFixed(2)}** today\n\n`,
     );
     if (p.cards.length === 0) {
       md.appendMarkdown("_No active sessions in the last 2 minutes._\n");
@@ -95,9 +104,18 @@ function createLiveStatusBar(
         else status = `$(circle-outline) idle${c.now.ageSec ? ` · ${c.now.ageSec}s` : ""}`;
         const proj = c.project ? c.project : "(no project)";
         const title = c.title.length > 64 ? c.title.slice(0, 64) + "…" : c.title;
+        const cacheTot = c.cacheReadTokens + c.cacheWriteTokens;
+        const tokDetail = [
+          c.inputTokens ? `in ${fmtTok(c.inputTokens)}` : null,
+          c.outputTokens ? `out ${fmtTok(c.outputTokens)}` : null,
+          cacheTot ? `cache ${fmtTok(cacheTot)}` : null,
+        ].filter(Boolean).join(" · ");
+        const subagentStr = c.subagents > 0 ? ` · 🪄 ${c.subagents}` : "";
         md.appendMarkdown(
           `**${escapeMd(title)}** &nbsp; \`${escapeMd(proj)}\`\n\n` +
-            `${status} · 💬 ${c.messages} · 🔧 ${c.tools} · \\$${c.cost_usd.toFixed(2)}\n\n`,
+            `${status} · 💬 ${c.messages} · 🔧 ${c.tools}${subagentStr} · ` +
+            `🔢 ${fmtTok(c.totalTokens)}${tokDetail ? ` _(${tokDetail})_` : ""} · ` +
+            `\\$${c.cost_usd.toFixed(2)}\n\n`,
         );
       }
       if (p.cards.length > 8) {

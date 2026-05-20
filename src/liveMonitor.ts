@@ -25,6 +25,11 @@ interface LiveCard {
   messages: number;
   tools: number;
   subagents: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
   cost_usd: number;
   now: NowStatus;
   toolsLast60s: number;
@@ -35,6 +40,8 @@ export interface UpdatePayload {
   activeCount: number;
   toolsPerMin: number;
   costToday: number;
+  tokensToday: number;
+  subagentsToday: number;
 }
 
 export type LiveCardForExport = LiveCard;
@@ -127,6 +134,11 @@ function cardFromSession(s: SessionRow, now: number): LiveCard {
     messages: s.message_count,
     tools: s.tool_count,
     subagents: s.subagent_count,
+    inputTokens: s.input_tokens,
+    outputTokens: s.output_tokens,
+    cacheReadTokens: s.cache_read_tokens,
+    cacheWriteTokens: s.cache_write_tokens,
+    totalTokens: s.input_tokens + s.output_tokens + s.cache_read_tokens + s.cache_write_tokens,
     cost_usd: s.cost_usd,
     now: status,
     toolsLast60s,
@@ -140,16 +152,21 @@ function startOfTodayMs(): number {
 
 export function buildUpdate(store: SessionStore): UpdatePayload {
   const now = Date.now();
-  const recent = store.listRecent(50, true);
+  // Pull a wider window so "today" sums catch sessions that haven't recently
+  // ticked their mtime. 200 covers a heavy day; cheap.
+  const recent = store.listRecent(200, true);
   const active = recent.filter((r) => now - r.mtime_ns / 1e6 < ACTIVE_WINDOW_MS);
   const cards = active.map((s) => cardFromSession(s, now));
-  // Cost today: from the existing rows (cached), filter started_at >= startOfToday
   const startToday = startOfTodayMs();
-  const costToday = recent
-    .filter((r) => r.started_at && r.started_at >= startToday)
-    .reduce((sum, r) => sum + (r.cost_usd || 0), 0);
+  const todays = recent.filter((r) => r.started_at && r.started_at >= startToday);
+  const costToday = todays.reduce((sum, r) => sum + (r.cost_usd || 0), 0);
+  const tokensToday = todays.reduce(
+    (sum, r) => sum + r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens,
+    0,
+  );
+  const subagentsToday = todays.reduce((sum, r) => sum + (r.subagent_count || 0), 0);
   const toolsPerMin = cards.reduce((sum, c) => sum + c.toolsLast60s, 0);
-  return { cards, activeCount: cards.length, toolsPerMin, costToday };
+  return { cards, activeCount: cards.length, toolsPerMin, costToday, tokensToday, subagentsToday };
 }
 
 export function openLiveMonitor(ctx: vscode.ExtensionContext, store: SessionStore): vscode.WebviewPanel {
@@ -239,6 +256,8 @@ function liveHtml(webview: vscode.Webview): string {
 <div class="summary">
   <div class="stat"><span class="label">Active sessions</span><span class="value" id="vActive">0</span></div>
   <div class="stat"><span class="label">Tools / min</span><span class="value" id="vTools">0</span></div>
+  <div class="stat"><span class="label">Tokens today</span><span class="value" id="vTokens">0</span></div>
+  <div class="stat"><span class="label">Subagents today</span><span class="value" id="vAgents">0</span></div>
   <div class="stat"><span class="label">Cost today</span><span class="value" id="vCost">$0</span></div>
   <div class="stat"><span class="label">Last update</span><span class="value" id="vClock">—</span></div>
 </div>
@@ -251,8 +270,17 @@ function liveHtml(webview: vscode.Webview): string {
   const emptyEl = document.getElementById('empty');
   const vActive = document.getElementById('vActive');
   const vTools = document.getElementById('vTools');
+  const vTokens = document.getElementById('vTokens');
+  const vAgents = document.getElementById('vAgents');
   const vCost = document.getElementById('vCost');
   const vClock = document.getElementById('vClock');
+
+  function fmtTok(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
 
   function fmtDur(ms) {
     if (!ms) return '—';
@@ -272,6 +300,8 @@ function liveHtml(webview: vscode.Webview): string {
   function render(payload) {
     vActive.textContent = String(payload.activeCount);
     vTools.textContent = String(payload.toolsPerMin);
+    vTokens.textContent = fmtTok(payload.tokensToday);
+    vAgents.textContent = String(payload.subagentsToday);
     vCost.textContent = '$' + payload.costToday.toFixed(2);
     vClock.textContent = new Date().toLocaleTimeString();
 
@@ -304,10 +334,16 @@ function liveHtml(webview: vscode.Webview): string {
       nowEl.textContent = nowText(c.now);
       const row = el.querySelector('.row');
       row.innerHTML = '';
+      const tokParts = [];
+      if (c.inputTokens) tokParts.push('in ' + fmtTok(c.inputTokens));
+      if (c.outputTokens) tokParts.push('out ' + fmtTok(c.outputTokens));
+      const cacheTot = c.cacheReadTokens + c.cacheWriteTokens;
+      if (cacheTot) tokParts.push('cache ' + fmtTok(cacheTot));
       const pills = [
         '💬 ' + c.messages + ' msgs',
         '🔧 ' + c.tools + ' tools' + (c.toolsLast60s > 0 ? ' (' + c.toolsLast60s + '/min)' : ''),
-        c.subagents > 0 ? '🪄 ' + c.subagents : null,
+        c.subagents > 0 ? '🪄 ' + c.subagents + ' agents' : null,
+        '🔢 ' + fmtTok(c.totalTokens) + (tokParts.length ? ' (' + tokParts.join(' · ') + ')' : ''),
         '$' + c.cost_usd.toFixed(2),
       ].filter(Boolean);
       for (const p of pills) {

@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
