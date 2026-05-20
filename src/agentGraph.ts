@@ -331,9 +331,21 @@ async function buildLayout(
         if (n > bestN) { bestTopic = t; bestN = n; }
       }
       const hull = convexHull(arr.map((p) => ({ x: p.x, y: p.y })));
-      if (bestTopic) {
-        clusterLabels.push({ cluster: cid, cx, cy, label: bestTopic, count: arr.length, hull });
-      }
+      // Always emit a label/hull for ≥3-member clusters. If no topic data is
+      // available (sessions not yet classified), fall back to a synthesized
+      // label so the hull still renders and the user can see structure
+      // before running "Analyze topics".
+      const label = bestTopic
+        ? bestTopic
+        : (() => {
+            // Use the most common project across the cluster as a fallback
+            const projCounts = new Map<string, number>();
+            for (const p of arr) if (p.project) projCounts.set(p.project, (projCounts.get(p.project) ?? 0) + 1);
+            let bp = "", bpN = 0;
+            for (const [k, v] of projCounts) if (v > bpN) { bp = k; bpN = v; }
+            return bp || `cluster ${cid + 1}`;
+          })();
+      clusterLabels.push({ cluster: cid, cx, cy, label, count: arr.length, hull });
     }
   }
 

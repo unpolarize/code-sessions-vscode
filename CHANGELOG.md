@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.2 — 2026-05-19
+
+Fix: "N clusters via dbscan" with 0 hulls/labels actually visible.
+
+Root cause: clusters were being computed correctly, but the rendering loop only emitted a `ClusterLabel` (which owns both the hull *and* the topic text) when a non-empty topic existed for that cluster. Sessions that hadn't been through *Analyze topics* yet contributed no topic data, so the cluster was discovered but neither outlined nor labeled — leaving the user with all-grey dots and a misleading "0 clusters" count in the header.
+
+Fix: always emit a `ClusterLabel` for any cluster with ≥ 3 members. When no topic data exists, the label falls back to the cluster's most common project (`docs`, `unpolarize`, `ai/otelo`) or `cluster N` if there's no project either. Hulls and color-by-cluster now render the moment DBSCAN/k-means finds structure, regardless of whether you've classified topics yet.
+
 ## 0.9.1 — 2026-05-19
 
 Fixes "0 clusters" on small, diverse corpora:
