@@ -10,7 +10,7 @@ import { syncToStore } from "./jsonlIndexer";
 import { classifySession } from "./topicClassifier";
 import { openAgentGraph } from "./agentGraph";
 import { openTrajectoryView } from "./trajectoryView";
-import { openLiveMonitor } from "./liveMonitor";
+import { openLiveMonitor, buildUpdate, UpdatePayload } from "./liveMonitor";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -56,6 +56,116 @@ function exec(
       resolve({ stdout: String(stdout), stderr: String(stderr), code });
     });
   });
+}
+
+// --------------------------------------------------------------------------- //
+// Live status-bar item — always-visible compact indicator
+// --------------------------------------------------------------------------- //
+
+/**
+ * Create a status-bar item that reflects current Claude Code activity. Polls
+ * every 5 s when at least one session is active, drops to 30 s when idle.
+ * Hover shows a per-session breakdown; click opens the live monitor.
+ */
+function createLiveStatusBar(
+  ctx: vscode.ExtensionContext,
+  store: SessionStore,
+): vscode.StatusBarItem {
+  const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  item.command = "claudeSessions.openLiveMonitor";
+  item.name = "Claude · Live";
+  item.show();
+
+  const tooltipFor = (p: UpdatePayload): vscode.MarkdownString => {
+    const md = new vscode.MarkdownString();
+    md.isTrusted = true;
+    md.supportThemeIcons = true;
+    md.appendMarkdown(`**Claude · Live** &nbsp; *(updated ${new Date().toLocaleTimeString()})*\n\n`);
+    md.appendMarkdown(
+      `$(pulse) **${p.activeCount}** active · $(tools) **${p.toolsPerMin}** tools/min · $(credit-card) **\\$${p.costToday.toFixed(2)}** today\n\n`,
+    );
+    if (p.cards.length === 0) {
+      md.appendMarkdown("_No active sessions in the last 2 minutes._\n");
+    } else {
+      md.appendMarkdown("---\n\n");
+      for (const c of p.cards.slice(0, 8)) {
+        let status = "";
+        if (c.now.kind === "in_tool") status = `$(gear) ${c.now.detail} · ${c.now.ageSec}s`;
+        else if (c.now.kind === "responding") status = `$(pencil) responding · ${c.now.ageSec}s`;
+        else status = `$(circle-outline) idle${c.now.ageSec ? ` · ${c.now.ageSec}s` : ""}`;
+        const proj = c.project ? c.project : "(no project)";
+        const title = c.title.length > 64 ? c.title.slice(0, 64) + "…" : c.title;
+        md.appendMarkdown(
+          `**${escapeMd(title)}** &nbsp; \`${escapeMd(proj)}\`\n\n` +
+            `${status} · 💬 ${c.messages} · 🔧 ${c.tools} · \\$${c.cost_usd.toFixed(2)}\n\n`,
+        );
+      }
+      if (p.cards.length > 8) {
+        md.appendMarkdown(`_…and ${p.cards.length - 8} more — click to open the dashboard._\n`);
+      } else {
+        md.appendMarkdown("_Click to open the full live monitor._\n");
+      }
+    }
+    return md;
+  };
+
+  let timer: NodeJS.Timeout | undefined;
+  const tick = () => {
+    try {
+      const payload = buildUpdate(store);
+      if (payload.activeCount > 0) {
+        const top = payload.cards[0];
+        const tag =
+          top.now.kind === "in_tool"
+            ? top.now.detail
+            : top.now.kind === "responding"
+              ? "responding"
+              : "idle";
+        item.text = `$(pulse) Claude · ${payload.activeCount} active · ${tag}`;
+        item.backgroundColor = undefined;
+      } else {
+        item.text = `$(comment-discussion) Claude · idle`;
+        item.backgroundColor = undefined;
+      }
+      item.tooltip = tooltipFor(payload);
+      // Schedule next poll based on activity
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(tick, payload.activeCount > 0 ? 5_000 : 30_000);
+    } catch (e: any) {
+      item.text = `$(warning) Claude`;
+      item.tooltip = `claude-sessions: ${e.message}`;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(tick, 30_000);
+    }
+  };
+
+  // Honor enabled flag dynamically
+  const applyEnabledState = () => {
+    const enabled = vscode.workspace
+      .getConfiguration("claudeSessions")
+      .get<boolean>("liveStatusBar.enabled", true);
+    if (enabled) {
+      item.show();
+      if (!timer) tick();
+    } else {
+      item.hide();
+      if (timer) { clearTimeout(timer); timer = undefined; }
+    }
+  };
+  applyEnabledState();
+
+  ctx.subscriptions.push(
+    item,
+    { dispose: () => { if (timer) clearTimeout(timer); } },
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("claudeSessions.liveStatusBar.enabled")) applyEnabledState();
+    }),
+  );
+  return item;
+}
+
+function escapeMd(s: string): string {
+  return String(s).replace(/([\\`*_{}\[\]()#+\-.!|>])/g, "\\$1");
 }
 
 // --------------------------------------------------------------------------- //
@@ -796,6 +906,9 @@ export function activate(ctx: vscode.ExtensionContext) {
   }
 
   ctx.subscriptions.push({ dispose: () => store?.close() });
+
+  // Always-visible live status bar
+  if (store) createLiveStatusBar(ctx, store);
 
   // KB view uses createTreeView so we can set its title dynamically based on
   // the configured repoPath (e.g. "docs changes" instead of "KB changes").

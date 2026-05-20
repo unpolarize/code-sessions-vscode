@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -248,6 +248,11 @@
           "enum": ["ollama", "claude-p"],
           "default": "ollama",
           "description": "Where topic classification runs. `ollama` calls a local Ollama daemon (free, offline). `claude-p` invokes the Claude CLI in headless mode, using your subscription."
+        },
+        "claudeSessions.liveStatusBar.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a compact 'Claude · N active' indicator in the status bar. Polls every 5 s while sessions are active, 30 s when idle. Hover for a per-session breakdown; click to open the Live monitor."
         },
         "claudeSessions.classify.autoOnOpen": {
           "type": "boolean",

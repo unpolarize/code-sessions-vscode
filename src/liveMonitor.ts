@@ -30,12 +30,14 @@ interface LiveCard {
   toolsLast60s: number;
 }
 
-interface UpdatePayload {
+export interface UpdatePayload {
   cards: LiveCard[];
   activeCount: number;
   toolsPerMin: number;
   costToday: number;
 }
+
+export type LiveCardForExport = LiveCard;
 
 /** Read the last N bytes of a file (returns "" on any error). */
 function tailFile(path: string, bytes: number): string {
@@ -136,7 +138,7 @@ function startOfTodayMs(): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 
-function buildUpdate(store: SessionStore): UpdatePayload {
+export function buildUpdate(store: SessionStore): UpdatePayload {
   const now = Date.now();
   const recent = store.listRecent(50, true);
   const active = recent.filter((r) => now - r.mtime_ns / 1e6 < ACTIVE_WINDOW_MS);
