@@ -53,6 +53,74 @@ function convexHull(pts: Array<{ x: number; y: number }>): Array<{ x: number; y:
   return lower.slice(0, -1).concat(upper.slice(0, -1));
 }
 
+/**
+ * k-means in 2D with deterministic seeding (k-means++). Returns cluster ids
+ * 0..k-1. Used as a fallback when DBSCAN can't find density (small or
+ * uniformly spread corpora).
+ */
+function kmeans2d(points: Array<{ x: number; y: number }>, k: number, maxIter = 80): number[] {
+  if (points.length === 0 || k <= 0) return points.map(() => 0);
+  if (k >= points.length) return points.map((_, i) => i);
+  // k-means++ seeding
+  const seeds: Array<{ x: number; y: number }> = [];
+  let rng = 0x9e3779b1; // deterministic
+  const rand = () => {
+    rng = ((rng + 0x6d2b79f5) ^ (rng >>> 15)) >>> 0;
+    rng = Math.imul(rng, 1 | rng);
+    rng ^= rng + Math.imul(rng ^ (rng >>> 7), 61 | rng);
+    return ((rng ^ (rng >>> 14)) >>> 0) / 0x100000000;
+  };
+  seeds.push({ ...points[Math.floor(rand() * points.length)] });
+  while (seeds.length < k) {
+    const d2 = points.map((p) => {
+      let best = Infinity;
+      for (const s of seeds) {
+        const dx = p.x - s.x, dy = p.y - s.y;
+        const v = dx * dx + dy * dy;
+        if (v < best) best = v;
+      }
+      return best;
+    });
+    const sum = d2.reduce((a, b) => a + b, 0);
+    let r = rand() * sum;
+    let idx = 0;
+    for (; idx < d2.length; idx++) {
+      r -= d2[idx];
+      if (r <= 0) break;
+    }
+    seeds.push({ ...points[Math.min(idx, points.length - 1)] });
+  }
+  const centers = seeds.map((c) => ({ ...c }));
+  const assign = new Array(points.length).fill(0);
+  for (let it = 0; it < maxIter; it++) {
+    let changed = false;
+    for (let i = 0; i < points.length; i++) {
+      let best = 0, bd = Infinity;
+      for (let c = 0; c < k; c++) {
+        const dx = points[i].x - centers[c].x, dy = points[i].y - centers[c].y;
+        const v = dx * dx + dy * dy;
+        if (v < bd) { bd = v; best = c; }
+      }
+      if (assign[i] !== best) { assign[i] = best; changed = true; }
+    }
+    // Recompute centers
+    const sumX = new Array(k).fill(0), sumY = new Array(k).fill(0), count = new Array(k).fill(0);
+    for (let i = 0; i < points.length; i++) {
+      sumX[assign[i]] += points[i].x;
+      sumY[assign[i]] += points[i].y;
+      count[assign[i]] += 1;
+    }
+    for (let c = 0; c < k; c++) {
+      if (count[c] > 0) {
+        centers[c].x = sumX[c] / count[c];
+        centers[c].y = sumY[c] / count[c];
+      }
+    }
+    if (!changed) break;
+  }
+  return assign;
+}
+
 /** 2D DBSCAN. eps in same units as coords. minPts cluster size. */
 function dbscan2d(points: Array<{ x: number; y: number }>, eps: number, minPts: number): number[] {
   const n = points.length;
@@ -110,7 +178,7 @@ async function buildLayout(
   cfg: EmbedConfig,
   clusterCfg: { minPts: number; epsScale: number },
   progress: vscode.Progress<{ message?: string; increment?: number }>,
-): Promise<{ points: GraphPoint[]; embeddingModel: string; clusterLabels: ClusterLabel[] }> {
+): Promise<{ points: GraphPoint[]; embeddingModel: string; clusterLabels: ClusterLabel[]; clusterMethod: string }> {
   // Decide the model id first by probing (single round-trip). We don't yet
   // know whether Ollama is up; embedMany will probe and pick. To avoid a
   // double-probe, just embed the first session immediately so the returned
@@ -118,7 +186,7 @@ async function buildLayout(
   // need embedding.
   const allSessions = store.listRecent(100_000, false); // exclude automated
   if (allSessions.length === 0) {
-    return { points: [], embeddingModel: "(none)", clusterLabels: [] };
+    return { points: [], embeddingModel: "(none)", clusterLabels: [], clusterMethod: "none" };
   }
 
   // Try Ollama-or-fallback on the first session so we get the model id.
@@ -144,7 +212,7 @@ async function buildLayout(
   // Pull every embedding back and project to 2D.
   progress.report({ message: "Fitting 2D layout (UMAP)…" });
   const all = store.embeddingsByModel(modelId);
-  if (all.length === 0) return { points: [], embeddingModel: modelId, clusterLabels: [] };
+  if (all.length === 0) return { points: [], embeddingModel: modelId, clusterLabels: [], clusterMethod: "none" };
 
   const ids = all.map((e) => e.session_id);
   const vectors = all.map((e) => Array.from(e.embedding));
@@ -184,17 +252,28 @@ async function buildLayout(
   const axisSpan = Math.max(spanX, spanY);
   const pts2d = coords.map((c) => ({ x: c[0], y: c[1] }));
   let clusters: number[] = coords.map(() => -1);
+  let clusterMethod = "none";
   if (coords.length >= clusterCfg.minPts) {
     const scales = [clusterCfg.epsScale, clusterCfg.epsScale * 1.5, clusterCfg.epsScale * 2, clusterCfg.epsScale * 3, clusterCfg.epsScale * 5];
     for (const s of scales) {
       if (s > 0.30) break;
       const trial = dbscan2d(pts2d, s * axisSpan, clusterCfg.minPts);
       const clusterCount = new Set(trial.filter((c) => c >= 0)).size;
-      if (clusterCount >= 1) {
+      if (clusterCount >= 2) {
         clusters = trial;
+        clusterMethod = `dbscan (eps=${(s * axisSpan).toFixed(3)})`;
         break;
       }
     }
+  }
+  // Fallback: if DBSCAN can't find ≥2 clusters (common with small, diverse
+  // corpora — points spread evenly across UMAP), force k-means so the user
+  // sees at least *some* structure.
+  const dbscanClusterCount = new Set(clusters.filter((c) => c >= 0)).size;
+  if (dbscanClusterCount < 2 && coords.length >= 6) {
+    const k = Math.max(3, Math.min(8, Math.round(Math.sqrt(coords.length / 2))));
+    clusters = kmeans2d(pts2d, k);
+    clusterMethod = `k-means (k=${k}, fallback)`;
   }
   store.setClusterIds(ids.map((id, i) => ({ session_id: id, cluster_id: clusters[i] })));
 
@@ -258,7 +337,7 @@ async function buildLayout(
     }
   }
 
-  return { points, embeddingModel: modelId, clusterLabels };
+  return { points, embeddingModel: modelId, clusterLabels, clusterMethod };
 }
 
 /** Open the agent-graph webview. */
@@ -291,7 +370,7 @@ export async function openAgentGraph(
   // Show a placeholder immediately so the user sees something while we work.
   panel.webview.html = placeholderHtml(panel.webview);
 
-  let built: { points: GraphPoint[]; embeddingModel: string; clusterLabels: ClusterLabel[] };
+  let built: { points: GraphPoint[]; embeddingModel: string; clusterLabels: ClusterLabel[]; clusterMethod: string };
   try {
     built = await vscode.window.withProgress(
       {
@@ -306,7 +385,7 @@ export async function openAgentGraph(
     return panel;
   }
 
-  panel.webview.html = graphHtml(panel.webview, built.points, built.clusterLabels, built.embeddingModel);
+  panel.webview.html = graphHtml(panel.webview, built.points, built.clusterLabels, built.embeddingModel, built.clusterMethod);
 
   panel.webview.onDidReceiveMessage((msg) => {
     if (msg?.command === "open" && typeof msg.id === "string") {
@@ -347,7 +426,7 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels: ClusterLabel[], modelId: string): string {
+function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels: ClusterLabel[], modelId: string, clusterMethod: string): string {
   const nonce = nonceStr();
   const csp = [
     `default-src 'none'`,
@@ -378,7 +457,7 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
 <body>
 <header>
   <h1>Agent graph</h1>
-  <span class="sub">${points.length} sessions · ${clusterLabels.length} clusters · embedder: ${escapeHtml(modelId)} · hover for details · click to open</span>
+  <span class="sub">${points.length} sessions · ${clusterLabels.length} clusters via ${escapeHtml(clusterMethod)} · embedder: ${escapeHtml(modelId)} · hover for details · click to open</span>
   <span class="toolbar">
     <label><input type="checkbox" id="colorByCluster" checked> color by cluster</label>
     <label><input type="checkbox" id="showLabels" checked> cluster labels</label>

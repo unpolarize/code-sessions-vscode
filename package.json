@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -280,8 +280,8 @@
         },
         "claudeSessions.cluster.minPts": {
           "type": "number",
-          "default": 5,
-          "description": "DBSCAN minPts for clustering sessions on the agent graph."
+          "default": 3,
+          "description": "DBSCAN minPts for clustering sessions on the agent graph. With small corpora (<100 sessions) 3 finds clusters that 5 misses. If DBSCAN still finds none, the extension falls back to k-means."
         },
         "claudeSessions.cluster.epsScale": {
           "type": "number",

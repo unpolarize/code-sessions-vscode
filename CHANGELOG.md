@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.1 — 2026-05-19
+
+Fixes "0 clusters" on small, diverse corpora:
+
+- **k-means fallback.** When adaptive DBSCAN still can't find ≥ 2 clusters (common with ~30–50 mostly-distinct sessions — UMAP scatters them too thinly), the extension now runs **k-means++** in 2D with `k = clamp(3, round(sqrt(n/2)), 8)` so the graph always has structure to draw. Deterministic seeding, ~50 LOC, no deps.
+- **`cluster.minPts` default 5 → 3.** Small corpora benefit from looser density requirements. Set higher manually if you have hundreds of sessions and want tighter clusters.
+- **Header shows which algorithm ran.** "38 sessions · 4 clusters via k-means (k=4, fallback) · embedder: ollama/nomic-embed-text" — so you know whether the layout is real density structure (DBSCAN) or forced groupings (k-means).
+
 ## 0.9.0 — 2026-05-19
 
 Agent graph readability upgrade — convex hulls, non-overlapping labels, click-to-focus. No new deps.
