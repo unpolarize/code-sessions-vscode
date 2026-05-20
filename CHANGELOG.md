@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0 — 2026-05-20
+
+- **Auto-classify on viewer open.** Opening the conversation viewer for a session with unclassified turns kicks off topic classification in the background (only when `classify.backend = ollama`, so no Claude subscription tokens are spent without you asking). When the run completes the viewer refreshes and the chips appear. Topics persist in the SQLite cache as before, so the next open of the same session is instant. Toggle via `claudeSessions.classify.autoOnOpen` (default `true`).
+- **Tooltips no longer escape the viewport.** Both the agent-graph and trajectory tooltips now flip and clamp to the canvas container so they stay readable when you hover a point near the right or bottom edge.
+
 ## 0.9.2 — 2026-05-19
 
 Fix: "N clusters via dbscan" with 0 hulls/labels actually visible.

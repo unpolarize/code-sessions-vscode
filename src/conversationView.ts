@@ -8,6 +8,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { ParsedConversation, parseConversation, ToolCall, Turn } from "./conversationParser";
 import { SessionStore } from "./db";
+import { classifySession } from "./topicClassifier";
 
 function fmtClock(ms: number): string {
   if (!ms) return "—";
@@ -313,5 +314,40 @@ export function openConversationViewer(
   // Expose a refresh hook so the classifier command can re-render after
   // upserting topics.
   (panel as any).__refresh = render;
+
+  // Auto-classify on first open: if we have a store, the configured backend
+  // is the free local one (ollama), and there are unclassified turns, run
+  // classification in the background and refresh the panel when done. This
+  // caches topics eagerly so subsequent opens are instant.
+  if (store) {
+    const cfg = vscode.workspace.getConfiguration("claudeSessions");
+    const auto = cfg.get<boolean>("classify.autoOnOpen", true);
+    const backend = cfg.get<"ollama" | "claude-p">("classify.backend", "ollama");
+    // Only auto-run for ollama — claude-p costs real subscription tokens, so
+    // keep that path opt-in via the explicit "Analyze topics" button.
+    if (auto && backend === "ollama") {
+      const unclassified = store.countTurnsWithoutTopic(sessionId);
+      if (unclassified > 0) {
+        const model = cfg.get<string>("classify.model", "llama3.2:3b");
+        const batchSize = cfg.get<number>("classify.batchSize", 20);
+        const ollamaUrl = cfg.get<string>("embedding.ollamaUrl", "http://127.0.0.1:11434");
+        // Fire and forget; refresh on completion.
+        void classifySession(store, sessionId, {
+          backend,
+          model,
+          batchSize,
+          ollamaUrl,
+        })
+          .then((res) => {
+            if (res.classified > 0) render();
+          })
+          .catch(() => {
+            // Failures are surfaced when the user clicks "Analyze topics"
+            // explicitly. Silent here to avoid popups on every viewer open.
+          });
+      }
+    }
+  }
+
   return panel;
 }

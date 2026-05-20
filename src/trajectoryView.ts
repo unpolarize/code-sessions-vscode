@@ -338,6 +338,24 @@ function trajectoryHtml(
     return best;
   }
 
+  function placeTip(mx, my) {
+    // Clamp to wrap container so the tooltip never escapes the visible area.
+    const wrap = document.getElementById('wrap');
+    const wrapRect = wrap.getBoundingClientRect();
+    // Show first so we can measure its size
+    tip.style.display = 'block';
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+    let left = mx + 12;
+    let top = my + 12;
+    if (left + tw + 8 > wrapRect.width) left = Math.max(4, mx - tw - 12);
+    if (top + th + 8 > wrapRect.height) top = Math.max(4, my - th - 12);
+    if (left < 4) left = 4;
+    if (top < 4) top = 4;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+  }
+
   canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
@@ -346,9 +364,7 @@ function trajectoryHtml(
     if (p) {
       const t = p.topic ? p.topic : '(untagged)';
       tip.textContent = '#' + (p.index + 1) + '  ' + t + '\\n' + p.user_excerpt;
-      tip.style.left = (mx + 12) + 'px';
-      tip.style.top = (my + 12) + 'px';
-      tip.style.display = 'block';
+      placeTip(mx, my);
     } else {
       tip.style.display = 'none';
     }

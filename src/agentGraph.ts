@@ -716,6 +716,22 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     return best;
   }
 
+  function placeTip(mx, my) {
+    const wrap = document.getElementById('wrap');
+    const wrapRect = wrap.getBoundingClientRect();
+    tip.style.display = 'block';
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+    let left = mx + 12;
+    let top = my + 12;
+    if (left + tw + 8 > wrapRect.width) left = Math.max(4, mx - tw - 12);
+    if (top + th + 8 > wrapRect.height) top = Math.max(4, my - th - 12);
+    if (left < 4) left = 4;
+    if (top < 4) top = 4;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+  }
+
   canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
@@ -725,9 +741,7 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
       const cost = p.costUsd ? '$' + p.costUsd.toFixed(2) : '\$0';
       const proj = p.project ? p.project : '(no project)';
       tip.textContent = p.title + '\\n' + proj + ' · ' + p.msgs + ' msgs · ' + cost;
-      tip.style.left = (mx + 12) + 'px';
-      tip.style.top = (my + 12) + 'px';
-      tip.style.display = 'block';
+      placeTip(mx, my);
       canvas.style.cursor = 'pointer';
     } else {
       tip.style.display = 'none';
