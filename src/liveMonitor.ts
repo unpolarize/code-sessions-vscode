@@ -1,0 +1,330 @@
+// Real-time dashboard: cards for every currently-active Claude Code session.
+// Polls the SQLite cache + tails each active session's JSONL every 2 s.
+
+import * as fs from "fs";
+import * as vscode from "vscode";
+import { SessionStore, SessionRow } from "./db";
+
+const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
+const POLL_INTERVAL_MS = 2000;
+const TAIL_BYTES = 8192;
+
+interface NowStatus {
+  kind: "in_tool" | "responding" | "idle";
+  detail: string;
+  ageSec: number;
+}
+
+interface LiveCard {
+  session_id: string;
+  title: string;
+  project: string | null;
+  jsonl_path: string;
+  startedAt: number | null;
+  elapsedMs: number;
+  messages: number;
+  tools: number;
+  subagents: number;
+  cost_usd: number;
+  now: NowStatus;
+  toolsLast60s: number;
+}
+
+interface UpdatePayload {
+  cards: LiveCard[];
+  activeCount: number;
+  toolsPerMin: number;
+  costToday: number;
+}
+
+/** Read the last N bytes of a file (returns "" on any error). */
+function tailFile(path: string, bytes: number): string {
+  try {
+    const fd = fs.openSync(path, "r");
+    try {
+      const stat = fs.fstatSync(fd);
+      const start = Math.max(0, stat.size - bytes);
+      const buf = Buffer.alloc(stat.size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      return buf.toString("utf-8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
+function nowStatusFromTail(tail: string, now: number): { status: NowStatus; toolsLast60s: number } {
+  const lines = tail.split("\n").filter(Boolean);
+  // Parse from latest backwards
+  const events: Array<{ ts: number; type: string; obj: any }> = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const obj = JSON.parse(lines[i]);
+      const ts = obj.timestamp ? Date.parse(obj.timestamp) : 0;
+      events.unshift({ ts, type: obj.type || "?", obj });
+    } catch {
+      // skip
+    }
+  }
+  let toolsLast60s = 0;
+  // Track open tool_uses (id → name) and tool_results that close them
+  const openTools = new Map<string, { name: string; ts: number }>();
+  let lastAssistantText = 0;
+  for (const ev of events) {
+    if (ev.type === "assistant") {
+      const content = ev.obj?.message?.content;
+      if (Array.isArray(content)) {
+        for (const b of content) {
+          if (!b || typeof b !== "object") continue;
+          if (b.type === "tool_use") {
+            openTools.set(String(b.id), { name: String(b.name), ts: ev.ts });
+            if (now - ev.ts < 60_000) toolsLast60s += 1;
+          } else if (b.type === "text") {
+            lastAssistantText = Math.max(lastAssistantText, ev.ts);
+          }
+        }
+      }
+    } else if (ev.type === "user" && Array.isArray(ev.obj?.message?.content) && ev.obj.message.content[0]?.type === "tool_result") {
+      const id = String(ev.obj.message.content[0].tool_use_id);
+      openTools.delete(id);
+    }
+  }
+
+  // Decide status
+  let status: NowStatus = { kind: "idle", detail: "", ageSec: 0 };
+  if (openTools.size > 0) {
+    // Pick the most recent open tool
+    let bestTs = 0, bestName = "";
+    for (const v of openTools.values()) {
+      if (v.ts > bestTs) { bestTs = v.ts; bestName = v.name; }
+    }
+    status = { kind: "in_tool", detail: bestName, ageSec: Math.floor((now - bestTs) / 1000) };
+  } else if (lastAssistantText && now - lastAssistantText < 30_000) {
+    status = { kind: "responding", detail: "", ageSec: Math.floor((now - lastAssistantText) / 1000) };
+  } else {
+    // Most recent event of any kind
+    let last = 0;
+    for (const ev of events) if (ev.ts > last) last = ev.ts;
+    status = { kind: "idle", detail: "", ageSec: last ? Math.floor((now - last) / 1000) : 0 };
+  }
+  return { status, toolsLast60s };
+}
+
+function cardFromSession(s: SessionRow, now: number): LiveCard {
+  const tail = tailFile(s.jsonl_path, TAIL_BYTES);
+  const { status, toolsLast60s } = nowStatusFromTail(tail, now);
+  return {
+    session_id: s.session_id,
+    title: s.title || s.session_id.slice(0, 8),
+    project: s.project_id,
+    jsonl_path: s.jsonl_path,
+    startedAt: s.started_at,
+    elapsedMs: s.started_at ? Math.max(0, now - s.started_at) : 0,
+    messages: s.message_count,
+    tools: s.tool_count,
+    subagents: s.subagent_count,
+    cost_usd: s.cost_usd,
+    now: status,
+    toolsLast60s,
+  };
+}
+
+function startOfTodayMs(): number {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function buildUpdate(store: SessionStore): UpdatePayload {
+  const now = Date.now();
+  const recent = store.listRecent(50, true);
+  const active = recent.filter((r) => now - r.mtime_ns / 1e6 < ACTIVE_WINDOW_MS);
+  const cards = active.map((s) => cardFromSession(s, now));
+  // Cost today: from the existing rows (cached), filter started_at >= startOfToday
+  const startToday = startOfTodayMs();
+  const costToday = recent
+    .filter((r) => r.started_at && r.started_at >= startToday)
+    .reduce((sum, r) => sum + (r.cost_usd || 0), 0);
+  const toolsPerMin = cards.reduce((sum, c) => sum + c.toolsLast60s, 0);
+  return { cards, activeCount: cards.length, toolsPerMin, costToday };
+}
+
+export function openLiveMonitor(ctx: vscode.ExtensionContext, store: SessionStore): vscode.WebviewPanel {
+  const panel = vscode.window.createWebviewPanel(
+    "claudeLiveMonitor",
+    "Claude · Live",
+    vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: false },
+  );
+
+  panel.webview.html = liveHtml(panel.webview);
+
+  let timer: NodeJS.Timeout | undefined;
+  const tick = () => {
+    if (!panel.visible) return;
+    try {
+      panel.webview.postMessage({ command: "update", payload: buildUpdate(store) });
+    } catch {
+      // panel disposed
+    }
+  };
+  const start = () => {
+    if (timer) return;
+    tick();
+    timer = setInterval(tick, POLL_INTERVAL_MS);
+  };
+  const stop = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = undefined;
+    }
+  };
+  start();
+
+  panel.onDidChangeViewState((e) => {
+    if (e.webviewPanel.visible) start();
+    else stop();
+  });
+  panel.onDidDispose(() => stop());
+
+  return panel;
+}
+
+function nonceStr(): string {
+  let s = "";
+  const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  for (let i = 0; i < 32; i++) s += charset[Math.floor(Math.random() * charset.length)];
+  return s;
+}
+
+function liveHtml(webview: vscode.Webview): string {
+  const nonce = nonceStr();
+  const csp = [
+    `default-src 'none'`,
+    `style-src ${webview.cspSource} 'unsafe-inline'`,
+    `script-src 'nonce-${nonce}'`,
+    `img-src ${webview.cspSource} data:`,
+    `font-src ${webview.cspSource}`,
+  ].join("; ");
+
+  return `<!doctype html><html><head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${csp}">
+<style>
+  body { font-family: var(--vscode-font-family); color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); margin: 0; padding: 16px 20px; }
+  h1 { margin: 0 0 4px; font-size: 18px; }
+  .summary { display: flex; gap: 22px; padding: 10px 14px; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 6px; margin-bottom: 18px; flex-wrap: wrap; }
+  .summary .stat { display: flex; flex-direction: column; gap: 2px; }
+  .summary .label { font-size: 10px; text-transform: uppercase; color: var(--vscode-descriptionForeground); letter-spacing: 0.5px; }
+  .summary .value { font-size: 16px; font-weight: 600; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
+  .card { background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 12px 14px; }
+  .card .title { font-weight: 600; font-size: 13px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .sub { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 8px; }
+  .card .now { font-size: 12px; padding: 6px 8px; border-radius: 4px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+  .now.in_tool { background: rgba(74, 144, 226, 0.15); color: #4a90e2; border: 1px solid rgba(74, 144, 226, 0.5); }
+  .now.responding { background: rgba(62, 207, 142, 0.15); color: #3ecf8e; border: 1px solid rgba(62, 207, 142, 0.5); }
+  .now.idle { background: rgba(160, 160, 160, 0.15); color: var(--vscode-descriptionForeground); border: 1px solid rgba(160, 160, 160, 0.4); }
+  .card .row { display: flex; gap: 10px; font-size: 11px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+  .card .row .pill { background: rgba(160,160,160,0.12); padding: 2px 8px; border-radius: 10px; }
+  .empty { padding: 32px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 13px; border: 1px dashed var(--vscode-panel-border); border-radius: 8px; }
+  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3ecf8e; margin-right: 6px; vertical-align: 1px; animation: pulse 1.4s infinite ease-in-out; }
+  @keyframes pulse { 0% { opacity: 0.35; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1.1); } 100% { opacity: 0.35; transform: scale(0.85); } }
+</style>
+</head><body>
+<h1><span class="pulse"></span>Live monitor</h1>
+<div class="summary">
+  <div class="stat"><span class="label">Active sessions</span><span class="value" id="vActive">0</span></div>
+  <div class="stat"><span class="label">Tools / min</span><span class="value" id="vTools">0</span></div>
+  <div class="stat"><span class="label">Cost today</span><span class="value" id="vCost">$0</span></div>
+  <div class="stat"><span class="label">Last update</span><span class="value" id="vClock">—</span></div>
+</div>
+<div id="cards" class="cards"></div>
+<div id="empty" class="empty">No active sessions in the last 2 minutes.</div>
+<script nonce="${nonce}">
+(function() {
+  const vscode = acquireVsCodeApi();
+  const cardsEl = document.getElementById('cards');
+  const emptyEl = document.getElementById('empty');
+  const vActive = document.getElementById('vActive');
+  const vTools = document.getElementById('vTools');
+  const vCost = document.getElementById('vCost');
+  const vClock = document.getElementById('vClock');
+
+  function fmtDur(ms) {
+    if (!ms) return '—';
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + (s - m*60) + 's';
+    const h = Math.floor(m / 60);
+    return h + 'h ' + (m - h*60) + 'm';
+  }
+  function nowText(now) {
+    if (now.kind === 'in_tool') return '⚙ in tool: ' + now.detail + (now.ageSec ? '  ·  ' + now.ageSec + 's' : '');
+    if (now.kind === 'responding') return '✎ responding  ·  ' + now.ageSec + 's';
+    return '◌ idle  ·  ' + (now.ageSec ? 'last activity ' + now.ageSec + 's ago' : '');
+  }
+
+  function render(payload) {
+    vActive.textContent = String(payload.activeCount);
+    vTools.textContent = String(payload.toolsPerMin);
+    vCost.textContent = '$' + payload.costToday.toFixed(2);
+    vClock.textContent = new Date().toLocaleTimeString();
+
+    if (payload.cards.length === 0) {
+      emptyEl.style.display = 'block';
+      cardsEl.innerHTML = '';
+      return;
+    }
+    emptyEl.style.display = 'none';
+
+    // Build card DOM diff-friendly: index by session_id
+    const have = new Map();
+    for (const child of cardsEl.children) have.set(child.dataset.id, child);
+
+    const seen = new Set();
+    for (const c of payload.cards) {
+      seen.add(c.session_id);
+      let el = have.get(c.session_id);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'card';
+        el.dataset.id = c.session_id;
+        el.innerHTML = '<div class="title"></div><div class="sub"></div><div class="now"></div><div class="row"></div>';
+        cardsEl.appendChild(el);
+      }
+      el.querySelector('.title').textContent = c.title;
+      el.querySelector('.sub').textContent = (c.project || '(no project)') + '  ·  elapsed ' + fmtDur(c.elapsedMs);
+      const nowEl = el.querySelector('.now');
+      nowEl.className = 'now ' + c.now.kind;
+      nowEl.textContent = nowText(c.now);
+      const row = el.querySelector('.row');
+      row.innerHTML = '';
+      const pills = [
+        '💬 ' + c.messages + ' msgs',
+        '🔧 ' + c.tools + ' tools' + (c.toolsLast60s > 0 ? ' (' + c.toolsLast60s + '/min)' : ''),
+        c.subagents > 0 ? '🪄 ' + c.subagents : null,
+        '$' + c.cost_usd.toFixed(2),
+      ].filter(Boolean);
+      for (const p of pills) {
+        const span = document.createElement('span');
+        span.className = 'pill';
+        span.textContent = p;
+        row.appendChild(span);
+      }
+    }
+    // Remove cards that vanished
+    for (const [id, el] of have) {
+      if (!seen.has(id)) el.remove();
+    }
+  }
+
+  window.addEventListener('message', (e) => {
+    if (e.data?.command === 'update') render(e.data.payload);
+  });
+})();
+</script>
+</body></html>`;
+}

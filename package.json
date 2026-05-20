@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -77,6 +77,11 @@
         "icon": "$(graph)"
       },
       {
+        "command": "claudeSessions.openLiveMonitor",
+        "title": "Open live monitor",
+        "icon": "$(pulse)"
+      },
+      {
         "command": "claudeSessions.classifyTopics",
         "title": "Analyze conversation topics"
       },
@@ -124,19 +129,24 @@
     "menus": {
       "view/title": [
         {
-          "command": "claudeSessions.openInsights",
+          "command": "claudeSessions.openLiveMonitor",
           "when": "view == claudeSessions",
           "group": "navigation@1"
         },
         {
-          "command": "claudeSessions.showAgentGraph",
+          "command": "claudeSessions.openInsights",
           "when": "view == claudeSessions",
           "group": "navigation@2"
         },
         {
-          "command": "claudeSessions.refresh",
+          "command": "claudeSessions.showAgentGraph",
           "when": "view == claudeSessions",
           "group": "navigation@3"
+        },
+        {
+          "command": "claudeSessions.refresh",
+          "when": "view == claudeSessions",
+          "group": "navigation@4"
         },
         {
           "command": "claudeKbChanges.refresh",

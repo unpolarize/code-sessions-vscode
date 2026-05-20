@@ -10,6 +10,7 @@ import { syncToStore } from "./jsonlIndexer";
 import { classifySession } from "./topicClassifier";
 import { openAgentGraph } from "./agentGraph";
 import { openTrajectoryView } from "./trajectoryView";
+import { openLiveMonitor } from "./liveMonitor";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -796,13 +797,33 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   ctx.subscriptions.push({ dispose: () => store?.close() });
 
+  // KB view uses createTreeView so we can set its title dynamically based on
+  // the configured repoPath (e.g. "docs changes" instead of "KB changes").
+  const kbView = vscode.window.createTreeView("claudeKbChanges", {
+    treeDataProvider: kb,
+    showCollapseAll: false,
+  });
+  const refreshKbTitle = () => {
+    const repo = vscode.workspace.getConfiguration("claudeKbChanges").get<string>("repoPath", "");
+    const base = repo ? path.basename(expandHome(repo)) : "";
+    kbView.title = base ? `${base} changes` : "KB changes";
+  };
+  refreshKbTitle();
+  ctx.subscriptions.push(kbView);
+
   ctx.subscriptions.push(
     vscode.window.registerTreeDataProvider("claudeSessions", sessions),
-    vscode.window.registerTreeDataProvider("claudeKbChanges", kb),
     vscode.window.registerTreeDataProvider("claudeProjectsActivity", projects),
 
     vscode.commands.registerCommand("claudeSessions.refresh", () => sessions.refresh()),
     vscode.commands.registerCommand("claudeSessions.openInsights", () => openInsightsView(ctx, store)),
+    vscode.commands.registerCommand("claudeSessions.openLiveMonitor", () => {
+      if (!store) {
+        vscode.window.showWarningMessage("Live monitor requires the SQLite cache. Enable claudeSessions.cacheEnabled.");
+        return;
+      }
+      openLiveMonitor(ctx, store);
+    }),
     vscode.commands.registerCommand("claudeKbChanges.refresh", () => kb.refresh()),
     vscode.commands.registerCommand("claudeProjectsActivity.refresh", () => projects.refresh()),
 
@@ -1025,7 +1046,10 @@ export function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("claudeSessions")) sessions.refresh();
-      if (e.affectsConfiguration("claudeKbChanges")) kb.refresh();
+      if (e.affectsConfiguration("claudeKbChanges")) {
+        kb.refresh();
+        if (e.affectsConfiguration("claudeKbChanges.repoPath")) refreshKbTitle();
+      }
       if (e.affectsConfiguration("claudeProjectsActivity")) projects.refresh();
     }),
   );
@@ -1033,8 +1057,10 @@ export function activate(ctx: vscode.ExtensionContext) {
 
 async function openChangedFile(c: FileChange) {
   try {
-    const doc = await vscode.workspace.openTextDocument(c.abs);
-    await vscode.window.showTextDocument(doc);
+    // `vscode.open` respects the user's workbench.editorAssociations, so .md
+    // files open in markdown-for-humans (or whatever they've configured) when
+    // the association is set. Falls back to the default text editor otherwise.
+    await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(c.abs));
   } catch (e: any) {
     vscode.window.showWarningMessage(`Cannot open ${c.abs}: ${e.message}`);
   }
