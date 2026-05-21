@@ -41,6 +41,10 @@ export class BackgroundClassifier {
   // Last error blurb so the user can tell when the daemon is stuck.
   private lastError: string | null = null;
   private lastErrorAt = 0;
+  // User-facing controls
+  private paused = false;
+  // Session ids that hit any error this run — retry-failed re-enqueues them.
+  private failedIds = new Set<string>();
 
   constructor(
     private readonly ctx: vscode.ExtensionContext,
@@ -58,6 +62,8 @@ export class BackgroundClassifier {
       STATUS_BAR_PRIORITY,
     );
     this.statusItem.name = "Claude · auto-classify";
+    // Click → Quick Pick with Pause/Resume/Retry.
+    this.statusItem.command = "claudeSessions.classifyControls";
     this.ctx.subscriptions.push(this.statusItem);
     this.renderStatus();
 
@@ -99,6 +105,46 @@ export class BackgroundClassifier {
     this.discoveryTick();
   }
 
+  /** True if the worker is currently paused. */
+  isPaused(): boolean { return this.paused; }
+
+  /** Number of sessions that have hit at least one error this run. */
+  failedCount(): number { return this.failedIds.size; }
+
+  /** Toggle the paused flag. The discovery loop keeps running so the queue
+   * is up-to-date when the user resumes. */
+  togglePause(): void {
+    this.paused = !this.paused;
+    this.renderStatus();
+  }
+
+  setPaused(p: boolean): void {
+    if (this.paused === p) return;
+    this.paused = p;
+    this.renderStatus();
+  }
+
+  /** Move every session that errored this run back into the queue. The list
+   * of failed ids is cleared; new errors during the retry will repopulate it
+   * as they happen. */
+  retryFailed(): number {
+    const ids = [...this.failedIds];
+    this.failedIds.clear();
+    let added = 0;
+    for (const id of ids) {
+      if (this.inQueue.has(id)) continue;
+      this.inQueue.add(id);
+      this.queue.push(id);
+      added += 1;
+    }
+    if (added > 0) {
+      const total = this.queue.length + (this.busy ? 1 : 0);
+      if (total > this.peakQueue) this.peakQueue = total;
+    }
+    this.renderStatus();
+    return added;
+  }
+
   // ----- internals -----
 
   private isEnabled(): boolean {
@@ -137,7 +183,7 @@ export class BackgroundClassifier {
   }
 
   private async workerTick(): Promise<void> {
-    if (this.stopped || this.busy || !this.isEnabled()) return;
+    if (this.stopped || this.busy || !this.isEnabled() || this.paused) return;
     const id = this.queue.shift();
     if (!id) {
       this.renderStatus();
@@ -178,6 +224,7 @@ export class BackgroundClassifier {
       if (res.errors.length > 0) {
         this.lastError = res.errors[0].slice(0, 200);
         this.lastErrorAt = Date.now();
+        this.failedIds.add(id);
       }
       // If we got rate-limited / capped, pause discovery for a while.
       if (res.errors.some((e) => /rate.?limit|usage.?cap/i.test(e))) {
@@ -186,6 +233,7 @@ export class BackgroundClassifier {
     } catch (e: any) {
       this.lastError = String(e?.message ?? e).slice(0, 200);
       this.lastErrorAt = Date.now();
+      this.failedIds.add(id);
     } finally {
       this.busy = false;
       this.currentId = null;
@@ -217,13 +265,39 @@ export class BackgroundClassifier {
       this.statusItem.hide();
       return;
     }
-    if (this.queue.length === 0 && !this.busy) {
-      // Idle — show a brief "✓ N classified" only if we did work this session.
-      if (this.classifiedThisRun > 0) {
-        this.statusItem.text = `$(check) ${this.classifiedThisRun} turns classified`;
+
+    const pending = this.queue.length + (this.busy ? 1 : 0);
+    const idx = this.sessionsStarted;
+    const tot = Math.max(this.peakQueue, idx);
+    const failed = this.failedIds.size;
+
+    // ---- Paused state ----
+    if (this.paused) {
+      this.statusItem.text = `$(debug-pause) Paused · ${pending} queued${failed ? ` · ${failed} failed` : ""}`;
+      const md = new vscode.MarkdownString();
+      md.isTrusted = true;
+      md.appendMarkdown(`**Background topic classification — paused**\n\n`);
+      md.appendMarkdown(`${pending} session(s) waiting.\n`);
+      if (failed) md.appendMarkdown(`${failed} session(s) errored this run.\n`);
+      md.appendMarkdown(`\n_Click to resume / retry failed._`);
+      this.statusItem.tooltip = md;
+      this.statusItem.show();
+      return;
+    }
+
+    // ---- Idle (caught up) ----
+    if (pending === 0 && !this.busy) {
+      if (this.classifiedThisRun > 0 || failed > 0) {
+        this.statusItem.text = failed > 0
+          ? `$(warning) ${this.classifiedThisRun} classified · ${failed} failed`
+          : `$(check) ${this.classifiedThisRun} turns classified`;
         const md = new vscode.MarkdownString();
+        md.isTrusted = true;
         md.appendMarkdown(`**Background topic classification — idle**\n\n`);
-        md.appendMarkdown(`${this.classifiedThisRun} turns classified across ${this.sessionsStarted} session(s) this run.\n`);
+        md.appendMarkdown(`${this.classifiedThisRun} turn(s) classified across ${this.sessionsStarted} session(s) this run.\n`);
+        if (failed > 0) {
+          md.appendMarkdown(`\n${failed} session(s) errored. _Click to retry._\n`);
+        }
         if (this.lastError) md.appendMarkdown(`\n_Last error:_ ${escMd(this.lastError)}\n`);
         this.statusItem.tooltip = md;
         this.statusItem.show();
@@ -232,12 +306,8 @@ export class BackgroundClassifier {
       }
       return;
     }
-    const pending = this.queue.length + (this.busy ? 1 : 0);
-    const idx = this.sessionsStarted;        // 1-based: this is the n-th session
-    const tot = Math.max(this.peakQueue, idx); // best-effort denominator
 
-    // Status-bar text: keep it short but show the live counter so the user
-    // can tell it's moving.
+    // ---- Running ----
     let text: string;
     if (this.busy && this.currentTitle) {
       const turnPart = this.currentTotal > 0 ? ` · ${this.currentDone}/${this.currentTotal} turns` : "";
@@ -245,13 +315,15 @@ export class BackgroundClassifier {
     } else {
       text = `$(sync~spin) Classifying · ${pending} queued`;
     }
+    if (failed > 0) text += ` · ${failed} failed`;
     this.statusItem.text = text;
 
-    // Rich tooltip with everything we know.
     const md = new vscode.MarkdownString();
     md.isTrusted = true;
     md.appendMarkdown(`**Background topic classification**\n\n`);
-    md.appendMarkdown(`Session **${idx} of ${tot}** · ${pending} pending\n\n`);
+    md.appendMarkdown(`Session **${idx} of ${tot}** · ${pending} pending`);
+    if (failed > 0) md.appendMarkdown(` · **${failed} failed**`);
+    md.appendMarkdown(`\n\n`);
     if (this.busy && this.currentTitle) {
       md.appendMarkdown(`Currently: \`${escMd(this.currentTitle)}\``);
       if (this.currentTotal > 0) {
@@ -266,6 +338,7 @@ export class BackgroundClassifier {
       md.appendMarkdown(`_Waiting for the next tick to pick up the next session…_\n`);
     }
     md.appendMarkdown(`\n${this.classifiedThisRun} turn(s) classified this run.\n`);
+    if (failed > 0) md.appendMarkdown(`\n_Click to pause or retry failed sessions._\n`);
     if (this.lastError) {
       const ageSec = Math.max(0, Math.floor((Date.now() - this.lastErrorAt) / 1000));
       md.appendMarkdown(`\n_Last error (${ageSec}s ago):_ ${escMd(this.lastError)}\n`);

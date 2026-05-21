@@ -322,31 +322,38 @@ export async function classifySession(
     }
 
     result.batches += 1;
-    const got = new Set(topics.map((t) => t.id));
+    // Defensive filter: drop topics whose id isn't in this batch's turn_uuid
+    // set. Local models occasionally hallucinate or truncate ids; inserting
+    // them would trip the `turn_topic.turn_uuid REFERENCES turn(turn_uuid)`
+    // foreign-key constraint and abort the whole transaction.
+    const validIds = new Set(batch.map((t) => t.turn_uuid));
+    const accepted = topics.filter((p) => validIds.has(p.id) && p.topic.trim().length > 0);
+    const hallucinated = topics.length - accepted.length;
+    const got = new Set(accepted.map((t) => t.id));
     const missed = batch.filter((t) => !got.has(t.turn_uuid));
 
-    store.upsertTopics(
-      topics.map((p) => ({
-        turn_uuid: p.id,
-        topic: p.topic,
-        model: modelTag,
-        prompt_rev: PROMPT_REV,
-        batch_id: batchId,
-      })),
-    );
-    result.classified += topics.length;
+    if (accepted.length > 0) {
+      store.upsertTopics(
+        accepted.map((p) => ({
+          turn_uuid: p.id,
+          topic: p.topic,
+          model: modelTag,
+          prompt_rev: PROMPT_REV,
+          batch_id: batchId,
+        })),
+      );
+    }
+    result.classified += accepted.length;
 
-    if (missed.length === 0) {
+    if (missed.length === 0 && hallucinated === 0) {
       store.finishBatch(batchId, "ok", undefined, inputTokens, outputTokens);
     } else {
-      store.finishBatch(
-        batchId,
-        "partial",
-        `${missed.length} turns missing in response`,
-        inputTokens,
-        outputTokens,
-      );
-      result.errors.push(`batch ${batchId}: ${missed.length}/${batch.length} turns missing`);
+      const parts: string[] = [];
+      if (missed.length > 0) parts.push(`${missed.length} turns missing in response`);
+      if (hallucinated > 0) parts.push(`${hallucinated} unknown ids dropped`);
+      const msg = parts.join("; ");
+      store.finishBatch(batchId, "partial", msg, inputTokens, outputTokens);
+      result.errors.push(`batch ${batchId}: ${msg}`);
     }
 
     if (opts.onProgress) opts.onProgress(result.classified, todo.length);

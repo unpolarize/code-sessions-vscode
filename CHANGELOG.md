@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.2 — 2026-05-20
+
+Bug fix + controls for the background topic-classification daemon.
+
+- **Fix: `FOREIGN KEY constraint failed`** while upserting topics ([topicClassifier.ts](src/topicClassifier.ts), [db.ts](src/db.ts)). Local models occasionally return a `turn_uuid` that isn't in the batch (hallucinated or truncated); because `upsertTopics` ran every row in one transaction, the bad row rolled back the legitimate topics alongside it. Two-layer fix:
+  - The classifier filters returned topics by the batch's known `turn_uuid` set before calling `upsertTopics`; unknown ids count as `N unknown ids dropped` in the batch's partial-finish message (separate from the existing `N turns missing in response`).
+  - `upsertTopics` catches per-row `FOREIGN KEY` / `UNIQUE` violations so a single bad row never aborts the rest of the transaction. Other errors still propagate.
+- **Pause / Resume.** The worker tick now bails when paused; discovery keeps running so the queue is fresh when you resume.
+- **Retry failed.** Any session whose `classifySession` returned errors (or threw) is tracked in a `failedIds` set; a new control re-queues all of them in one click.
+- **Status-bar tile is clickable.** Opens a Quick Pick with Pause/Resume, Retry-N-failed (only when there are failures), and Open auto-classify settings. The tile text now appends `· N failed` while running and turns into `$(warning) N classified · M failed` when idle with errors present.
+- **Palette commands** added: `Auto-classify controls (pause / retry failed)`, `Auto-classify: pause / resume`, `Auto-classify: retry failed sessions`.
+
 ## 0.13.1 — 2026-05-20
 
 Richer progress UI for the background topic-classification daemon ([src/backgroundClassifier.ts](src/backgroundClassifier.ts)):

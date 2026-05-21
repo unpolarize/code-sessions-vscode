@@ -1246,6 +1246,55 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.window.registerTreeDataProvider("claudeProjectsActivity", projects),
     vscode.window.registerTreeDataProvider("claudeTasks", tasks),
 
+    vscode.commands.registerCommand("claudeSessions.classifyTogglePause", () => {
+      if (!bgClassifier) return;
+      bgClassifier.togglePause();
+      vscode.window.setStatusBarMessage(
+        bgClassifier.isPaused() ? "Auto-classify paused" : "Auto-classify resumed",
+        2500,
+      );
+    }),
+    vscode.commands.registerCommand("claudeSessions.classifyRetryFailed", () => {
+      if (!bgClassifier) return;
+      const added = bgClassifier.retryFailed();
+      vscode.window.setStatusBarMessage(
+        added > 0 ? `Re-queued ${added} failed session(s)` : "No failed sessions to retry",
+        2500,
+      );
+    }),
+    vscode.commands.registerCommand("claudeSessions.classifyControls", async () => {
+      if (!bgClassifier) return;
+      const paused = bgClassifier.isPaused();
+      const failed = bgClassifier.failedCount();
+      type Item = vscode.QuickPickItem & { id: "pause" | "retry" | "settings" };
+      const items: Item[] = [];
+      items.push({
+        id: "pause",
+        label: paused ? "$(play) Resume auto-classify" : "$(debug-pause) Pause auto-classify",
+        description: paused ? "Queue keeps growing while paused" : "Pause the worker; discovery keeps running",
+      });
+      if (failed > 0) {
+        items.push({
+          id: "retry",
+          label: `$(refresh) Retry ${failed} failed session${failed === 1 ? "" : "s"}`,
+          description: "Re-queue every session that errored this run",
+        });
+      }
+      items.push({
+        id: "settings",
+        label: "$(settings-gear) Open auto-classify settings",
+        description: "claudeSessions.classify.*",
+      });
+      const pick = await vscode.window.showQuickPick(items, {
+        placeHolder: "Background topic classification",
+      });
+      if (!pick) return;
+      if (pick.id === "pause") vscode.commands.executeCommand("claudeSessions.classifyTogglePause");
+      else if (pick.id === "retry") vscode.commands.executeCommand("claudeSessions.classifyRetryFailed");
+      else if (pick.id === "settings")
+        vscode.commands.executeCommand("workbench.action.openSettings", "@ext:zhirafovod.claude-sessions classify");
+    }),
+
     vscode.commands.registerCommand("claudeSessions.search", async (initialQ?: string) => {
       if (!store) {
         vscode.window.showWarningMessage(

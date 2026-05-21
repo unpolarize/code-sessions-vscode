@@ -421,15 +421,26 @@ export class SessionStore {
     const now = Date.now();
     const insertMany = this.db.transaction((items: typeof rows) => {
       for (const r of items) {
-        stmt.run({
-          turn_uuid: r.turn_uuid,
-          topic: r.topic,
-          topic_norm: norm(r.topic),
-          classified_at: now,
-          model: r.model,
-          prompt_rev: r.prompt_rev,
-          batch_id: r.batch_id,
-        });
+        try {
+          stmt.run({
+            turn_uuid: r.turn_uuid,
+            topic: r.topic,
+            topic_norm: norm(r.topic),
+            classified_at: now,
+            model: r.model,
+            prompt_rev: r.prompt_rev,
+            batch_id: r.batch_id,
+          });
+        } catch (e: any) {
+          // Most common case here is a FOREIGN KEY violation when the model
+          // returned a turn_uuid that isn't in the `turn` table (hallucinated
+          // or truncated). Caller already filters known ids; this is the
+          // belt-and-suspenders so one bad row never rolls back the rest.
+          if (!/FOREIGN KEY|UNIQUE/i.test(String(e?.message ?? ""))) {
+            // Anything else is unexpected — re-throw to surface it.
+            throw e;
+          }
+        }
       }
     });
     insertMany(rows);

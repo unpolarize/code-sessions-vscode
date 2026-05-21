@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -102,6 +102,18 @@
         "command": "claudeSessions.search",
         "title": "Search Claude history",
         "icon": "$(search)"
+      },
+      {
+        "command": "claudeSessions.classifyControls",
+        "title": "Auto-classify controls (pause / retry failed)"
+      },
+      {
+        "command": "claudeSessions.classifyTogglePause",
+        "title": "Auto-classify: pause / resume"
+      },
+      {
+        "command": "claudeSessions.classifyRetryFailed",
+        "title": "Auto-classify: retry failed sessions"
       },
       {
         "command": "claudeSessions.showTrajectory",
