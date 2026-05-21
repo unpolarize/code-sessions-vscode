@@ -10,11 +10,17 @@ import * as vscode from "vscode";
 import { UMAP } from "umap-js";
 import { SessionStore, SessionRow } from "./db";
 import { embedMany, EmbedConfig } from "./embedding";
+import { classifySession } from "./topicClassifier";
 
 interface GraphPoint {
   session_id: string;
+  /** 2D UMAP coords for the canvas scatter. */
   x: number;
   y: number;
+  /** 3D UMAP coords (independent run; do not mix with x/y). */
+  x3: number;
+  y3: number;
+  z3: number;
   title: string;
   project: string | null;
   endedAt: number | null;
@@ -28,6 +34,9 @@ interface ClusterLabel {
   cluster: number;
   cx: number;
   cy: number;
+  cx3: number;
+  cy3: number;
+  cz3: number;
   label: string;
   count: number;
   hull: Array<{ x: number; y: number }>;
@@ -220,8 +229,10 @@ async function buildLayout(
   // UMAP needs at least n_neighbors+1 rows. Below that just lay them on a
   // line — the graph still works.
   let coords: number[][];
+  let coords3: number[][];
   if (vectors.length < 8) {
     coords = vectors.map((_, i) => [i, 0]);
+    coords3 = vectors.map((_, i) => [i, 0, 0]);
   } else {
     const umap = new UMAP({
       nNeighbors: Math.min(30, vectors.length - 1),
@@ -229,6 +240,13 @@ async function buildLayout(
       nComponents: 2,
     });
     coords = umap.fit(vectors);
+    progress.report({ message: "Embedding (3D)…" });
+    const umap3 = new UMAP({
+      nNeighbors: Math.min(30, vectors.length - 1),
+      minDist: 0.05,
+      nComponents: 3,
+    });
+    coords3 = umap3.fit(vectors);
   }
 
   // Persist coords
@@ -287,6 +305,9 @@ async function buildLayout(
       session_id: id,
       x: coords[i][0],
       y: coords[i][1],
+      x3: coords3[i][0] ?? 0,
+      y3: coords3[i][1] ?? 0,
+      z3: coords3[i][2] ?? 0,
       title: s?.title || id.slice(0, 8),
       project: s?.project_id ?? null,
       endedAt: s?.ended_at ?? null,
@@ -314,17 +335,23 @@ async function buildLayout(
     const topicsBySession = store.topTopicsBySession(allMemberIds, 5);
     for (const [cid, arr] of byCluster) {
       if (arr.length < 3) continue;
-      let cx = 0, cy = 0;
+      let cx = 0, cy = 0, cx3 = 0, cy3 = 0, cz3 = 0;
       const counts = new Map<string, number>();
       for (const p of arr) {
         cx += p.x;
         cy += p.y;
+        cx3 += p.x3;
+        cy3 += p.y3;
+        cz3 += p.z3;
         const t = topicsBySession.get(p.session_id);
         if (!t) continue;
         for (const [topic, n] of t.counts) counts.set(topic, (counts.get(topic) ?? 0) + n);
       }
       cx /= arr.length;
       cy /= arr.length;
+      cx3 /= arr.length;
+      cy3 /= arr.length;
+      cz3 /= arr.length;
       let bestTopic = "";
       let bestN = 0;
       for (const [t, n] of counts) {
@@ -345,7 +372,7 @@ async function buildLayout(
             for (const [k, v] of projCounts) if (v > bpN) { bp = k; bpN = v; }
             return bp || `cluster ${cid + 1}`;
           })();
-      clusterLabels.push({ cluster: cid, cx, cy, label, count: arr.length, hull });
+      clusterLabels.push({ cluster: cid, cx, cy, cx3, cy3, cz3, label, count: arr.length, hull });
     }
   }
 
@@ -399,9 +426,81 @@ export async function openAgentGraph(
 
   panel.webview.html = graphHtml(panel.webview, built.points, built.clusterLabels, built.embeddingModel, built.clusterMethod);
 
-  panel.webview.onDidReceiveMessage((msg) => {
+  panel.webview.onDidReceiveMessage(async (msg) => {
     if (msg?.command === "open" && typeof msg.id === "string") {
       onSessionClick(msg.id);
+      return;
+    }
+    if (msg?.command === "classifyAll") {
+      const cCfg = vscode.workspace.getConfiguration("claudeSessions");
+      const backend = cCfg.get<"ollama" | "claude-p">("classify.backend", "ollama");
+      const model = cCfg.get<string>("classify.model", "llama3.2:3b");
+      const batchSize = cCfg.get<number>("classify.batchSize", 20);
+      const claudeBin = cCfg.get<string>("classify.claudeBin", "") || undefined;
+      const ollamaUrl = cCfg.get<string>("embedding.ollamaUrl", "http://127.0.0.1:11434");
+
+      const ids = built.points.map((p) => p.session_id);
+      let totalClassified = 0;
+      const errors: string[] = [];
+
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Classifying ${ids.length} sessions (${backend}/${model})…`,
+          cancellable: true,
+        },
+        async (progress, token) => {
+          let done = 0;
+          for (const id of ids) {
+            if (token.isCancellationRequested) break;
+            done++;
+            progress.report({ message: `${done}/${ids.length}` });
+            try {
+              const res = await classifySession(store, id, {
+                backend,
+                model,
+                batchSize,
+                claudeBin,
+                ollamaUrl,
+              });
+              totalClassified += res.classified;
+              if (res.errors.length) errors.push(...res.errors);
+              if (res.errors.some((e) => /rate.?limit|usage.?cap/i.test(e))) break;
+            } catch (e: any) {
+              errors.push(String(e?.message ?? e));
+            }
+          }
+        },
+      );
+
+      // Rebuild layout + re-render so the new topics flow into cluster labels.
+      try {
+        built = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: "Rebuilding agent graph",
+            cancellable: false,
+          },
+          async (progress) => buildLayout(store, embedCfg, clusterCfg, progress),
+        );
+        panel.webview.html = graphHtml(
+          panel.webview,
+          built.points,
+          built.clusterLabels,
+          built.embeddingModel,
+          built.clusterMethod,
+        );
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Rebuild after classification failed: ${e.message}`);
+      }
+
+      const summary = `Classified ${totalClassified} new turns across ${ids.length} sessions.`;
+      if (errors.length) {
+        vscode.window.showWarningMessage(`${summary} ${errors.length} warnings. First: ${errors[0].slice(0, 200)}`);
+      } else {
+        vscode.window.showInformationMessage(summary);
+      }
+      return;
     }
   });
 
@@ -461,6 +560,9 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
   .sub { color: var(--vscode-descriptionForeground); font-size: 11px; }
   .toolbar { margin-left: auto; display: flex; gap: 6px; align-items: center; }
   .toolbar label { font-size: 11px; color: var(--vscode-descriptionForeground); user-select: none; }
+  .toolbar button { font: 11px var(--vscode-font-family); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); background: var(--vscode-button-secondaryBackground, transparent); border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 1px 8px; cursor: pointer; min-width: 22px; }
+  .toolbar button:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.15))); }
+  .toolbar button.modeBtn.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: var(--vscode-button-background); }
   #wrap { position: relative; width: 100vw; height: calc(100vh - 60px); }
   canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
   #tip { position: absolute; pointer-events: none; padding: 4px 8px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 3px; font-size: 11px; max-width: 320px; white-space: pre-wrap; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
@@ -471,8 +573,14 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
   <h1>Agent graph</h1>
   <span class="sub">${points.length} sessions · ${clusterLabels.length} clusters via ${escapeHtml(clusterMethod)} · embedder: ${escapeHtml(modelId)} · hover for details · click to open</span>
   <span class="toolbar">
+    <button id="mode2d" class="modeBtn active" title="2D scatter">2D</button>
+    <button id="mode3d" class="modeBtn" title="3D scatter — drag to orbit, wheel to zoom">3D</button>
     <label><input type="checkbox" id="colorByCluster" checked> color by cluster</label>
     <label><input type="checkbox" id="showLabels" checked> cluster labels</label>
+    <button id="zoomOut" title="Zoom out (or scroll down on the graph)">−</button>
+    <button id="zoomIn" title="Zoom in (or scroll up on the graph)">+</button>
+    <button id="resetView" title="Reset view (or double-click the graph)">reset</button>
+    <button id="classifyAll" title="Run topic classification across every session in this graph, then rebuild clusters">Classify all topics</button>
   </span>
 </header>
 <div id="wrap">
@@ -516,10 +624,81 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     return PALETTE[c % PALETTE.length];
   }
 
-  function project(p) {
+  // Screen-space view transform applied on top of the base data→pixel mapping.
+  // (scale, tx, ty) lets the user wheel-zoom about the cursor and drag-pan.
+  let viewScale = 1, viewTx = 0, viewTy = 0;
+  const MIN_SCALE = 0.2, MAX_SCALE = 40;
+
+  // ---- 3D state ---- //
+  let mode = '2d'; // '2d' | '3d'
+  // Compute 3D extents once (data → normalized cube)
+  let x3Min = Infinity, x3Max = -Infinity, y3Min = Infinity, y3Max = -Infinity, z3Min = Infinity, z3Max = -Infinity;
+  for (const p of data) {
+    if (p.x3 < x3Min) x3Min = p.x3; if (p.x3 > x3Max) x3Max = p.x3;
+    if (p.y3 < y3Min) y3Min = p.y3; if (p.y3 > y3Max) y3Max = p.y3;
+    if (p.z3 < z3Min) z3Min = p.z3; if (p.z3 > z3Max) z3Max = p.z3;
+  }
+  if (!isFinite(x3Min)) { x3Min = 0; x3Max = 1; y3Min = 0; y3Max = 1; z3Min = 0; z3Max = 1; }
+  if (x3Min === x3Max) x3Max = x3Min + 1;
+  if (y3Min === y3Max) y3Max = y3Min + 1;
+  if (z3Min === z3Max) z3Max = z3Min + 1;
+
+  // Orbit camera: yaw around world-Y, pitch around camera-X, dolly via camDist.
+  // pan3X/pan3Y shift the projected image; do not change the orbit center.
+  let yaw = 0.6, pitch = 0.35, camDist = 3.0, pan3X = 0, pan3Y = 0;
+  const FOV = (45 * Math.PI) / 180;
+  function resetCamera3d() { yaw = 0.6; pitch = 0.35; camDist = 3.0; pan3X = 0; pan3Y = 0; }
+
+  function baseProject(p) {
     const sx = PAD + ((p.x - minX) / (maxX - minX)) * (W - 2 * PAD);
     const sy = PAD + ((p.y - minY) / (maxY - minY)) * (H - 2 * PAD);
     return [sx, sy];
+  }
+  function project2(p) {
+    const [bx, by] = baseProject(p);
+    return [bx * viewScale + viewTx, by * viewScale + viewTy];
+  }
+  // 3D project: returns [sx, sy, depth] in screen px (or NaN behind camera).
+  function project3(x3, y3, z3) {
+    const nx = ((x3 - x3Min) / (x3Max - x3Min)) * 2 - 1;
+    const ny = ((y3 - y3Min) / (y3Max - y3Min)) * 2 - 1;
+    const nz = ((z3 - z3Min) / (z3Max - z3Min)) * 2 - 1;
+    // Yaw around Y
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const x1 = nx * cy + nz * sy;
+    const z1 = -nx * sy + nz * cy;
+    // Pitch around X
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const y2 = ny * cp - z1 * sp;
+    const z2 = ny * sp + z1 * cp;
+    const zcam = camDist + z2;
+    if (zcam < 0.05) return [NaN, NaN, zcam];
+    const f = (Math.min(W, H) * 0.5) / Math.tan(FOV * 0.5);
+    const sxp = W * 0.5 + (x1 * f) / zcam + pan3X;
+    const syp = H * 0.5 - (y2 * f) / zcam + pan3Y;
+    return [sxp, syp, zcam];
+  }
+  function project(p) {
+    if (mode === '3d') {
+      const [sx, sy] = project3(p.x3, p.y3, p.z3);
+      return [sx, sy];
+    }
+    return project2(p);
+  }
+  function zoomAt(cx, cy, factor) {
+    if (mode === '3d') {
+      camDist = Math.max(0.4, Math.min(20, camDist / factor));
+      return;
+    }
+    const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, viewScale * factor));
+    const k = next / viewScale;
+    viewTx = cx - (cx - viewTx) * k;
+    viewTy = cy - (cy - viewTy) * k;
+    viewScale = next;
+  }
+  function resetView() {
+    if (mode === '3d') { resetCamera3d(); return; }
+    viewScale = 1; viewTx = 0; viewTy = 0;
   }
 
   // Screen-space label positions (recomputed every layout()).
@@ -622,6 +801,7 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     const useCluster = cbCluster.checked;
+    if (mode === '3d') { draw3d(useCluster); return; }
 
     // --- Hulls (behind dots) ---
     if (useCluster) {
@@ -698,8 +878,64 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     }
   }
 
+  function draw3d(useCluster) {
+    // Project every point, then painter-sort back-to-front by depth.
+    const proj = new Array(data.length);
+    for (let i = 0; i < data.length; i++) {
+      const p = data[i];
+      const [sx, sy, depth] = project3(p.x3, p.y3, p.z3);
+      proj[i] = { idx: i, sx, sy, depth };
+    }
+    proj.sort((a, b) => b.depth - a.depth);
+    // Distance-based size cue (closer dots are slightly larger)
+    const baseR = 3.4;
+    for (const q of proj) {
+      if (!isFinite(q.sx)) continue;
+      const p = data[q.idx];
+      ctx.fillStyle = useCluster ? clusterColor(p.cluster) : ageColor(p.endedAt);
+      let alpha;
+      if (focusedCluster != null) {
+        alpha = p.cluster === focusedCluster ? 0.95 : 0.2;
+      } else {
+        alpha = p.cluster < 0 && useCluster ? 0.32 : 0.82;
+      }
+      ctx.globalAlpha = alpha;
+      const r = Math.max(1.6, Math.min(5.5, baseR * (3.0 / Math.max(0.6, q.depth))));
+      ctx.beginPath();
+      ctx.arc(q.sx, q.sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    // Labels: anchored at projected 3D centroid (no force-layout in 3D).
+    if (cbLabels.checked && useCluster && labels.length > 0) {
+      ctx.font = '11px var(--vscode-font-family)';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      const bg = bgColor();
+      // Sort labels by depth so nearer text wins overlap.
+      const lp = labels.map((l) => {
+        const [sx, sy, depth] = project3(l.cx3, l.cy3, l.cz3);
+        return { l, sx, sy, depth };
+      }).sort((a, b) => b.depth - a.depth);
+      for (const e of lp) {
+        if (!isFinite(e.sx)) continue;
+        const dim = focusedCluster != null && focusedCluster !== e.l.cluster;
+        ctx.globalAlpha = dim ? 0.25 : 0.95;
+        const text = e.l.label + ' · ' + e.l.count;
+        ctx.strokeStyle = bg;
+        ctx.lineWidth = 3;
+        ctx.strokeText(text, e.sx + 6, e.sy - 6);
+        ctx.fillStyle = clusterColor(e.l.cluster);
+        ctx.fillText(text, e.sx + 6, e.sy - 6);
+      }
+      ctx.globalAlpha = 1;
+      ctx.textAlign = 'start';
+      ctx.textBaseline = 'alphabetic';
+    }
+  }
+
   function relayoutAndDraw() {
-    placeLabels();
+    if (mode === '2d') placeLabels();
     draw();
   }
 
@@ -710,6 +946,7 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     let best = null, bestD2 = 64; // ~8 px radius
     for (const p of data) {
       const [sx, sy] = project(p);
+      if (!isFinite(sx)) continue;
       const d2 = (sx - mx) * (sx - mx) + (sy - my) * (sy - my);
       if (d2 < bestD2) { bestD2 = d2; best = p; }
     }
@@ -732,10 +969,55 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     tip.style.top = top + 'px';
   }
 
+  // --- Drag state (panning in 2D, orbiting in 3D) ---
+  let panning = false;
+  let panStartX = 0, panStartY = 0;
+  let panBaseTx = 0, panBaseTy = 0;
+  let panBaseYaw = 0, panBasePitch = 0;
+  let panMoved = 0; // pixels moved during current gesture (to suppress click)
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    panning = true;
+    panMoved = 0;
+    const rect = canvas.getBoundingClientRect();
+    panStartX = e.clientX - rect.left;
+    panStartY = e.clientY - rect.top;
+    if (mode === '3d') {
+      panBaseYaw = yaw;
+      panBasePitch = pitch;
+    } else {
+      panBaseTx = viewTx;
+      panBaseTy = viewTy;
+    }
+    canvas.style.cursor = 'grabbing';
+  });
+  window.addEventListener('mouseup', () => {
+    if (!panning) return;
+    panning = false;
+    canvas.style.cursor = 'grab';
+  });
+
   canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
+    if (panning) {
+      const dx = mx - panStartX;
+      const dy = my - panStartY;
+      panMoved = Math.max(panMoved, Math.abs(dx) + Math.abs(dy));
+      if (mode === '3d') {
+        yaw = panBaseYaw + dx * 0.01;
+        const HALF = Math.PI * 0.5 - 0.05;
+        pitch = Math.max(-HALF, Math.min(HALF, panBasePitch + dy * 0.01));
+      } else {
+        viewTx = panBaseTx + dx;
+        viewTy = panBaseTy + dy;
+      }
+      tip.style.display = 'none';
+      relayoutAndDraw();
+      return;
+    }
     const p = findNear(mx, my);
     if (p) {
       const cost = p.costUsd ? '$' + p.costUsd.toFixed(2) : '\$0';
@@ -745,11 +1027,12 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
       canvas.style.cursor = 'pointer';
     } else {
       tip.style.display = 'none';
-      const hit = hitTestLabel(mx, my) ?? hitTestHull(mx, my);
-      canvas.style.cursor = hit != null ? 'pointer' : 'crosshair';
+      const hit = mode === '2d' ? (hitTestLabel(mx, my) ?? hitTestHull(mx, my)) : null;
+      canvas.style.cursor = hit != null ? 'pointer' : 'grab';
     }
   });
   canvas.addEventListener('click', (e) => {
+    if (panMoved > 4) { panMoved = 0; return; } // it was a drag, not a click
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -758,7 +1041,8 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
       vscode.postMessage({ command: 'open', id: p.session_id });
       return;
     }
-    const cid = hitTestLabel(mx, my) ?? hitTestHull(mx, my);
+    // Hull/label hit-testing is 2D-only (no hulls drawn in 3D mode).
+    const cid = mode === '2d' ? (hitTestLabel(mx, my) ?? hitTestHull(mx, my)) : null;
     if (cid != null) {
       focusedCluster = focusedCluster === cid ? null : cid;
     } else {
@@ -766,6 +1050,52 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     }
     draw();
   });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    // trackpad pinch + wheel scrolls: e.deltaY is pixels; use multiplicative step
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    zoomAt(mx, my, factor);
+    relayoutAndDraw();
+  }, { passive: false });
+  canvas.addEventListener('dblclick', () => {
+    resetView();
+    relayoutAndDraw();
+  });
+  document.getElementById('zoomIn').addEventListener('click', () => {
+    zoomAt(W / 2, H / 2, 1.25);
+    relayoutAndDraw();
+  });
+  document.getElementById('zoomOut').addEventListener('click', () => {
+    zoomAt(W / 2, H / 2, 1 / 1.25);
+    relayoutAndDraw();
+  });
+  document.getElementById('resetView').addEventListener('click', () => {
+    resetView();
+    relayoutAndDraw();
+  });
+  const classifyBtn = document.getElementById('classifyAll');
+  classifyBtn.addEventListener('click', () => {
+    classifyBtn.disabled = true;
+    classifyBtn.textContent = 'Classifying…';
+    vscode.postMessage({ command: 'classifyAll' });
+  });
+  const btn2d = document.getElementById('mode2d');
+  const btn3d = document.getElementById('mode3d');
+  function setMode(m) {
+    if (m === mode) return;
+    mode = m;
+    btn2d.classList.toggle('active', mode === '2d');
+    btn3d.classList.toggle('active', mode === '3d');
+    focusedCluster = null;
+    tip.style.display = 'none';
+    relayoutAndDraw();
+  }
+  btn2d.addEventListener('click', () => setMode('2d'));
+  btn3d.addEventListener('click', () => setMode('3d'));
+  canvas.style.cursor = 'grab';
   window.addEventListener('resize', relayoutAndDraw);
   relayoutAndDraw();
 })();
