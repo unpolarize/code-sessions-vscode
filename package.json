@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -18,7 +18,8 @@
   "activationEvents": [
     "onView:claudeSessions",
     "onView:claudeKbChanges",
-    "onView:claudeProjectsActivity"
+    "onView:claudeProjectsActivity",
+    "onView:claudeTasks"
   ],
   "contributes": {
     "viewsContainers": {
@@ -49,6 +50,12 @@
           "name": "Projects",
           "icon": "$(folder-active)",
           "contextualTitle": "Per-project file changes"
+        },
+        {
+          "id": "claudeTasks",
+          "name": "Tasks",
+          "icon": "$(checklist)",
+          "contextualTitle": "Tasks (Claude sub-agents, scheduled routines, crontab)"
         }
       ]
     },
@@ -60,7 +67,8 @@
       },
       {
         "command": "claudeSessions.resume",
-        "title": "Resume session"
+        "title": "Continue in Claude",
+        "icon": "$(play)"
       },
       {
         "command": "claudeSessions.openTranscript",
@@ -89,6 +97,11 @@
         "command": "claudeSessions.showAgentGraph",
         "title": "Show 2D agent graph",
         "icon": "$(circuit-board)"
+      },
+      {
+        "command": "claudeSessions.search",
+        "title": "Search Claude history",
+        "icon": "$(search)"
       },
       {
         "command": "claudeSessions.showTrajectory",
@@ -124,6 +137,20 @@
       {
         "command": "claudeProjectsActivity.diff",
         "title": "Show diff against HEAD~1"
+      },
+      {
+        "command": "claudeTasks.refresh",
+        "title": "Refresh tasks",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeTasks.editCrontab",
+        "title": "Edit crontab",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "claudeTasks.openSession",
+        "title": "Open parent session"
       }
     ],
     "menus": {
@@ -144,9 +171,14 @@
           "group": "navigation@3"
         },
         {
-          "command": "claudeSessions.refresh",
+          "command": "claudeSessions.search",
           "when": "view == claudeSessions",
           "group": "navigation@4"
+        },
+        {
+          "command": "claudeSessions.refresh",
+          "when": "view == claudeSessions",
+          "group": "navigation@5"
         },
         {
           "command": "claudeKbChanges.refresh",
@@ -157,13 +189,28 @@
           "command": "claudeProjectsActivity.refresh",
           "when": "view == claudeProjectsActivity",
           "group": "navigation"
+        },
+        {
+          "command": "claudeTasks.editCrontab",
+          "when": "view == claudeTasks",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeTasks.refresh",
+          "when": "view == claudeTasks",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
         {
+          "command": "claudeSessions.resume",
+          "when": "view == claudeSessions && (viewItem == session || viewItem == sessionAutomated)",
+          "group": "inline"
+        },
+        {
           "command": "claudeSessions.openTranscript",
           "when": "view == claudeSessions && viewItem == session",
-          "group": "inline"
+          "group": "navigation@1"
         },
         {
           "command": "claudeKbChanges.diff",
@@ -254,10 +301,25 @@
           "default": true,
           "description": "Show a compact 'Claude · N active' indicator in the status bar. Polls every 5 s while sessions are active, 30 s when idle. Hover for a per-session breakdown; click to open the Live monitor."
         },
+        "claudeSessions.awaitingUser.notify": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pop a VS Code toast the first time a session enters an awaiting-user state (AskUserQuestion or ExitPlanMode). The status-bar item and Live monitor banner always highlight these; this only controls the one-shot toast."
+        },
         "claudeSessions.classify.autoOnOpen": {
           "type": "boolean",
           "default": true,
           "description": "When the conversation viewer opens and the session has unclassified turns, run topic classification in the background and refresh when done. Only fires when `classify.backend = ollama` to avoid burning paid `claude-p` tokens automatically."
+        },
+        "claudeSessions.classify.autoBackground": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run topic classification continuously in the background: at extension startup the daemon scans for any session with unclassified turns and works through them one at a time, then re-scans on every sessions-view sync tick so new turns get picked up automatically. Per-turn cache means re-runs cost nothing once classified. Default backend is Ollama; see `classify.allowAutoBackgroundClaude` to opt into claude-p auto-runs."
+        },
+        "claudeSessions.classify.allowAutoBackgroundClaude": {
+          "type": "boolean",
+          "default": false,
+          "description": "Explicit opt-in: allow `classify.autoBackground` to run even when the backend is `claude-p`. Off by default so the daemon never quietly spends subscription tokens."
         },
         "claudeSessions.classify.model": {
           "type": "string",
@@ -312,6 +374,16 @@
           "type": "number",
           "default": 90,
           "description": "Segments above this percentile of cosine distance between consecutive turns are flagged as topic drift in the trajectory view."
+        },
+        "claudeTasks.showCrontab": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the user's crontab as a section in the Tasks view. Clicking a row opens the crontab in an editor; saving installs it via `crontab <file>`."
+        },
+        "claudeTasks.subagentLookbackMin": {
+          "type": "number",
+          "default": 5,
+          "description": "Tasks view: a Claude session counts as 'active sub-tasks running' if its JSONL was modified within this many minutes AND it currently has at least one running subagent. Set to 0 to disable the section."
         }
       }
     }

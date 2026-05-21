@@ -10,10 +10,14 @@ const POLL_INTERVAL_MS = 2000;
 const TAIL_BYTES = 8192;
 
 interface NowStatus {
-  kind: "in_tool" | "responding" | "idle";
+  kind: "in_tool" | "responding" | "idle" | "awaiting_user";
   detail: string;
   ageSec: number;
 }
+
+/** Tools whose open (unanswered) state means the session is blocked on the
+ * human, not on Claude or a shell command. */
+const AWAITS_USER_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 
 interface LiveCard {
   session_id: string;
@@ -101,15 +105,25 @@ function nowStatusFromTail(tail: string, now: number): { status: NowStatus; tool
     }
   }
 
-  // Decide status
+  // Decide status. An open AskUserQuestion / ExitPlanMode means the session
+  // is parked waiting on the human — surface that as its own status so the UI
+  // can highlight it. Otherwise fall back to the most-recent open tool.
   let status: NowStatus = { kind: "idle", detail: "", ageSec: 0 };
   if (openTools.size > 0) {
-    // Pick the most recent open tool
+    let awaitingTs = 0, awaitingName = "";
     let bestTs = 0, bestName = "";
     for (const v of openTools.values()) {
+      if (AWAITS_USER_TOOLS.has(v.name) && v.ts > awaitingTs) {
+        awaitingTs = v.ts;
+        awaitingName = v.name;
+      }
       if (v.ts > bestTs) { bestTs = v.ts; bestName = v.name; }
     }
-    status = { kind: "in_tool", detail: bestName, ageSec: Math.floor((now - bestTs) / 1000) };
+    if (awaitingTs > 0) {
+      status = { kind: "awaiting_user", detail: awaitingName, ageSec: Math.floor((now - awaitingTs) / 1000) };
+    } else {
+      status = { kind: "in_tool", detail: bestName, ageSec: Math.floor((now - bestTs) / 1000) };
+    }
   } else if (lastAssistantText && now - lastAssistantText < 30_000) {
     status = { kind: "responding", detail: "", ageSec: Math.floor((now - lastAssistantText) / 1000) };
   } else {
@@ -244,6 +258,13 @@ function liveHtml(webview: vscode.Webview): string {
   .card .now { font-size: 12px; padding: 6px 8px; border-radius: 4px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
   .now.in_tool { background: rgba(74, 144, 226, 0.15); color: #4a90e2; border: 1px solid rgba(74, 144, 226, 0.5); }
   .now.responding { background: rgba(62, 207, 142, 0.15); color: #3ecf8e; border: 1px solid rgba(62, 207, 142, 0.5); }
+  .now.awaiting_user { background: rgba(229, 159, 73, 0.20); color: #f0a050; border: 1px solid rgba(229, 159, 73, 0.65); font-weight: 600; animation: pulseAwait 1.8s ease-in-out infinite; }
+  @keyframes pulseAwait { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+  .card.awaiting { outline: 1px solid rgba(229, 159, 73, 0.7); outline-offset: -1px; }
+  .alert-banner { display: none; padding: 8px 12px; margin-bottom: 14px; background: rgba(229, 159, 73, 0.18); border: 1px solid rgba(229, 159, 73, 0.7); border-radius: 6px; color: var(--vscode-editor-foreground); font-size: 12px; }
+  .alert-banner.on { display: flex; align-items: center; gap: 8px; }
+  .alert-banner .dot { width: 8px; height: 8px; border-radius: 50%; background: #f0a050; box-shadow: 0 0 0 0 rgba(240,160,80,0.7); animation: pulseDot 1.5s infinite; flex: 0 0 auto; }
+  @keyframes pulseDot { 0% { box-shadow: 0 0 0 0 rgba(240,160,80,0.7); } 70% { box-shadow: 0 0 0 8px rgba(240,160,80,0); } 100% { box-shadow: 0 0 0 0 rgba(240,160,80,0); } }
   .now.idle { background: rgba(160, 160, 160, 0.15); color: var(--vscode-descriptionForeground); border: 1px solid rgba(160, 160, 160, 0.4); }
   .card .row { display: flex; gap: 10px; font-size: 11px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; flex-wrap: wrap; }
   .card .row .pill { background: rgba(160,160,160,0.12); padding: 2px 8px; border-radius: 10px; }
@@ -261,6 +282,7 @@ function liveHtml(webview: vscode.Webview): string {
   <div class="stat"><span class="label">Cost today</span><span class="value" id="vCost">$0</span></div>
   <div class="stat"><span class="label">Last update</span><span class="value" id="vClock">—</span></div>
 </div>
+<div id="alert" class="alert-banner"></div>
 <div id="cards" class="cards"></div>
 <div id="empty" class="empty">No active sessions in the last 2 minutes.</div>
 <script nonce="${nonce}">
@@ -268,6 +290,7 @@ function liveHtml(webview: vscode.Webview): string {
   const vscode = acquireVsCodeApi();
   const cardsEl = document.getElementById('cards');
   const emptyEl = document.getElementById('empty');
+  const alertEl = document.getElementById('alert');
   const vActive = document.getElementById('vActive');
   const vTools = document.getElementById('vTools');
   const vTokens = document.getElementById('vTokens');
@@ -292,6 +315,10 @@ function liveHtml(webview: vscode.Webview): string {
     return h + 'h ' + (m - h*60) + 'm';
   }
   function nowText(now) {
+    if (now.kind === 'awaiting_user') {
+      const label = now.detail === 'AskUserQuestion' ? 'awaiting your answer' : now.detail === 'ExitPlanMode' ? 'awaiting plan approval' : 'awaiting input';
+      return '⚠ ' + label + (now.ageSec ? '  ·  ' + now.ageSec + 's' : '');
+    }
     if (now.kind === 'in_tool') return '⚙ in tool: ' + now.detail + (now.ageSec ? '  ·  ' + now.ageSec + 's' : '');
     if (now.kind === 'responding') return '✎ responding  ·  ' + now.ageSec + 's';
     return '◌ idle  ·  ' + (now.ageSec ? 'last activity ' + now.ageSec + 's ago' : '');
@@ -304,6 +331,18 @@ function liveHtml(webview: vscode.Webview): string {
     vAgents.textContent = String(payload.subagentsToday);
     vCost.textContent = '$' + payload.costToday.toFixed(2);
     vClock.textContent = new Date().toLocaleTimeString();
+
+    // Alert banner: list sessions currently parked on user input.
+    const awaiting = payload.cards.filter(c => c.now.kind === 'awaiting_user');
+    if (awaiting.length === 0) {
+      alertEl.className = 'alert-banner';
+      alertEl.textContent = '';
+    } else {
+      alertEl.className = 'alert-banner on';
+      const titles = awaiting.map(a => a.title).slice(0, 3).join(', ');
+      const more = awaiting.length > 3 ? ' (+' + (awaiting.length - 3) + ' more)' : '';
+      alertEl.innerHTML = '<span class="dot"></span><strong>' + awaiting.length + ' session' + (awaiting.length === 1 ? '' : 's') + '</strong> awaiting your response — ' + titles + more;
+    }
 
     if (payload.cards.length === 0) {
       emptyEl.style.display = 'block';
@@ -327,6 +366,7 @@ function liveHtml(webview: vscode.Webview): string {
         el.innerHTML = '<div class="title"></div><div class="sub"></div><div class="now"></div><div class="row"></div>';
         cardsEl.appendChild(el);
       }
+      el.classList.toggle('awaiting', c.now.kind === 'awaiting_user');
       el.querySelector('.title').textContent = c.title;
       el.querySelector('.sub').textContent = (c.project || '(no project)') + '  ·  elapsed ' + fmtDur(c.elapsedMs);
       const nowEl = el.querySelector('.now');

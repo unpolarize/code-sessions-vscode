@@ -11,6 +11,8 @@ import { classifySession } from "./topicClassifier";
 import { openAgentGraph } from "./agentGraph";
 import { openTrajectoryView } from "./trajectoryView";
 import { openLiveMonitor, buildUpdate, UpdatePayload } from "./liveMonitor";
+import { openSearchView } from "./searchView";
+import { BackgroundClassifier } from "./backgroundClassifier";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -108,7 +110,10 @@ function createLiveStatusBar(
       md.appendMarkdown("---\n\n");
       for (const c of p.cards.slice(0, 8)) {
         let status = "";
-        if (c.now.kind === "in_tool") status = `$(gear) ${c.now.detail} · ${c.now.ageSec}s`;
+        if (c.now.kind === "awaiting_user") {
+          const lbl = c.now.detail === "AskUserQuestion" ? "awaiting your answer" : c.now.detail === "ExitPlanMode" ? "awaiting plan approval" : "awaiting input";
+          status = `$(warning) **${lbl}** · ${c.now.ageSec}s`;
+        } else if (c.now.kind === "in_tool") status = `$(gear) ${c.now.detail} · ${c.now.ageSec}s`;
         else if (c.now.kind === "responding") status = `$(pencil) responding · ${c.now.ageSec}s`;
         else status = `$(circle-outline) idle${c.now.ageSec ? ` · ${c.now.ageSec}s` : ""}`;
         const proj = c.project ? c.project : "(no project)";
@@ -137,23 +142,60 @@ function createLiveStatusBar(
   };
 
   let timer: NodeJS.Timeout | undefined;
+  // Track which sessions we have already notified about so we don't fire a
+  // toast every poll tick; clear an id once the session is no longer awaiting.
+  const notifiedAwaiting = new Set<string>();
   const tick = () => {
     try {
       const payload = buildUpdate(store);
+      const awaiting = payload.cards.filter((c) => c.now.kind === "awaiting_user");
       if (payload.activeCount > 0) {
-        const top = payload.cards[0];
-        const tag =
-          top.now.kind === "in_tool"
-            ? top.now.detail
-            : top.now.kind === "responding"
-              ? "responding"
-              : "idle";
-        item.text = `$(pulse) Claude · ${payload.activeCount} active · ${tag}`;
-        item.backgroundColor = undefined;
+        if (awaiting.length > 0) {
+          // Prefer the awaiting session in the status-bar label.
+          const a = awaiting[0];
+          const lbl = a.now.detail === "ExitPlanMode" ? "awaiting plan" : "awaiting answer";
+          item.text = `$(warning) Claude · ${awaiting.length} ${lbl}`;
+          item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+        } else {
+          const top = payload.cards[0];
+          const tag =
+            top.now.kind === "in_tool"
+              ? top.now.detail
+              : top.now.kind === "responding"
+                ? "responding"
+                : "idle";
+          item.text = `$(pulse) Claude · ${payload.activeCount} active · ${tag}`;
+          item.backgroundColor = undefined;
+        }
       } else {
         item.text = `$(comment-discussion) Claude · idle`;
         item.backgroundColor = undefined;
       }
+
+      // One-shot notification per session entering the awaiting state.
+      const stillAwaitingIds = new Set(awaiting.map((c) => c.session_id));
+      for (const c of awaiting) {
+        if (notifiedAwaiting.has(c.session_id)) continue;
+        notifiedAwaiting.add(c.session_id);
+        const cfg = vscode.workspace.getConfiguration("claudeSessions");
+        if (cfg.get<boolean>("awaitingUser.notify", true)) {
+          const action = c.now.detail === "ExitPlanMode" ? "approve the plan" : "answer the question";
+          vscode.window
+            .showWarningMessage(
+              `Claude session "${c.title}" is waiting for you to ${action}.`,
+              "Open session",
+              "Open live monitor",
+            )
+            .then((sel) => {
+              if (sel === "Open live monitor") {
+                vscode.commands.executeCommand("claudeSessions.openLiveMonitor");
+              } else if (sel === "Open session") {
+                vscode.commands.executeCommand("claudeSessions.showTrajectory", c.session_id, c.title);
+              }
+            });
+        }
+      }
+      for (const id of [...notifiedAwaiting]) if (!stillAwaitingIds.has(id)) notifiedAwaiting.delete(id);
       item.tooltip = tooltipFor(payload);
       // Schedule next poll based on activity
       if (timer) clearTimeout(timer);
@@ -220,6 +262,8 @@ interface SessionRow {
   is_automated?: boolean;
   top_topics?: string[];
   topic_counts?: Array<[string, number]>;
+  /** Epoch seconds of the last assistant text response, or 0 when unknown. */
+  last_response_epoch?: number;
 }
 
 /**
@@ -245,6 +289,20 @@ function formatRelative(epochSec: number): string {
 /**
  * Format a duration in seconds as a compact "1h 23m" / "45m" / "12s" string.
  */
+/** Compact, fixed-width "ago" label for the sessions list. Uses figure-space
+ * (U+2007, same width as a digit in most fonts) so values line up visually
+ * even in proportional fonts: "  5s", " 12m", "  3h", " 14d". */
+function formatAgoFixed(epochSec: number): string {
+  if (!epochSec || epochSec <= 0) return "  —  ";
+  const FS = " ";
+  const diff = Math.max(0, Math.floor(Date.now() / 1000 - epochSec));
+  const pad = (n: number) => String(n).padStart(3, FS);
+  if (diff < 60) return pad(diff) + "s";
+  if (diff < 3600) return pad(Math.floor(diff / 60)) + "m";
+  if (diff < 86400) return pad(Math.floor(diff / 3600)) + "h";
+  return pad(Math.floor(diff / 86400)) + "d";
+}
+
 function formatDurationSec(sec: number): string {
   if (sec < 1) return "<1s";
   if (sec < 60) return `${Math.round(sec)}s`;
@@ -283,6 +341,7 @@ function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
     first_ts_epoch: r.started_at ? Math.floor(r.started_at / 1000) : 0,
     entrypoint: r.entrypoint ?? "",
     is_automated: r.is_automated,
+    last_response_epoch: r.last_assistant_text_at ? Math.floor(r.last_assistant_text_at / 1000) : 0,
   };
 }
 
@@ -458,27 +517,33 @@ class BucketItem extends vscode.TreeItem {
 
 class SessionItem extends vscode.TreeItem {
   constructor(public readonly row: SessionRow) {
+    // Lead with fixed-width "time since the last assistant text" so the column
+    // lines up across rows. Falls back to mtime for rows that pre-date the v5
+    // migration (which adds `last_assistant_text_at`).
+    const responseEpoch = row.last_response_epoch && row.last_response_epoch > 0
+      ? row.last_response_epoch
+      : row.mtime_epoch;
+    const ago = formatAgoFixed(responseEpoch);
+    const titleText = row.title || row.session;
     super(
-      row.title || row.session,
-      // Auto-expand active sessions; older ones stay collapsed to keep the tree readable.
-      row.active === "*"
-        ? vscode.TreeItemCollapsibleState.Expanded
-        : vscode.TreeItemCollapsibleState.Collapsed,
+      `${ago}  ·  ${titleText}`,
+      // Always collapse by default — the user opens children on demand instead
+      // of every active session auto-expanding.
+      vscode.TreeItemCollapsibleState.Collapsed,
     );
     const cost = row.cost_usd.toFixed(2);
-    const ago = formatRelative(row.mtime_epoch);
     const durSec =
       row.first_ts_epoch && row.first_ts_epoch > 0
         ? Math.max(0, row.mtime_epoch - row.first_ts_epoch)
         : 0;
     const durStr = durSec > 0 ? formatDurationSec(durSec) : null;
-    // Description: msgs · cost · duration · ago. Always-visible summary.
+    // Description: msgs · cost · duration · topics. The leading "ago" lives in
+    // the label (so it lines up); we drop it from the description here.
     const parts = [`💬${row.messages.toLocaleString()}`, `$${cost}`];
     if (durStr) parts.push(`⏱${durStr}`);
     if (row.top_topics && row.top_topics.length > 0) {
       parts.push(`🏷 ${row.top_topics.join(", ")}`);
     }
-    parts.push(ago);
     this.description = parts.join(" · ");
     const topicLines =
       row.topic_counts && row.topic_counts.length > 0
@@ -864,6 +929,225 @@ class ProjectGroupItem extends vscode.TreeItem {
 }
 
 // --------------------------------------------------------------------------- //
+// Tasks provider — crontab + active Claude sub-agents
+// --------------------------------------------------------------------------- //
+
+interface CrontabRow {
+  raw: string;
+  schedule: string;
+  command: string;
+}
+
+interface ActiveSubagentRow {
+  sessionId: string;
+  title: string;
+  project: string | null;
+  subagents: number;
+  detail: string;
+}
+
+/** Best-effort parse of a single crontab line. Returns null for blank/comment lines. */
+function parseCrontabLine(raw: string): CrontabRow | null {
+  const line = raw.trim();
+  if (line.length === 0 || line.startsWith("#")) return null;
+  // Either an @-shortcut (@daily, @reboot, @hourly, ...) followed by a command,
+  // or a 5-field schedule. Don't try to validate — just split off the prefix.
+  if (line.startsWith("@")) {
+    const m = line.match(/^(@\S+)\s+(.+)$/);
+    if (!m) return { raw, schedule: line, command: "" };
+    return { raw, schedule: m[1], command: m[2] };
+  }
+  const parts = line.split(/\s+/);
+  if (parts.length < 6) return { raw, schedule: line, command: "" };
+  return { raw, schedule: parts.slice(0, 5).join(" "), command: parts.slice(5).join(" ") };
+}
+
+class TasksProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+  private _onDidChange = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this._onDidChange.event;
+  private crontab: CrontabRow[] = [];
+  private crontabAvailable = true;
+  private crontabError = "";
+  private subagents: ActiveSubagentRow[] = [];
+  private showCrontab = true;
+
+  constructor(private readonly store: SessionStore | null) {}
+
+  async refresh(): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("claudeTasks");
+    this.showCrontab = cfg.get<boolean>("showCrontab", true);
+    const lookback = cfg.get<number>("subagentLookbackMin", 5);
+
+    // --- Crontab ---
+    if (this.showCrontab) {
+      const { stdout, stderr, code } = await exec("crontab", ["-l"]);
+      if (code === 0) {
+        this.crontab = stdout.split(/\r?\n/).map(parseCrontabLine).filter((r): r is CrontabRow => r !== null);
+        this.crontabAvailable = true;
+        this.crontabError = "";
+      } else if (/no crontab for/i.test(stderr)) {
+        this.crontab = [];
+        this.crontabAvailable = true;
+        this.crontabError = "";
+      } else {
+        this.crontab = [];
+        this.crontabAvailable = false;
+        this.crontabError = stderr.trim() || `crontab exited with code ${code}`;
+      }
+    } else {
+      this.crontab = [];
+    }
+
+    // --- Active Claude sub-agents (derived from live-monitor data) ---
+    if (this.store && lookback > 0) {
+      try {
+        const up = buildUpdate(this.store);
+        this.subagents = up.cards
+          .filter((c) => c.subagents > 0)
+          .map((c) => ({
+            sessionId: c.session_id,
+            title: c.title,
+            project: c.project,
+            subagents: c.subagents,
+            detail:
+              c.now.kind === "in_tool"
+                ? `${c.now.detail} · ${c.now.ageSec}s`
+                : c.now.kind === "responding"
+                  ? `responding · ${c.now.ageSec}s`
+                  : `idle`,
+          }));
+      } catch {
+        this.subagents = [];
+      }
+    } else {
+      this.subagents = [];
+    }
+
+    this._onDidChange.fire();
+  }
+
+  getTreeItem(el: vscode.TreeItem): vscode.TreeItem {
+    return el;
+  }
+
+  getChildren(el?: vscode.TreeItem): vscode.ProviderResult<vscode.TreeItem[]> {
+    if (!el) {
+      const out: vscode.TreeItem[] = [];
+      out.push(new TaskSectionItem("subagents", `Active sub-agents (${this.subagents.length})`));
+      out.push(new TaskSectionItem("routines", "Scheduled routines"));
+      if (this.showCrontab) {
+        out.push(new TaskSectionItem("crontab", `Crontab (${this.crontab.length})`));
+      }
+      return out;
+    }
+    if (el instanceof TaskSectionItem) {
+      if (el.section === "subagents") {
+        if (this.subagents.length === 0) {
+          return [makeInfoItem("No sessions with active sub-agents right now.")];
+        }
+        return this.subagents.map((s) => new ActiveSubagentItem(s));
+      }
+      if (el.section === "routines") {
+        return [
+          makeInfoItem("Scheduled routines run remotely — manage them via /schedule in Claude Code."),
+        ];
+      }
+      if (el.section === "crontab") {
+        if (!this.crontabAvailable) {
+          return [makeInfoItem(`crontab unavailable: ${this.crontabError}`)];
+        }
+        if (this.crontab.length === 0) {
+          return [makeInfoItem("(no crontab entries — click the pencil to add one)")];
+        }
+        return this.crontab.map((r) => new CrontabItem(r));
+      }
+    }
+    return [];
+  }
+}
+
+class TaskSectionItem extends vscode.TreeItem {
+  constructor(public readonly section: "subagents" | "routines" | "crontab", label: string) {
+    super(label, vscode.TreeItemCollapsibleState.Expanded);
+    this.iconPath = new vscode.ThemeIcon(
+      section === "subagents" ? "rocket" : section === "routines" ? "clock" : "calendar",
+    );
+    this.contextValue = `taskSection:${section}`;
+  }
+}
+
+class ActiveSubagentItem extends vscode.TreeItem {
+  constructor(public readonly row: ActiveSubagentRow) {
+    super(row.title, vscode.TreeItemCollapsibleState.None);
+    this.description = `${row.subagents} agent${row.subagents === 1 ? "" : "s"} · ${row.detail}${row.project ? " · " + row.project : ""}`;
+    this.tooltip = new vscode.MarkdownString(
+      `**${row.title}**\n\n${row.subagents} active sub-agent(s)\n\n${row.detail}${row.project ? `\n\nProject: \`${row.project}\`` : ""}`,
+    );
+    this.iconPath = new vscode.ThemeIcon("pulse");
+    this.contextValue = "activeSubagent";
+    this.command = {
+      command: "claudeTasks.openSession",
+      title: "Open session",
+      arguments: [row.sessionId],
+    };
+  }
+}
+
+class CrontabItem extends vscode.TreeItem {
+  constructor(public readonly row: CrontabRow) {
+    super(row.schedule, vscode.TreeItemCollapsibleState.None);
+    this.description = row.command;
+    this.tooltip = new vscode.MarkdownString("```\n" + row.raw + "\n```");
+    this.iconPath = new vscode.ThemeIcon("calendar");
+    this.contextValue = "crontabRow";
+    this.command = {
+      command: "claudeTasks.editCrontab",
+      title: "Edit crontab",
+      arguments: [],
+    };
+  }
+}
+
+function makeInfoItem(text: string): vscode.TreeItem {
+  const t = new vscode.TreeItem(text, vscode.TreeItemCollapsibleState.None);
+  t.iconPath = new vscode.ThemeIcon("info");
+  t.contextValue = "taskInfo";
+  return t;
+}
+
+/** Edit-flow for the user's crontab. Reads `crontab -l`, opens it in a temp
+ * VS Code editor, and installs via `crontab <file>` on save. */
+async function openCrontabEditor(ctx: vscode.ExtensionContext, onInstalled: () => void): Promise<void> {
+  const { stdout, stderr, code } = await exec("crontab", ["-l"]);
+  const content = code === 0 ? stdout : /no crontab for/i.test(stderr) ? "" : "";
+  const tmpDir = path.join(os.tmpdir(), "claude-sessions");
+  try { fs.mkdirSync(tmpDir, { recursive: true }); } catch {}
+  const tmpFile = path.join(tmpDir, "crontab.cron");
+  fs.writeFileSync(tmpFile, content, "utf-8");
+  const doc = await vscode.workspace.openTextDocument(tmpFile);
+  await vscode.languages.setTextDocumentLanguage(doc, "shellscript");
+  await vscode.window.showTextDocument(doc, { preview: false });
+
+  // Install when this specific file is saved.
+  const sub = vscode.workspace.onDidSaveTextDocument(async (saved) => {
+    if (saved.uri.fsPath !== tmpFile) return;
+    const result = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
+      execFile("crontab", [tmpFile], (err, so, se) => {
+        const c = err ? (err as any).code ?? 1 : 0;
+        resolve({ stdout: String(so), stderr: String(se), code: c });
+      });
+    });
+    if (result.code === 0) {
+      vscode.window.setStatusBarMessage("✓ crontab installed", 4000);
+      onInstalled();
+    } else {
+      vscode.window.showErrorMessage(`crontab install failed: ${result.stderr.trim() || result.code}`);
+    }
+  });
+  ctx.subscriptions.push(sub);
+}
+
+// --------------------------------------------------------------------------- //
 // Activation
 // --------------------------------------------------------------------------- //
 
@@ -904,6 +1188,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   const sessions = new SessionsProvider(store);
   const kb = new KbChangesProvider();
   const projects = new ProjectsActivityProvider();
+  const tasks = new TasksProvider(store);
 
   // Keep track of open conversation viewers so the classifyTopics command can
   // refresh them after upserting new topics.
@@ -912,6 +1197,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   sessions.refresh();
   kb.refresh();
   projects.refresh();
+  tasks.refresh();
 
   // Initial background sync (incremental: mtime+size diff). First paint may
   // come from yesterday's cache while a fresh sync runs in parallel.
@@ -934,6 +1220,14 @@ export function activate(ctx: vscode.ExtensionContext) {
   // Always-visible live status bar
   if (store) createLiveStatusBar(ctx, store);
 
+  // Background topic classifier — picks up unclassified turns and works
+  // through them via Ollama (opt-in via settings for claude-p).
+  let bgClassifier: BackgroundClassifier | null = null;
+  if (store) {
+    bgClassifier = new BackgroundClassifier(ctx, store);
+    bgClassifier.start();
+  }
+
   // KB view uses createTreeView so we can set its title dynamically based on
   // the configured repoPath (e.g. "docs changes" instead of "KB changes").
   const kbView = vscode.window.createTreeView("claudeKbChanges", {
@@ -950,6 +1244,47 @@ export function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(
     vscode.window.registerTreeDataProvider("claudeSessions", sessions),
     vscode.window.registerTreeDataProvider("claudeProjectsActivity", projects),
+    vscode.window.registerTreeDataProvider("claudeTasks", tasks),
+
+    vscode.commands.registerCommand("claudeSessions.search", async (initialQ?: string) => {
+      if (!store) {
+        vscode.window.showWarningMessage(
+          "Search requires the SQLite cache. Enable claudeSessions.cacheEnabled.",
+        );
+        return;
+      }
+      const s = store;
+      openSearchView(ctx, s, async (sessionId, title) => {
+        const jsonl = await locateSessionJsonl(sessionId);
+        if (!jsonl) {
+          vscode.window.showWarningMessage(`Transcript not found for ${sessionId}`);
+          return;
+        }
+        const panel = openConversationViewer(ctx, jsonl, sessionId, title, s);
+        openViewerPanels.set(sessionId, panel);
+        panel.onDidDispose(() => {
+          if (openViewerPanels.get(sessionId) === panel) openViewerPanels.delete(sessionId);
+        });
+      }, typeof initialQ === "string" ? initialQ : "");
+    }),
+
+    vscode.commands.registerCommand("claudeTasks.refresh", () => tasks.refresh()),
+    vscode.commands.registerCommand("claudeTasks.editCrontab", () =>
+      openCrontabEditor(ctx, () => tasks.refresh()),
+    ),
+    vscode.commands.registerCommand("claudeTasks.openSession", async (sessionId: string) => {
+      if (!store) return;
+      const row = store.getById(sessionId);
+      if (!row) {
+        vscode.window.showWarningMessage(`Session ${sessionId.slice(0, 8)} not found.`);
+        return;
+      }
+      try {
+        await openTrajectoryView(ctx, store, sessionId, row.title || sessionId.slice(0, 8));
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Trajectory failed: ${e.message}`);
+      }
+    }),
 
     vscode.commands.registerCommand("claudeSessions.refresh", () => sessions.refresh()),
     vscode.commands.registerCommand("claudeSessions.openInsights", () => openInsightsView(ctx, store)),
@@ -963,7 +1298,17 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand("claudeKbChanges.refresh", () => kb.refresh()),
     vscode.commands.registerCommand("claudeProjectsActivity.refresh", () => projects.refresh()),
 
-    vscode.commands.registerCommand("claudeSessions.resume", async (row: SessionRow) => {
+    vscode.commands.registerCommand("claudeSessions.resume", async (arg: SessionRow | SessionItem | undefined) => {
+      // The inline action passes the TreeItem; the per-child "Resume in Claude"
+      // child passes a SessionRow directly. Accept either.
+      const row: SessionRow | null =
+        arg && typeof arg === "object" && "row" in arg
+          ? (arg as SessionItem).row
+          : (arg as SessionRow) ?? null;
+      if (!row || !row.session) {
+        vscode.window.showWarningMessage("No session to resume.");
+        return;
+      }
       // Prefer the official Claude Code VS Code extension panel.
       // Discovered signature (from extension internals):
       //   claude-vscode.primaryEditor.open(sessionId, prompt?, viewColumn?)
@@ -1131,18 +1476,13 @@ export function activate(ctx: vscode.ExtensionContext) {
         return;
       }
       await openAgentGraph(ctx, store, async (sessionId) => {
-        const jsonl = await locateSessionJsonl(sessionId);
-        if (!jsonl) {
-          vscode.window.showWarningMessage(`Transcript not found for ${sessionId}`);
-          return;
-        }
         const row = store!.getById(sessionId);
         const title = row?.title || sessionId.slice(0, 8);
-        const panel = openConversationViewer(ctx, jsonl, sessionId, title, store);
-        openViewerPanels.set(sessionId, panel);
-        panel.onDidDispose(() => {
-          if (openViewerPanels.get(sessionId) === panel) openViewerPanels.delete(sessionId);
-        });
+        try {
+          await openTrajectoryView(ctx, store!, sessionId, title);
+        } catch (e: any) {
+          vscode.window.showErrorMessage(`Trajectory failed: ${e.message}`);
+        }
       });
     }),
 
@@ -1187,12 +1527,34 @@ export function activate(ctx: vscode.ExtensionContext) {
         if (e.affectsConfiguration("claudeKbChanges.repoPath")) refreshKbTitle();
       }
       if (e.affectsConfiguration("claudeProjectsActivity")) projects.refresh();
+      if (e.affectsConfiguration("claudeTasks")) tasks.refresh();
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       refreshKbTitle();
       kb.refresh();
     }),
   );
+
+  // Keep the Tasks view fresh: re-poll every 30 s so the active sub-agent
+  // section reflects the current live-monitor state without user action.
+  const tasksTimer = setInterval(() => tasks.refresh(), 30_000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(tasksTimer) });
+
+  // Sessions view: incremental re-sync + re-render every 10 s so the
+  // leading "time since last activity" column stays close to real-time.
+  // syncToStore is incremental — it only re-parses JSONLs whose (mtime,size)
+  // changed, so the cost when nothing has happened is essentially a stat()
+  // per known session.
+  const sessionsTimer = setInterval(() => {
+    if (store) {
+      try { syncToStore(store); } catch { /* swallow; next tick retries */ }
+    }
+    sessions.refresh();
+    // Give the background classifier a nudge so newly-detected turns get
+    // queued without waiting for its own discovery interval.
+    bgClassifier?.notifySyncCompleted();
+  }, 10_000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(sessionsTimer) });
 }
 
 async function openChangedFile(c: FileChange) {

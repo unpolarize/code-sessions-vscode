@@ -116,6 +116,13 @@ const MIGRATIONS: string[] = [
 
   ALTER TABLE session_embedding ADD COLUMN cluster_id INTEGER;
   `,
+
+  // v5 — last_assistant_text_at: epoch ms of the most recent assistant
+  // message that contained a text block (i.e. the last time the model said
+  // something to the user, as opposed to mtime which moves on every event).
+  `
+  ALTER TABLE session ADD COLUMN last_assistant_text_at INTEGER;
+  `,
 ];
 
 export interface SessionRow {
@@ -142,6 +149,10 @@ export interface SessionRow {
   entrypoint: string | null;
   is_automated: boolean;
   indexed_at: number;
+  /** Epoch ms of the most recent assistant text block. Falls back to
+   * `ended_at` when the parser hasn't seen any text (or for rows indexed
+   * before migration v5). */
+  last_assistant_text_at: number | null;
 }
 
 export interface TurnRow {
@@ -183,6 +194,7 @@ function rowToSession(r: any): SessionRow {
     entrypoint: r.entrypoint,
     is_automated: !!r.is_automated,
     indexed_at: r.indexed_at,
+    last_assistant_text_at: r.last_assistant_text_at ?? null,
   };
 }
 
@@ -262,14 +274,14 @@ export class SessionStore {
         message_count, tool_count, subagent_count,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
         cost_usd, model, title, first_user_msg,
-        entrypoint, is_automated, indexed_at
+        entrypoint, is_automated, indexed_at, last_assistant_text_at
       ) VALUES (
         @session_id, @project_path, @project_id, @projects_touched, @jsonl_path,
         @mtime_ns, @size_bytes, @started_at, @ended_at,
         @message_count, @tool_count, @subagent_count,
         @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens,
         @cost_usd, @model, @title, @first_user_msg,
-        @entrypoint, @is_automated, @indexed_at
+        @entrypoint, @is_automated, @indexed_at, @last_assistant_text_at
       )
       ON CONFLICT(session_id) DO UPDATE SET
         project_path        = excluded.project_path,
@@ -293,11 +305,13 @@ export class SessionStore {
         first_user_msg      = excluded.first_user_msg,
         entrypoint          = excluded.entrypoint,
         is_automated        = excluded.is_automated,
-        indexed_at          = excluded.indexed_at
+        indexed_at          = excluded.indexed_at,
+        last_assistant_text_at = excluded.last_assistant_text_at
     `).run({
       ...s,
       projects_touched: s.projects_touched.join(","),
       is_automated: s.is_automated ? 1 : 0,
+      last_assistant_text_at: s.last_assistant_text_at ?? null,
     });
   }
 
@@ -576,6 +590,109 @@ export class SessionStore {
   /** Delete every turn_embedding row whose model id is not `keepModel`. */
   deleteTurnEmbeddingsExceptModel(keepModel: string): number {
     return this.db.prepare("DELETE FROM turn_embedding WHERE embedding_model != ?").run(keepModel).changes;
+  }
+
+  /** Returns sessions that still have ≥1 turn with non-empty `user_text` but
+   * no `turn_topic` row. Used by the background classifier daemon to schedule
+   * incremental classification work. Sorted newest-first. */
+  sessionsWithUnclassifiedTurns(limit = 200): string[] {
+    const rows = this.db
+      .prepare(`
+        SELECT s.session_id
+        FROM session s
+        WHERE EXISTS (
+          SELECT 1
+          FROM turn t
+          LEFT JOIN turn_topic tt ON tt.turn_uuid = t.turn_uuid
+          WHERE t.session_id = s.session_id
+            AND tt.turn_uuid IS NULL
+            AND COALESCE(t.user_text, '') != ''
+        )
+        ORDER BY s.mtime_ns DESC
+        LIMIT ?
+      `)
+      .all(limit) as any[];
+    return rows.map((r) => r.session_id);
+  }
+
+  // ---- search ----------------------------------------------------------- //
+
+  /** LIKE-based search over `turn_topic`. Returns one row per (session, topic_norm)
+   * with the count of matching turns. */
+  searchTopics(
+    query: string,
+    limit = 200,
+  ): Array<{ session_id: string; title: string | null; topic: string; topic_norm: string; count: number; last_ts: number | null }> {
+    const q = String(query || "").trim();
+    if (q.length === 0) return [];
+    const like = "%" + q.toLowerCase() + "%";
+    const rows = this.db
+      .prepare(`
+        SELECT s.session_id, s.title, tt.topic_norm,
+               MIN(tt.topic) AS topic,
+               COUNT(*) AS c,
+               MAX(t.ended_at) AS last_ts
+        FROM turn_topic tt
+        JOIN turn t ON t.turn_uuid = tt.turn_uuid
+        JOIN session s ON s.session_id = t.session_id
+        WHERE LOWER(tt.topic) LIKE ? OR LOWER(tt.topic_norm) LIKE ?
+        GROUP BY s.session_id, tt.topic_norm
+        ORDER BY last_ts DESC NULLS LAST, c DESC
+        LIMIT ?
+      `)
+      .all(like, like, limit) as any[];
+    return rows.map((r) => ({
+      session_id: r.session_id,
+      title: r.title,
+      topic: r.topic,
+      topic_norm: r.topic_norm,
+      count: r.c,
+      last_ts: r.last_ts ?? null,
+    }));
+  }
+
+  /** LIKE-based search over `turn.user_text` and `turn.assistant_excerpt`. Returns
+   * matching turns with enough context to render an excerpt. */
+  searchTurns(
+    query: string,
+    limit = 200,
+  ): Array<{
+    session_id: string;
+    title: string | null;
+    turn_uuid: string;
+    turn_index: number;
+    ts: number | null;
+    user_text: string | null;
+    assistant_excerpt: string | null;
+    matched: "user" | "assistant" | "both";
+  }> {
+    const q = String(query || "").trim();
+    if (q.length === 0) return [];
+    const like = "%" + q.toLowerCase() + "%";
+    const rows = this.db
+      .prepare(`
+        SELECT t.session_id, s.title, t.turn_uuid, t.turn_index, t.ended_at AS ts,
+               t.user_text, t.assistant_excerpt,
+               (LOWER(COALESCE(t.user_text,'')) LIKE ?) AS um,
+               (LOWER(COALESCE(t.assistant_excerpt,'')) LIKE ?) AS am
+        FROM turn t
+        JOIN session s ON s.session_id = t.session_id
+        WHERE LOWER(COALESCE(t.user_text,'')) LIKE ?
+           OR LOWER(COALESCE(t.assistant_excerpt,'')) LIKE ?
+        ORDER BY t.ended_at DESC NULLS LAST
+        LIMIT ?
+      `)
+      .all(like, like, like, like, limit) as any[];
+    return rows.map((r) => ({
+      session_id: r.session_id,
+      title: r.title,
+      turn_uuid: r.turn_uuid,
+      turn_index: r.turn_index,
+      ts: r.ts ?? null,
+      user_text: r.user_text,
+      assistant_excerpt: r.assistant_excerpt,
+      matched: r.um && r.am ? "both" : r.um ? "user" : "assistant",
+    }));
   }
 
   // ---- maintenance ----------------------------------------------------- //

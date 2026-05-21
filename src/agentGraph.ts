@@ -40,6 +40,12 @@ interface ClusterLabel {
   label: string;
   count: number;
   hull: Array<{ x: number; y: number }>;
+  /** Top topics in this cluster, ranked by turn count. */
+  topics: Array<{ topic: string; count: number }>;
+  /** Most-common project ids in this cluster. */
+  projects: Array<{ name: string; count: number }>;
+  /** Representative session titles (closest sessions to the 2D centroid). */
+  samples: Array<{ session_id: string; title: string }>;
 }
 
 /** Andrew's monotone chain. Returns CCW hull (≥3 unique input points). */
@@ -358,21 +364,40 @@ async function buildLayout(
         if (n > bestN) { bestTopic = t; bestN = n; }
       }
       const hull = convexHull(arr.map((p) => ({ x: p.x, y: p.y })));
+      // Project mix across the cluster.
+      const projCounts = new Map<string, number>();
+      for (const p of arr) if (p.project) projCounts.set(p.project, (projCounts.get(p.project) ?? 0) + 1);
+      const projects = [...projCounts.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
       // Always emit a label/hull for ≥3-member clusters. If no topic data is
       // available (sessions not yet classified), fall back to a synthesized
       // label so the hull still renders and the user can see structure
       // before running "Analyze topics".
       const label = bestTopic
         ? bestTopic
-        : (() => {
-            // Use the most common project across the cluster as a fallback
-            const projCounts = new Map<string, number>();
-            for (const p of arr) if (p.project) projCounts.set(p.project, (projCounts.get(p.project) ?? 0) + 1);
-            let bp = "", bpN = 0;
-            for (const [k, v] of projCounts) if (v > bpN) { bp = k; bpN = v; }
-            return bp || `cluster ${cid + 1}`;
-          })();
-      clusterLabels.push({ cluster: cid, cx, cy, cx3, cy3, cz3, label, count: arr.length, hull });
+        : (projects[0]?.name ?? `cluster ${cid + 1}`);
+      // Top-N topics for the cluster meaning panel.
+      const topics = [...counts.entries()]
+        .map(([topic, count]) => ({ topic, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 8);
+      // Representative samples: members closest to the 2D centroid.
+      const samples = arr
+        .map((p) => ({
+          session_id: p.session_id,
+          title: p.title,
+          d2: (p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy),
+        }))
+        .sort((a, b) => a.d2 - b.d2)
+        .slice(0, 5)
+        .map(({ session_id, title }) => ({ session_id, title }));
+      clusterLabels.push({
+        cluster: cid, cx, cy, cx3, cy3, cz3,
+        label, count: arr.length, hull,
+        topics, projects, samples,
+      });
     }
   }
 
@@ -566,6 +591,18 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
   #wrap { position: relative; width: 100vw; height: calc(100vh - 60px); }
   canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
   #tip { position: absolute; pointer-events: none; padding: 4px 8px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 3px; font-size: 11px; max-width: 320px; white-space: pre-wrap; display: none; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+  #cinfo { position: absolute; top: 12px; right: 12px; width: 280px; max-height: calc(100vh - 100px); overflow-y: auto; padding: 10px 12px 12px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); border-radius: 4px; font-size: 11px; display: none; box-shadow: 0 4px 16px rgba(0,0,0,0.35); }
+  #cinfo h3 { margin: 0 0 6px; font-size: 13px; }
+  #cinfo .row { color: var(--vscode-descriptionForeground); margin-top: 8px; font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em; }
+  #cinfo ul { margin: 4px 0 0; padding: 0; list-style: none; }
+  #cinfo li { padding: 2px 0; line-height: 1.4; }
+  #cinfo li .meta { color: var(--vscode-descriptionForeground); margin-left: 4px; }
+  #cinfo a { color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: none; }
+  #cinfo a:hover { text-decoration: underline; }
+  #cinfo .close { position: absolute; top: 4px; right: 6px; cursor: pointer; color: var(--vscode-descriptionForeground); font-size: 13px; padding: 2px 6px; border-radius: 2px; }
+  #cinfo .close:hover { background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.15)); color: var(--vscode-editor-foreground); }
+  #cinfo .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  #cinfo .empty { color: var(--vscode-descriptionForeground); font-style: italic; padding-top: 2px; }
 </style>
 </head>
 <body>
@@ -586,6 +623,7 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
 <div id="wrap">
   <canvas id="c"></canvas>
   <div id="tip"></div>
+  <div id="cinfo"></div>
 </div>
 <script nonce="${nonce}">
 (function() {
@@ -594,6 +632,7 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
   const vscode = acquireVsCodeApi();
   const canvas = document.getElementById('c');
   const tip = document.getElementById('tip');
+  const cinfo = document.getElementById('cinfo');
   const cbCluster = document.getElementById('colorByCluster');
   const cbLabels = document.getElementById('showLabels');
   const ctx = canvas.getContext('2d');
@@ -939,6 +978,43 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     draw();
   }
 
+  function escHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+  function setClusterInfo(cid) {
+    if (cid == null) { cinfo.style.display = 'none'; cinfo.innerHTML = ''; return; }
+    const lbl = labels.find((l) => l.cluster === cid);
+    if (!lbl) { cinfo.style.display = 'none'; return; }
+    const col = clusterColor(cid);
+    const topicRows = (lbl.topics || []).length === 0
+      ? '<li class="empty">No topics yet — click "Classify all topics" to label.</li>'
+      : (lbl.topics || []).map((t) => '<li>' + escHtml(t.topic) + '<span class="meta">· ' + t.count + '</span></li>').join('');
+    const projRows = (lbl.projects || []).length === 0
+      ? '<li class="empty">(no project tags)</li>'
+      : (lbl.projects || []).map((p) => '<li>' + escHtml(p.name) + '<span class="meta">· ' + p.count + '</span></li>').join('');
+    const sampleRows = (lbl.samples || []).length === 0
+      ? '<li class="empty">—</li>'
+      : (lbl.samples || []).map((s) => '<li><a data-sid="' + escHtml(s.session_id) + '">' + escHtml(s.title) + '</a></li>').join('');
+    cinfo.innerHTML =
+      '<div class="close" id="cinfoClose" title="Clear selection">×</div>' +
+      '<h3><span class="dot" style="background:' + col + '"></span>' + escHtml(lbl.label) + '</h3>' +
+      '<div class="meta">' + lbl.count + ' sessions in this cluster</div>' +
+      '<div class="row">Top topics</div><ul>' + topicRows + '</ul>' +
+      '<div class="row">Projects</div><ul>' + projRows + '</ul>' +
+      '<div class="row">Representative sessions</div><ul>' + sampleRows + '</ul>';
+    cinfo.style.display = 'block';
+    document.getElementById('cinfoClose').addEventListener('click', () => {
+      focusedCluster = null;
+      setClusterInfo(null);
+      relayoutAndDraw();
+    });
+    cinfo.querySelectorAll('a[data-sid]').forEach((a) => {
+      a.addEventListener('click', () => {
+        vscode.postMessage({ command: 'open', id: a.getAttribute('data-sid') });
+      });
+    });
+  }
+
   cbCluster.addEventListener('change', relayoutAndDraw);
   cbLabels.addEventListener('change', relayoutAndDraw);
 
@@ -1048,6 +1124,7 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     } else {
       focusedCluster = null;
     }
+    setClusterInfo(focusedCluster);
     draw();
   });
   canvas.addEventListener('wheel', (e) => {
@@ -1090,6 +1167,7 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
     btn2d.classList.toggle('active', mode === '2d');
     btn3d.classList.toggle('active', mode === '3d');
     focusedCluster = null;
+    setClusterInfo(null);
     tip.style.display = 'none';
     relayoutAndDraw();
   }

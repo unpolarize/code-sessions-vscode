@@ -231,6 +231,7 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
     entrypoint,
     is_automated: isAutomated,
     indexed_at: Date.now(),
+    last_assistant_text_at: parsed.lastAssistantTextMs,
   };
 
   const turns: TurnRow[] = parsed.turns.map((t, i) => ({

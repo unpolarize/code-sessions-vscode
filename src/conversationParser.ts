@@ -58,6 +58,11 @@ export interface ParsedConversation {
   summary: ConversationSummary;
   startMs: number | null;
   endMs: number | null;
+  /** Timestamp (ms) of the most recent assistant message that contained a
+   * text block — i.e. the last time the model actually "said something" to
+   * the user. Distinct from endMs (which includes tool_uses and tool_results
+   * that follow the last text). Null if the session has no text yet. */
+  lastAssistantTextMs: number | null;
 }
 
 function tsMs(s: any): number {
@@ -97,6 +102,7 @@ export function parseConversation(filePath: string): ParsedConversation {
   let sessionId = "";
   let title = "";
   const turns: Turn[] = [];
+  let lastAssistantTextMs: number | null = null;
   // toolUseId -> ToolCall (to attach results when they arrive)
   const pendingTools = new Map<string, ToolCall>();
   let current: Turn | null = null;
@@ -169,6 +175,9 @@ export function parseConversation(filePath: string): ParsedConversation {
           if (!block || typeof block !== "object") continue;
           if (block.type === "text") {
             current.assistantText += (current.assistantText ? "\n\n" : "") + String(block.text ?? "");
+            if (ts > 0 && (lastAssistantTextMs == null || ts > lastAssistantTextMs)) {
+              lastAssistantTextMs = ts;
+            }
           } else if (block.type === "tool_use") {
             const isSubagent = block.name === "Agent" || block.name === "Task";
             const tc: ToolCall = {
@@ -247,5 +256,6 @@ export function parseConversation(filePath: string): ParsedConversation {
     },
     startMs,
     endMs,
+    lastAssistantTextMs,
   };
 }
