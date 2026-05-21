@@ -114,18 +114,78 @@ See [`docs/architecture.md`](docs/architecture.md) and [`specs/001-cache-topics-
 
 ## Install
 
+The fastest path uses the bundled scripts:
+
 ```bash
 git clone git@github.com:zhirafovod/claude-sessions-vscode.git
 cd claude-sessions-vscode
 npm install
-npx tsc -p .
-npx @vscode/vsce package        # → claude-sessions-X.Y.Z.vsix
-code --install-extension claude-sessions-*.vsix
+./scripts/build-install.sh      # compile, package, install the .vsix
+./scripts/ollama-setup.sh       # install Ollama if missing, start service, pull models
 ```
 
 Reload VS Code → click the new **Claude Activity** icon in the Activity Bar.
 
+The scripts are thin wrappers over standard commands; if you'd rather run them by hand:
+
+```bash
+npm install
+npm run compile
+npx @vscode/vsce package         # → claude-sessions-X.Y.Z.vsix
+code --install-extension claude-sessions-*.vsix --force
+```
+
 For build / contribute / release flow see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Ollama dependency
+
+The extension uses a local [Ollama](https://ollama.com) daemon for two things:
+
+- **Topic classification** of conversation turns (the background classifier + the `Classify all topics` button on the agent graph). Default model: `llama3.2:3b` (~2 GB). Optional — if Ollama isn't running, the daemon idles and classification just doesn't happen automatically.
+- **Embeddings** for the agent-graph 2D + 3D layouts. Default model: `nomic-embed-text` (~270 MB). Required if you want a real embedding-based scatter; the extension falls back to a hashed bag-of-words layout otherwise (much less informative).
+
+Both run locally — no API tokens, no network calls beyond `127.0.0.1:11434`.
+
+### One-time setup
+
+```bash
+# 1. Install Ollama
+brew install ollama                                   # macOS
+# curl -fsSL https://ollama.com/install.sh | sh       # Linux
+
+# 2. Start the daemon (foreground)
+ollama serve                                          # or: brew services start ollama
+
+# 3. Pull the models the extension uses
+ollama pull llama3.2:3b
+ollama pull nomic-embed-text
+
+# 4. Sanity check
+curl -s http://127.0.0.1:11434/api/tags | jq '.models[].name'
+```
+
+Or just run `./scripts/ollama-setup.sh` — it does all four steps and is safe to re-run (it skips what's already done).
+
+### Choosing different models
+
+The defaults are tuned for small machines. If you have headroom, edit settings:
+
+| Setting | Default | Description |
+|---|---|---|
+| `claudeSessions.classify.model` | `llama3.2:3b` | Classifier model passed to Ollama. Try `qwen2.5:3b`, `gemma2:2b`, or `llama3.1:8b` for sharper labels. |
+| `claudeSessions.embedding.ollamaModel` | `nomic-embed-text` | Embedding model. `mxbai-embed-large` is higher-quality but slower. |
+| `claudeSessions.embedding.ollamaUrl` | `http://127.0.0.1:11434` | Override if Ollama runs on another host/port. |
+
+After changing the embedding model, run **`Claude: Drop cached embeddings and re-embed`** from the palette so the agent graph rebuilds from scratch.
+
+### Turning auto-classification off
+
+If you don't want the daemon running:
+
+- `claudeSessions.classify.autoBackground` → `false` — disables the background daemon.
+- `claudeSessions.classify.autoOnOpen` → `false` — disables the on-open auto-classify when you view a conversation.
+
+Manual classification still works via the **Classify all topics** button on the agent graph or **Analyze conversation topics** in the command palette.
 
 ## Settings
 

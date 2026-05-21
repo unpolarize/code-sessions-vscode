@@ -1223,6 +1223,9 @@ export function activate(ctx: vscode.ExtensionContext) {
   // Background topic classifier — picks up unclassified turns and works
   // through them via Ollama (opt-in via settings for claude-p).
   let bgClassifier: BackgroundClassifier | null = null;
+  // Most-recently-opened agent graph webview; cleared when the panel is
+  // disposed. The 2D/3D toggle keybinding posts a message at this panel.
+  let currentAgentGraphPanel: vscode.WebviewPanel | null = null;
   if (store) {
     bgClassifier = new BackgroundClassifier(ctx, store);
     bgClassifier.start();
@@ -1335,7 +1338,39 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
     }),
 
-    vscode.commands.registerCommand("claudeSessions.refresh", () => sessions.refresh()),
+    vscode.commands.registerCommand("claudeSessions.refresh", async () => {
+      // Incremental re-sync from disk before re-rendering. Without this,
+      // the refresh button only re-reads the SQLite cache and never picks
+      // up things like a session rename that just landed in the JSONL.
+      if (store) {
+        try { syncToStore(store); } catch (e) { console.error("[claude-sessions] refresh sync failed", e); }
+      }
+      await sessions.refresh();
+    }),
+    vscode.commands.registerCommand("claudeSessions.refreshFull", async () => {
+      // Force a full re-parse of every JSONL on disk. Use this if the
+      // incremental sync looks stuck (e.g. titles still stale after a
+      // claude rename) — slow on large catalogs.
+      if (!store) {
+        vscode.window.showWarningMessage("Full rescan requires the SQLite cache.");
+        return;
+      }
+      const s = store;
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Claude sessions: full rescan…" },
+        async (progress) => {
+          const stats = syncToStore(s, {
+            force: true,
+            onProgress: (done, total) => progress.report({ message: `${done}/${total}` }),
+          });
+          vscode.window.setStatusBarMessage(
+            `Rescanned ${stats.parsed} session(s) in ${Math.round(stats.elapsed_ms / 1000)}s`,
+            4000,
+          );
+        },
+      );
+      await sessions.refresh();
+    }),
     vscode.commands.registerCommand("claudeSessions.openInsights", () => openInsightsView(ctx, store)),
     vscode.commands.registerCommand("claudeSessions.openLiveMonitor", () => {
       if (!store) {
@@ -1524,7 +1559,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         );
         return;
       }
-      await openAgentGraph(ctx, store, async (sessionId) => {
+      const panel = await openAgentGraph(ctx, store, async (sessionId) => {
         const row = store!.getById(sessionId);
         const title = row?.title || sessionId.slice(0, 8);
         try {
@@ -1533,6 +1568,28 @@ export function activate(ctx: vscode.ExtensionContext) {
           vscode.window.showErrorMessage(`Trajectory failed: ${e.message}`);
         }
       });
+      currentAgentGraphPanel = panel;
+      panel.onDidDispose(() => {
+        if (currentAgentGraphPanel === panel) currentAgentGraphPanel = null;
+      });
+    }),
+    vscode.commands.registerCommand("claudeSessions.agentGraphToggleMode", () => {
+      if (!currentAgentGraphPanel) {
+        vscode.window.setStatusBarMessage("Open the agent graph first (Cmd+Alt+G)", 2500);
+        return;
+      }
+      currentAgentGraphPanel.reveal();
+      currentAgentGraphPanel.webview.postMessage({ command: "toggleMode" });
+    }),
+    vscode.commands.registerCommand("claudeSessions.focusActivityView", async () => {
+      // VS Code provides workbench.view.extension.<containerId> to focus a
+      // view container. Wrapping it makes the keybinding discoverable in the
+      // palette under the Claude namespace.
+      try {
+        await vscode.commands.executeCommand("workbench.view.extension.claude-activity");
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Cannot focus Claude Activity: ${e.message}`);
+      }
     }),
 
     vscode.commands.registerCommand("claudeKbChanges.openFile", (c: FileChange) => openChangedFile(c)),

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.3 — 2026-05-20
+
+UX + docs polish.
+
+- **Keybindings.** Five new defaults: `Cmd+Alt+C` focus the Claude Activity sidebar, `Cmd+Alt+L` open the Live monitor, `Cmd+Alt+D` open the Insights dashboard, `Cmd+Alt+G` open the agent graph, `Cmd+Alt+3` toggle 2D ↔ 3D inside the agent graph. (Ctrl+Alt+… on Windows/Linux.) The 2D/3D toggle works via a new `claudeSessions.agentGraphToggleMode` command that posts a `toggleMode` message to the currently-open graph webview; the webview now listens for `setMode` / `toggleMode` messages from the extension.
+- **Refresh now actually re-syncs.** Clicking the refresh icon on the Sessions view used to only re-read the SQLite cache — it never went to disk, so a session you renamed in claude code wouldn't show its new title until the 10 s auto-sync tick caught up. `claudeSessions.refresh` now runs an incremental `syncToStore(store)` before re-rendering. Added a separate **`Refresh sessions (force full rescan)`** palette command that passes `{ force: true }` to `syncToStore`, re-parsing every JSONL regardless of mtime — slow on large catalogs but the right escape hatch when the incremental check misses a change.
+- **Ollama setup docs in [README.md](README.md).** New "Ollama dependency" section explains what each model is for (`llama3.2:3b` classifier, `nomic-embed-text` embeddings), one-time install/start/pull steps for macOS + Linux, the table of overridable model settings, and how to turn auto-classification off.
+- **Helper scripts.**
+  - [`scripts/build-install.sh`](scripts/build-install.sh) — `npm install` → `npm run compile` → `vsce package` → `code --install-extension --force`. `--no-install` to skip the install step.
+  - [`scripts/ollama-setup.sh`](scripts/ollama-setup.sh) — installs Ollama via brew/install.sh if missing, starts the daemon (brew services / systemd / detached), pulls the two models, sanity-checks `/api/tags`. Idempotent. Override models via `CLASSIFY_MODEL=…` / `EMBED_MODEL=…` env vars.
+
 ## 0.13.2 — 2026-05-20
 
 Bug fix + controls for the background topic-classification daemon.

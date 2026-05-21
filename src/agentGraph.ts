@@ -1173,6 +1173,13 @@ function graphHtml(webview: vscode.Webview, points: GraphPoint[], clusterLabels:
   }
   btn2d.addEventListener('click', () => setMode('2d'));
   btn3d.addEventListener('click', () => setMode('3d'));
+  // External command channel — used by the keybinding to flip 2D ↔ 3D.
+  window.addEventListener('message', (ev) => {
+    const m = ev.data;
+    if (!m || typeof m !== 'object') return;
+    if (m.command === 'setMode' && (m.mode === '2d' || m.mode === '3d')) setMode(m.mode);
+    else if (m.command === 'toggleMode') setMode(mode === '2d' ? '3d' : '2d');
+  });
   canvas.style.cursor = 'grab';
   window.addEventListener('resize', relayoutAndDraw);
   relayoutAndDraw();
