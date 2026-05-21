@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.1 — 2026-05-20
+
+Richer progress UI for the background topic-classification daemon ([src/backgroundClassifier.ts](src/backgroundClassifier.ts)):
+
+- **Status-bar text** now reads `$(sync~spin) 4/502 · <session title> · 12/87 turns` — completed-sessions-this-run / peak-queue-this-run, the title of the session being classified, and live per-batch progress.
+- **Tooltip** adds session **X of Y**, currently-classifying title with **done/total turns + %**, elapsed seconds on the current session, total turns classified this run, and the last error with how long ago it happened (surfaces silent failure modes like "Ollama not running").
+- Wires `classifySession`'s existing `onProgress` callback into the status renderer so the counter ticks live as batches finish.
+- Tracks `sessionsStarted` and `peakQueue` for the X/Y counter; logs the first error from each session into `lastError`.
+
 ## 0.13.0 — 2026-05-20
 
 A larger release built on top of v0.12.0; everything below is additive.
