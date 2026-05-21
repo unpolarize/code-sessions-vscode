@@ -22,6 +22,15 @@ function expandHome(p: string): string {
   return p;
 }
 
+/** Returns the configured KB repo path, falling back to the first workspace folder. */
+function resolveKbRepoPath(): string {
+  const cfg = vscode.workspace.getConfiguration("claudeKbChanges");
+  const configured = cfg.get<string>("repoPath", "");
+  if (configured) return expandHome(configured);
+  const first = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  return first ?? expandHome("~/docs");
+}
+
 function dayBucket(d: Date): "today" | "yesterday" | "last7" | "older" {
   const now = new Date();
   const startOfDay = (dt: Date) => new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
@@ -688,10 +697,7 @@ class FileChangeItem extends vscode.TreeItem {
   }
 
   private repoIsKB(): boolean {
-    const kbPath = expandHome(
-      vscode.workspace.getConfiguration("claudeKbChanges").get<string>("repoPath", "~/docs"),
-    );
-    return this.change.abs.startsWith(kbPath);
+    return this.change.abs.startsWith(resolveKbRepoPath());
   }
 }
 
@@ -707,7 +713,7 @@ class KbChangesProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
   refresh(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration("claudeKbChanges");
-    this.repoPath = expandHome(cfg.get<string>("repoPath", "~/docs"));
+    this.repoPath = resolveKbRepoPath();
     const days = cfg.get<number>("lookbackDays", 14);
     return gitChanges(this.repoPath, days).then((c) => {
       this.changes = c;
@@ -935,8 +941,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     showCollapseAll: false,
   });
   const refreshKbTitle = () => {
-    const repo = vscode.workspace.getConfiguration("claudeKbChanges").get<string>("repoPath", "");
-    const base = repo ? path.basename(expandHome(repo)) : "";
+    const base = path.basename(resolveKbRepoPath());
     kbView.title = base ? `${base} changes` : "KB changes";
   };
   refreshKbTitle();
@@ -1182,6 +1187,10 @@ export function activate(ctx: vscode.ExtensionContext) {
         if (e.affectsConfiguration("claudeKbChanges.repoPath")) refreshKbTitle();
       }
       if (e.affectsConfiguration("claudeProjectsActivity")) projects.refresh();
+    }),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      refreshKbTitle();
+      kb.refresh();
     }),
   );
 }

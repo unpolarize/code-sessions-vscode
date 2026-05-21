@@ -212,8 +212,8 @@
         },
         "claudeKbChanges.repoPath": {
           "type": "string",
-          "default": "~/docs",
-          "description": "Path to the KB git repo whose changes will be listed."
+          "default": "",
+          "description": "Path to the git repo whose changes will be listed. Leave empty to auto-detect from the first workspace folder."
         },
         "claudeKbChanges.lookbackDays": {
           "type": "number",
