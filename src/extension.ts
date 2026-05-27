@@ -485,11 +485,27 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     return path.resolve(folder);
   }
 
+  /** Decode the dash-encoded `~/.claude/projects/-Users-...` directory back
+   * to its real source path (`/Users/...`). claude-code stores each session
+   * under a folder whose name is the absolute source path with `/`
+   * replaced by `-`. This is lossy when the real path itself contains a
+   * dash — there's no perfect inverse — but for typical layouts (`/Users/
+   * <name>/docs`, `/Users/<name>/projects/<repo>`) it round-trips. */
+  private static decodeClaudeProjectDir(jsonlContainerPath: string): string {
+    const base = path.basename(jsonlContainerPath);
+    return "/" + base.replace(/^-/, "").replace(/-/g, "/");
+  }
+
   /** Same-path or under-path test. Treats trailing-slash and case
    * differences (macOS HFS+) leniently. */
   private static sessionInWorkspace(sessionProjectPath: string | null, workspace: string): boolean {
     if (!sessionProjectPath) return false;
-    const sp = path.resolve(sessionProjectPath);
+    // The DB stores `~/.claude/projects/-Users-...` (the JSONL container
+    // dir). Decode back to a real source path before comparing — that's
+    // the path the session actually ran in, and the only thing the
+    // workspace folder will ever match.
+    const decoded = SessionsProvider.decodeClaudeProjectDir(sessionProjectPath);
+    const sp = path.resolve(decoded);
     if (sp === workspace) return true;
     return sp.startsWith(workspace + path.sep);
   }

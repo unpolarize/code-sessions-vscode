@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.2 — 2026-05-27
+
+- **Fix: workspace filter was hiding everything.** The DB's `project_path` is the JSONL container directory under `~/.claude/projects/-Users-<name>-...` — not the actual source path. The filter compared that container against `/Users/<name>/docs` and matched nothing, so every session from `~/docs` got reported as "from another folder" and the view rendered empty. Added a small decoder ([`extension.ts:482-487`](src/extension.ts#L482-L487)) that reverses claude-code's `/` → `-` encoding on the directory basename and compares the decoded source path against the workspace folder. Lossy only when the real source path itself contains a literal `-`.
+
 ## 0.14.1 — 2026-05-27
 
 Two follow-ups to v0.14.0:
