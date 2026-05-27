@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -326,6 +326,11 @@
           "type": "boolean",
           "default": false,
           "description": "Show automated / cron-triggered sessions (entrypoint = sdk-cli, sdk, routine, etc.). Hidden by default since they're usually scheduled jobs (Google Doc digests, KB ingest, daily reports) rather than interactive work."
+        },
+        "claudeSessions.filterByCurrentWorkspace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show only sessions that originated from the current workspace's first folder (or a subfolder of it). Default on — keeps the sidebar focused on sessions you can actually resume from this window. Toggle off to see every session across every project."
         },
         "claudeSessions.insightsLookbackDays": {
           "type": "number",

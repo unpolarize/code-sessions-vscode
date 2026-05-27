@@ -39,8 +39,17 @@ fi
 echo "==> npm run compile"
 npm run compile
 
+# Rebuild native dependencies (better-sqlite3) against the VS Code Electron
+# version. Without this the bundled .vsix carries a binary that does not match
+# the host VS Code and activation throws.
+echo "==> npm run rebuild-native"
+npm run rebuild-native
+
+# Package WITH dependencies. `--no-dependencies` was the previous bug — it
+# produced a slim .vsix that could not require('better-sqlite3') at runtime,
+# so activate() threw and no tree-data providers ever registered.
 echo "==> packaging"
-npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository >/dev/null
+npx --yes @vscode/vsce package --allow-missing-repository >/dev/null
 
 VSIX="$(ls -t claude-sessions-*.vsix | head -n 1)"
 if [ -z "${VSIX}" ]; then

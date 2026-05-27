@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.1 — 2026-05-27
+
+Two follow-ups to v0.14.0:
+
+- **Fix: install script was packaging a broken .vsix.** [`scripts/build-install.sh`](scripts/build-install.sh) ran `vsce package --no-dependencies`, which omitted `node_modules`. The installed extension then couldn't `require('better-sqlite3')` at runtime, so `activate()` threw and every view rendered "There is no data provider registered". The script now (a) runs `npm run rebuild-native` to match the host VS Code's Electron 39.8.8 ABI and (b) packages with full dependencies. Resulting .vsix is ~4 MB and ships the native binary at `node_modules/better-sqlite3/build/Release/better_sqlite3.node`.
+- **Sessions view scopes to the current workspace.** New setting `claudeSessions.filterByCurrentWorkspace` (default `true`). When on and a workspace folder is open, the Sessions view shows only sessions whose `project_path` equals the workspace's first folder, or sits under it. Bucket totals reflect the visible subset. A header row `Filtered to <name> — N sessions from other folders hidden` clicks through to the setting. Refresh hooks: any `claudeSessions.*` change already refreshes; added `sessions.refresh()` to `onDidChangeWorkspaceFolders` so opening a different folder re-applies the filter immediately.
+
 ## 0.14.0 — 2026-05-27
 
 Big release: project context everywhere, star sessions, daily cost budget, per-project rollup, plus a fix for the background classifier's "grinds forever" bug.

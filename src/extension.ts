@@ -301,6 +301,7 @@ interface SessionRow {
   mtime_epoch: number;
   active: string;
   project: string;
+  project_path: string | null;
   session: string;
   modified: string;
   messages: number;
@@ -381,6 +382,7 @@ function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
     mtime_epoch: Math.floor(r.mtime_ns / 1e9),
     active: r.indexed_at && Date.now() / 1000 - r.mtime_ns / 1e9 < 120 ? "*" : " ",
     project: r.project_id || "",
+    project_path: r.project_path ?? null,
     session: r.session_id,
     modified: r.ended_at
       ? new Date(r.ended_at).toISOString().slice(0, 16)
@@ -473,6 +475,25 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     return el;
   }
 
+  /** Returns the absolute path to the workspace's first folder when the
+   * "filter by current workspace" setting is on, else null. */
+  private workspaceFilter(): string | null {
+    const cfg = vscode.workspace.getConfiguration("claudeSessions");
+    if (!cfg.get<boolean>("filterByCurrentWorkspace", true)) return null;
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!folder) return null;
+    return path.resolve(folder);
+  }
+
+  /** Same-path or under-path test. Treats trailing-slash and case
+   * differences (macOS HFS+) leniently. */
+  private static sessionInWorkspace(sessionProjectPath: string | null, workspace: string): boolean {
+    if (!sessionProjectPath) return false;
+    const sp = path.resolve(sessionProjectPath);
+    if (sp === workspace) return true;
+    return sp.startsWith(workspace + path.sep);
+  }
+
   getChildren(el?: vscode.TreeItem): vscode.ProviderResult<vscode.TreeItem[]> {
     if (this.lastError && !el) {
       const it = new vscode.TreeItem(`Error: ${this.lastError.split("\n")[0]}`);
@@ -483,12 +504,38 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
     const cfg = vscode.workspace.getConfiguration("claudeSessions");
     const showAutomated = cfg.get<boolean>("showAutomated", false);
+    const wsFilter = this.workspaceFilter();
 
     if (!el) {
-      // Filter automated rows up front so bucket totals match the displayed rows.
-      const visibleRows = this.rows.filter((r) => showAutomated || !r.is_automated);
-      const automatedCount = this.rows.length - visibleRows.length;
+      // Filter automated rows + non-workspace rows up front so bucket totals
+      // match what the user actually sees.
+      const visibleRows = this.rows
+        .filter((r) => showAutomated || !r.is_automated)
+        .filter((r) => !wsFilter || SessionsProvider.sessionInWorkspace(r.project_path, wsFilter));
+      const automatedCount = this.rows.length - this.rows.filter((r) => showAutomated || !r.is_automated).length;
       const out: vscode.TreeItem[] = [];
+
+      if (wsFilter) {
+        const hiddenByWs = this.rows.filter((r) => (showAutomated || !r.is_automated)
+          && !SessionsProvider.sessionInWorkspace(r.project_path, wsFilter)).length;
+        if (hiddenByWs > 0) {
+          const tip = new vscode.TreeItem(
+            `Filtered to ${path.basename(wsFilter)} — ${hiddenByWs} sessions from other folders hidden`,
+            vscode.TreeItemCollapsibleState.None,
+          );
+          tip.iconPath = new vscode.ThemeIcon("filter");
+          tip.tooltip = new vscode.MarkdownString(
+            `Showing only sessions whose project path is **${wsFilter}** (or a subfolder).\n\nToggle **Settings → Claude Sessions: Filter By Current Workspace** to see everything.`,
+          );
+          tip.contextValue = "workspaceFilterTip";
+          tip.command = {
+            command: "workbench.action.openSettings",
+            title: "Open setting",
+            arguments: ["@ext:zhirafovod.claude-sessions filterByCurrentWorkspace"],
+          };
+          out.push(tip);
+        }
+      }
 
       // Starred section (only when there are any). Always rendered first.
       const starredRows = visibleRows.filter((r) => r.is_starred);
@@ -531,12 +578,14 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     if (el instanceof StarredBucketItem) {
       const rows = this.rows
         .filter((r) => (showAutomated || !r.is_automated) && r.is_starred)
+        .filter((r) => !wsFilter || SessionsProvider.sessionInWorkspace(r.project_path, wsFilter))
         .sort((a, b) => b.mtime_epoch - a.mtime_epoch);
       return rows.map((r) => new SessionItem(r));
     }
     if (el instanceof BucketItem && el.kind === "session") {
       const rows = this.rows
         .filter((r) => showAutomated || !r.is_automated)
+        .filter((r) => !wsFilter || SessionsProvider.sessionInWorkspace(r.project_path, wsFilter))
         .filter((r) => dayBucket(new Date(r.mtime_epoch * 1000)) === el.bucket)
         .sort((a, b) => b.mtime_epoch - a.mtime_epoch);
       return rows.map((r) => new SessionItem(r));
@@ -1762,6 +1811,10 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       refreshKbTitle();
       kb.refresh();
+      // Sessions view is filtered by the workspace's first folder — refresh
+      // so the filter (and the "N other-folder sessions hidden" notice)
+      // re-evaluates against the new workspace.
+      sessions.refresh();
     }),
   );
 
