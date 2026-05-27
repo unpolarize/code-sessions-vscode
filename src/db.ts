@@ -123,6 +123,15 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE session ADD COLUMN last_assistant_text_at INTEGER;
   `,
+
+  // v6 — session_star: user pinned sessions. session_id deliberately a FK so
+  // we drop the star if the session row is gone (cascade).
+  `
+  CREATE TABLE session_star (
+    session_id  TEXT PRIMARY KEY REFERENCES session(session_id) ON DELETE CASCADE,
+    starred_at  INTEGER NOT NULL
+  );
+  `,
 ];
 
 export interface SessionRow {
@@ -603,6 +612,34 @@ export class SessionStore {
     return this.db.prepare("DELETE FROM turn_embedding WHERE embedding_model != ?").run(keepModel).changes;
   }
 
+  /** Cheap aggregate counts for the background-classifier overview. All in
+   * a single round trip via SQLite's expression-list trick. */
+  classificationOverview(): {
+    totalSessions: number;
+    sessionsWithPending: number;
+    totalEligibleTurns: number;
+    classifiedTurns: number;
+  } {
+    const r = this.db
+      .prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM session) AS totalSessions,
+          (SELECT COUNT(DISTINCT t.session_id)
+             FROM turn t
+             LEFT JOIN turn_topic tt ON tt.turn_uuid = t.turn_uuid
+             WHERE tt.turn_uuid IS NULL AND COALESCE(t.user_text,'') != '') AS sessionsWithPending,
+          (SELECT COUNT(*) FROM turn WHERE COALESCE(user_text,'') != '') AS totalEligibleTurns,
+          (SELECT COUNT(*) FROM turn_topic) AS classifiedTurns
+      `)
+      .get() as any;
+    return {
+      totalSessions: Number(r?.totalSessions ?? 0),
+      sessionsWithPending: Number(r?.sessionsWithPending ?? 0),
+      totalEligibleTurns: Number(r?.totalEligibleTurns ?? 0),
+      classifiedTurns: Number(r?.classifiedTurns ?? 0),
+    };
+  }
+
   /** Returns sessions that still have ≥1 turn with non-empty `user_text` but
    * no `turn_topic` row. Used by the background classifier daemon to schedule
    * incremental classification work. Sorted newest-first. */
@@ -633,13 +670,22 @@ export class SessionStore {
   searchTopics(
     query: string,
     limit = 200,
-  ): Array<{ session_id: string; title: string | null; topic: string; topic_norm: string; count: number; last_ts: number | null }> {
+  ): Array<{
+    session_id: string;
+    title: string | null;
+    project_id: string | null;
+    project_path: string | null;
+    topic: string;
+    topic_norm: string;
+    count: number;
+    last_ts: number | null;
+  }> {
     const q = String(query || "").trim();
     if (q.length === 0) return [];
     const like = "%" + q.toLowerCase() + "%";
     const rows = this.db
       .prepare(`
-        SELECT s.session_id, s.title, tt.topic_norm,
+        SELECT s.session_id, s.title, s.project_id, s.project_path, tt.topic_norm,
                MIN(tt.topic) AS topic,
                COUNT(*) AS c,
                MAX(t.ended_at) AS last_ts
@@ -655,6 +701,8 @@ export class SessionStore {
     return rows.map((r) => ({
       session_id: r.session_id,
       title: r.title,
+      project_id: r.project_id ?? null,
+      project_path: r.project_path ?? null,
       topic: r.topic,
       topic_norm: r.topic_norm,
       count: r.c,
@@ -670,6 +718,8 @@ export class SessionStore {
   ): Array<{
     session_id: string;
     title: string | null;
+    project_id: string | null;
+    project_path: string | null;
     turn_uuid: string;
     turn_index: number;
     ts: number | null;
@@ -682,7 +732,8 @@ export class SessionStore {
     const like = "%" + q.toLowerCase() + "%";
     const rows = this.db
       .prepare(`
-        SELECT t.session_id, s.title, t.turn_uuid, t.turn_index, t.ended_at AS ts,
+        SELECT t.session_id, s.title, s.project_id, s.project_path,
+               t.turn_uuid, t.turn_index, t.ended_at AS ts,
                t.user_text, t.assistant_excerpt,
                (LOWER(COALESCE(t.user_text,'')) LIKE ?) AS um,
                (LOWER(COALESCE(t.assistant_excerpt,'')) LIKE ?) AS am
@@ -697,6 +748,8 @@ export class SessionStore {
     return rows.map((r) => ({
       session_id: r.session_id,
       title: r.title,
+      project_id: r.project_id ?? null,
+      project_path: r.project_path ?? null,
       turn_uuid: r.turn_uuid,
       turn_index: r.turn_index,
       ts: r.ts ?? null,
@@ -704,6 +757,24 @@ export class SessionStore {
       assistant_excerpt: r.assistant_excerpt,
       matched: r.um && r.am ? "both" : r.um ? "user" : "assistant",
     }));
+  }
+
+  // ---- starred sessions ------------------------------------------------- //
+
+  starSession(sessionId: string): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO session_star (session_id, starred_at) VALUES (?, ?)")
+      .run(sessionId, Date.now());
+  }
+
+  unstarSession(sessionId: string): void {
+    this.db.prepare("DELETE FROM session_star WHERE session_id = ?").run(sessionId);
+  }
+
+  /** Set of starred session ids; cheap to read on every tree refresh. */
+  starredSessionIds(): Set<string> {
+    const rows = this.db.prepare("SELECT session_id FROM session_star").all() as any[];
+    return new Set(rows.map((r) => r.session_id));
   }
 
   // ---- maintenance ----------------------------------------------------- //

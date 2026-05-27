@@ -45,6 +45,8 @@ export class BackgroundClassifier {
   private paused = false;
   // Session ids that hit any error this run — retry-failed re-enqueues them.
   private failedIds = new Set<string>();
+  // For ETA calculations.
+  private runStartedAt = Date.now();
 
   constructor(
     private readonly ctx: vscode.ExtensionContext,
@@ -167,6 +169,12 @@ export class BackgroundClassifier {
       let added = 0;
       for (const id of ids) {
         if (this.inQueue.has(id)) continue;
+        // Skip sessions that have already failed this run. Without this
+        // check the worker grinds the same failures forever, because each
+        // failed session still has unclassified turns and the next
+        // discovery tick re-enqueues it. User can clear the block via the
+        // "Retry failed sessions" control on the status-bar tile.
+        if (this.failedIds.has(id)) continue;
         this.inQueue.add(id);
         this.queue.push(id);
         added += 1;
@@ -259,6 +267,42 @@ export class BackgroundClassifier {
     }
   }
 
+  /** Pull the cheap aggregate counts from the DB so the tooltip can show
+   * real progress, not just per-run worker activity. */
+  private overview(): {
+    totalSessions: number;
+    classifiedSessions: number;
+    sessionsWithPending: number;
+    classifiedTurns: number;
+    totalEligibleTurns: number;
+  } {
+    try {
+      const o = this.store.classificationOverview();
+      return {
+        totalSessions: o.totalSessions,
+        sessionsWithPending: o.sessionsWithPending,
+        classifiedSessions: Math.max(0, o.totalSessions - o.sessionsWithPending),
+        classifiedTurns: o.classifiedTurns,
+        totalEligibleTurns: o.totalEligibleTurns,
+      };
+    } catch {
+      return { totalSessions: 0, classifiedSessions: 0, sessionsWithPending: 0, classifiedTurns: 0, totalEligibleTurns: 0 };
+    }
+  }
+
+  private etaString(turnsRemaining: number): string {
+    // Estimate from this run's throughput: turns per second since start.
+    const runMs = Date.now() - this.runStartedAt;
+    if (this.classifiedThisRun < 10 || runMs < 5000) return "—";
+    const rate = (this.classifiedThisRun / runMs) * 1000; // turns/sec
+    if (rate <= 0) return "—";
+    const secs = Math.floor(turnsRemaining / rate);
+    if (secs < 60) return `${secs}s`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+    if (secs < 86400) return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+    return `${Math.floor(secs / 86400)}d ${Math.floor((secs % 86400) / 3600)}h`;
+  }
+
   private renderStatus(): void {
     if (!this.statusItem) return;
     if (!this.isEnabled()) {
@@ -266,10 +310,25 @@ export class BackgroundClassifier {
       return;
     }
 
+    const ov = this.overview();
     const pending = this.queue.length + (this.busy ? 1 : 0);
     const idx = this.sessionsStarted;
     const tot = Math.max(this.peakQueue, idx);
     const failed = this.failedIds.size;
+    const turnsRemaining = Math.max(0, ov.totalEligibleTurns - ov.classifiedTurns);
+    const pctTurns = ov.totalEligibleTurns > 0 ? Math.floor((ov.classifiedTurns / ov.totalEligibleTurns) * 100) : 100;
+    const pctSessions = ov.totalSessions > 0 ? Math.floor((ov.classifiedSessions / ov.totalSessions) * 100) : 100;
+
+    // Overview block — same for every state.
+    const overviewMd = (md: vscode.MarkdownString) => {
+      md.appendMarkdown(`---\n\n**Overall progress**\n\n`);
+      md.appendMarkdown(`Sessions: **${ov.classifiedSessions.toLocaleString()} / ${ov.totalSessions.toLocaleString()}** classified (${pctSessions}%)`);
+      if (ov.sessionsWithPending > 0) md.appendMarkdown(` · ${ov.sessionsWithPending.toLocaleString()} still need work`);
+      md.appendMarkdown(`\n\n`);
+      md.appendMarkdown(`Turns: **${ov.classifiedTurns.toLocaleString()} / ${ov.totalEligibleTurns.toLocaleString()}** classified (${pctTurns}%) · ${turnsRemaining.toLocaleString()} remaining\n\n`);
+      const eta = this.etaString(turnsRemaining);
+      if (eta !== "—") md.appendMarkdown(`ETA: **${eta}** at current rate (${this.classifiedThisRun} turn(s) this run).\n\n`);
+    };
 
     // ---- Paused state ----
     if (this.paused) {
@@ -279,7 +338,8 @@ export class BackgroundClassifier {
       md.appendMarkdown(`**Background topic classification — paused**\n\n`);
       md.appendMarkdown(`${pending} session(s) waiting.\n`);
       if (failed) md.appendMarkdown(`${failed} session(s) errored this run.\n`);
-      md.appendMarkdown(`\n_Click to resume / retry failed._`);
+      overviewMd(md);
+      md.appendMarkdown(`_Click to resume / retry failed._`);
       this.statusItem.tooltip = md;
       this.statusItem.show();
       return;
@@ -287,18 +347,19 @@ export class BackgroundClassifier {
 
     // ---- Idle (caught up) ----
     if (pending === 0 && !this.busy) {
-      if (this.classifiedThisRun > 0 || failed > 0) {
+      if (this.classifiedThisRun > 0 || failed > 0 || ov.sessionsWithPending > 0) {
         this.statusItem.text = failed > 0
-          ? `$(warning) ${this.classifiedThisRun} classified · ${failed} failed`
-          : `$(check) ${this.classifiedThisRun} turns classified`;
+          ? `$(warning) ${pctSessions}% · ${failed} failed`
+          : ov.sessionsWithPending > 0
+            ? `$(circle-large-outline) ${pctSessions}% classified`
+            : `$(check) all ${ov.totalSessions} sessions classified`;
         const md = new vscode.MarkdownString();
         md.isTrusted = true;
         md.appendMarkdown(`**Background topic classification — idle**\n\n`);
-        md.appendMarkdown(`${this.classifiedThisRun} turn(s) classified across ${this.sessionsStarted} session(s) this run.\n`);
-        if (failed > 0) {
-          md.appendMarkdown(`\n${failed} session(s) errored. _Click to retry._\n`);
-        }
-        if (this.lastError) md.appendMarkdown(`\n_Last error:_ ${escMd(this.lastError)}\n`);
+        md.appendMarkdown(`${this.classifiedThisRun} turn(s) classified across ${this.sessionsStarted} session pass(es) this run.\n\n`);
+        if (failed > 0) md.appendMarkdown(`${failed} session(s) errored and are blocked from re-queue. _Click → Retry failed._\n\n`);
+        overviewMd(md);
+        if (this.lastError) md.appendMarkdown(`_Last error:_ ${escMd(this.lastError)}\n`);
         this.statusItem.tooltip = md;
         this.statusItem.show();
       } else {
@@ -310,10 +371,10 @@ export class BackgroundClassifier {
     // ---- Running ----
     let text: string;
     if (this.busy && this.currentTitle) {
-      const turnPart = this.currentTotal > 0 ? ` · ${this.currentDone}/${this.currentTotal} turns` : "";
-      text = `$(sync~spin) ${idx}/${tot} · ${truncate(this.currentTitle, 28)}${turnPart}`;
+      const turnPart = this.currentTotal > 0 ? ` · ${this.currentDone}/${this.currentTotal}` : "";
+      text = `$(sync~spin) ${pctTurns}% · ${truncate(this.currentTitle, 24)}${turnPart}`;
     } else {
-      text = `$(sync~spin) Classifying · ${pending} queued`;
+      text = `$(sync~spin) ${pctTurns}% · ${pending} queued`;
     }
     if (failed > 0) text += ` · ${failed} failed`;
     this.statusItem.text = text;
@@ -321,8 +382,8 @@ export class BackgroundClassifier {
     const md = new vscode.MarkdownString();
     md.isTrusted = true;
     md.appendMarkdown(`**Background topic classification**\n\n`);
-    md.appendMarkdown(`Session **${idx} of ${tot}** · ${pending} pending`);
-    if (failed > 0) md.appendMarkdown(` · **${failed} failed**`);
+    md.appendMarkdown(`This pass: session ${idx} (${pending} queued)`);
+    if (failed > 0) md.appendMarkdown(` · **${failed} failed** (blocked)`);
     md.appendMarkdown(`\n\n`);
     if (this.busy && this.currentTitle) {
       md.appendMarkdown(`Currently: \`${escMd(this.currentTitle)}\``);
@@ -337,8 +398,8 @@ export class BackgroundClassifier {
     } else if (pending > 0) {
       md.appendMarkdown(`_Waiting for the next tick to pick up the next session…_\n`);
     }
-    md.appendMarkdown(`\n${this.classifiedThisRun} turn(s) classified this run.\n`);
-    if (failed > 0) md.appendMarkdown(`\n_Click to pause or retry failed sessions._\n`);
+    overviewMd(md);
+    if (failed > 0) md.appendMarkdown(`_Click to pause or retry ${failed} failed sessions._\n`);
     if (this.lastError) {
       const ageSec = Math.max(0, Math.floor((Date.now() - this.lastErrorAt) / 1000));
       md.appendMarkdown(`\n_Last error (${ageSec}s ago):_ ${escMd(this.lastError)}\n`);

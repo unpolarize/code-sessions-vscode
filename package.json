@@ -2,7 +2,7 @@
   "name": "claude-sessions",
   "displayName": "Claude Sessions",
   "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.13.3",
+  "version": "0.14.0",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
@@ -128,6 +128,20 @@
         "title": "Focus Claude Activity sidebar"
       },
       {
+        "command": "claudeSessions.revealProjectFolder",
+        "title": "Reveal project folder in Finder/Explorer"
+      },
+      {
+        "command": "claudeSessions.starSession",
+        "title": "Star session (pin to top)",
+        "icon": "$(star-empty)"
+      },
+      {
+        "command": "claudeSessions.unstarSession",
+        "title": "Unstar session",
+        "icon": "$(star-full)"
+      },
+      {
         "command": "claudeSessions.showTrajectory",
         "title": "Show conversation trajectory"
       },
@@ -228,8 +242,18 @@
       "view/item/context": [
         {
           "command": "claudeSessions.resume",
-          "when": "view == claudeSessions && (viewItem == session || viewItem == sessionAutomated)",
+          "when": "view == claudeSessions && (viewItem == session || viewItem == sessionAutomated || viewItem == session-starred || viewItem == sessionAutomated-starred)",
           "group": "inline"
+        },
+        {
+          "command": "claudeSessions.starSession",
+          "when": "view == claudeSessions && (viewItem == session || viewItem == sessionAutomated)",
+          "group": "navigation@0"
+        },
+        {
+          "command": "claudeSessions.unstarSession",
+          "when": "view == claudeSessions && (viewItem == session-starred || viewItem == sessionAutomated-starred)",
+          "group": "navigation@0"
         },
         {
           "command": "claudeSessions.openTranscript",
@@ -282,6 +306,11 @@
           "type": "number",
           "default": 100,
           "description": "Maximum number of most-recent sessions to load."
+        },
+        "claudeSessions.refresh.forceRecent": {
+          "type": "number",
+          "default": 100,
+          "description": "When the Refresh button is pressed, force a full re-parse of the N most recently-modified JSONLs (regardless of mtime cache). Catches on-disk edits — most notably session renames — that don't always bump mtime. Set to 0 to use only the cheap incremental sync."
         },
         "claudeSessions.scriptPath": {
           "type": "string",
@@ -357,6 +386,11 @@
           "default": true,
           "description": "Pop a VS Code toast the first time a session enters an awaiting-user state (AskUserQuestion or ExitPlanMode). The status-bar item and Live monitor banner always highlight these; this only controls the one-shot toast."
         },
+        "claudeSessions.costBudget.daily": {
+          "type": "number",
+          "default": 0,
+          "description": "Daily Claude-Code budget in USD. When > 0, a status-bar tile shows today's spend vs this number; it turns amber at 80% and red at 100%. Set to 0 (default) to hide the tile."
+        },
         "claudeSessions.classify.autoOnOpen": {
           "type": "boolean",
           "default": true,
@@ -379,8 +413,8 @@
         },
         "claudeSessions.classify.batchSize": {
           "type": "number",
-          "default": 20,
-          "description": "How many turns to classify per backend invocation."
+          "default": 10,
+          "description": "How many turns to classify per backend invocation. Smaller batches are more reliable with local Ollama models, which tend to drop ids when asked to echo back 20+ items. Drop to 5 if you still see 'N turns missing in response' errors."
         },
         "claudeSessions.classify.claudeBin": {
           "type": "string",

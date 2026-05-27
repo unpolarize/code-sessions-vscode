@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.14.0 — 2026-05-27
+
+Big release: project context everywhere, star sessions, daily cost budget, per-project rollup, plus a fix for the background classifier's "grinds forever" bug.
+
+### Sessions view
+- **Refresh now targets the recent N**. New setting `claudeSessions.refresh.forceRecent` (default 100) — pressing Refresh runs an incremental sync **plus** a force re-parse of the N most-recent-by-mtime JSONLs. This catches on-disk edits that don't reliably bump mtime (most notably claude-code session renames, which sometimes overwrite the JSONL in place at the same size). Set to 0 to use only the cheap incremental sync.
+- **Periodic refresh + day-rollover detection.** KB / Projects views auto-refresh every 2 min. A separate 60 s timer detects when the local day flips and refreshes every date-bucketed view (sessions, KB, projects, tasks) so items move out of "Today" without user action.
+
+### Search
+- **Project chip** on every result row (`docs`, `ai/otelo`, etc.) with the full project path on hover; `searchTopics` / `searchTurns` now select `s.project_id, s.project_path`.
+- **Continue in Claude** action per row (▶ button at the right edge, fades in on hover) routes through `claudeSessions.resume` so the routing matches the sidebar's inline action.
+
+### Conversation viewer
+- Header shows `📁 <project_id>` plus the full project path under the title.
+- Toolbar grows a **`▶ Continue in Claude`** primary button (left-most) and a **`📁 Reveal project folder`** button. The latter calls a new `claudeSessions.revealProjectFolder` command which uses `revealFileInOS` to open Finder/Explorer at the project root.
+
+### Star / pin sessions
+- New SQLite table `session_star` (migration **v6**) with `starSession` / `unstarSession` / `starredSessionIds` methods on the store.
+- Sessions provider renders a **`★ Starred — N sessions`** bucket at the very top (expanded by default) whenever anything is pinned. Each session's icon flips to `star-full` when pinned.
+- New commands `claudeSessions.starSession` and `claudeSessions.unstarSession` wired into the right-click context menu. The menu toggles between empty and full star based on the `contextValue` (`session` vs `session-starred`). FK cascade drops stars when a session is deleted.
+
+### Daily cost budget meter
+- New right-side status-bar tile, reading `buildUpdate(store).costToday`. Hidden when `claudeSessions.costBudget.daily = 0` (default).
+- When > 0, text reads `$X.XX / $Y (Z%)`. Turns amber via `statusBarItem.warningBackground` at 80 %, red via `statusBarItem.errorBackground` at 100 %+.
+- Click opens Insights. Tooltip breaks down today's spend, budget, and used %. Re-ticks every 10 s alongside the existing live tile and on settings changes.
+
+### Insights dashboard
+- **Project rollup table** under the existing "Top projects by cost" chart. Columns: **Project · Sessions · Cost · Tokens · 🪄 · Top topic · Last active**. Cost / tokens split evenly across touched projects (same model as the existing chart). Top topic rolls up classified topics from all sessions in the project.
+
+### Background topic-classification daemon
+- **Fix: stops grinding forever on failed sessions.** Discovery used to keep re-enqueueing failed sessions every 60 s; the same ~72 failures kept getting picked up over and over, inflating "Session 2610 of 2610" while making no real progress. Discovery now skips any session id in `failedIds` until the user explicitly clicks **Retry failed sessions** on the status-bar tile.
+- **Real DB-backed overview.** New `classificationOverview()` returns four numbers in one round trip: total sessions, sessions still pending, total eligible turns, classified turns.
+- **Tile + tooltip now show overall progress + ETA.** Text reads `4% · <session title> · 6/10`; tooltip shows `Sessions: 642 / 700 classified (91%)`, `Turns: 14,310 / 16,500 (87%)`, and `ETA: 24m at current rate`. When everything is done the tile reads `$(check) all 700 sessions classified` and then hides.
+- **Default batch size 20 → 10.** The most common error (`N turns missing in response`) is the small Ollama model failing to echo back 20 ids in one JSON response. 10 is markedly more reliable; drop to 5 if the error persists.
+
 ## 0.13.3 — 2026-05-20
 
 UX + docs polish.

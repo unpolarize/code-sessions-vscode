@@ -44,6 +44,12 @@ export function openSearchView(
       await onOpenSession(msg.sessionId, row?.title || msg.sessionId.slice(0, 8));
       return;
     }
+    if (msg?.command === "resume" && typeof msg.sessionId === "string") {
+      // Route through the existing resume command. The handler reads .session
+      // from whatever it's given, so we just hand it the id directly.
+      await vscode.commands.executeCommand("claudeSessions.resume", { session: msg.sessionId });
+      return;
+    }
   });
 
   // Kick off an initial query if one was passed in (e.g. from a command arg).
@@ -79,11 +85,15 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
   @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
   .panel { background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 10px 12px; }
   .panel h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--vscode-descriptionForeground); }
-  .row { padding: 6px 4px; border-radius: 3px; cursor: pointer; line-height: 1.4; }
+  .row { position: relative; padding: 6px 4px 6px 4px; padding-right: 28px; border-radius: 3px; cursor: pointer; line-height: 1.4; }
   .row:hover { background: var(--vscode-list-hoverBackground); }
+  .row:hover .resume { opacity: 1; }
   .row .title { color: var(--vscode-textLink-foreground); }
   .row .sub { color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 2px; }
   .row .excerpt { font-size: 11.5px; color: var(--vscode-editor-foreground); margin-top: 4px; white-space: pre-wrap; max-height: 4.5em; overflow: hidden; }
+  .row .resume { position: absolute; right: 4px; top: 6px; opacity: 0.55; font-size: 12px; padding: 2px 8px; border-radius: 3px; color: var(--vscode-textLink-foreground); user-select: none; cursor: pointer; }
+  .row .resume:hover { background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.18)); opacity: 1; }
+  .row .proj { display: inline-block; padding: 0 6px; font-size: 10.5px; border-radius: 8px; background: rgba(127,127,127,0.16); color: var(--vscode-descriptionForeground); margin-right: 6px; vertical-align: middle; font-family: var(--vscode-editor-font-family, monospace); }
   .badge { display: inline-block; padding: 1px 6px; font-size: 10px; border-radius: 8px; background: rgba(127,127,127,0.18); color: var(--vscode-descriptionForeground); margin-left: 6px; vertical-align: middle; }
   .badge.user { background: rgba(74, 144, 226, 0.20); color: #4a90e2; }
   .badge.assistant { background: rgba(62, 207, 142, 0.20); color: #3ecf8e; }
@@ -148,12 +158,14 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
   function renderTopics(rows, q) {
     if (!q.trim()) { topicsBody.innerHTML = '<div class="empty">Type to search.</div>'; return; }
     if (rows.length === 0) { topicsBody.innerHTML = '<div class="empty">No topic matches.</div>'; return; }
-    topicsBody.innerHTML = rows.map(r =>
-      '<div class="row" data-sid="' + escHtml(r.session_id) + '">' +
-        '<div><strong>' + highlight(r.topic, q) + '</strong><span class="badge">' + r.count + '</span></div>' +
+    topicsBody.innerHTML = rows.map(r => {
+      const proj = r.project_id ? '<span class="proj" title="' + escHtml(r.project_path || '') + '">' + escHtml(r.project_id) + '</span>' : '';
+      return '<div class="row" data-sid="' + escHtml(r.session_id) + '">' +
+        '<div>' + proj + '<strong>' + highlight(r.topic, q) + '</strong><span class="badge">' + r.count + '</span></div>' +
         '<div class="sub">' + escHtml(r.title || r.session_id.slice(0,8)) + (r.last_ts ? ' · ' + timeAgo(r.last_ts) : '') + '</div>' +
-      '</div>'
-    ).join('');
+        '<span class="resume" data-resume="' + escHtml(r.session_id) + '" title="Continue in Claude">▶</span>' +
+      '</div>';
+    }).join('');
   }
   function renderConversations(rows, q) {
     if (!q.trim()) { convBody.innerHTML = '<div class="empty">Type to search.</div>'; return; }
@@ -166,10 +178,12 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
       const source = which === 'assistant' ? r.assistant_excerpt : r.user_text;
       const fallback = source || r.assistant_excerpt || r.user_text || '';
       const excerpt = snippet(fallback, q, 180);
+      const proj = r.project_id ? '<span class="proj" title="' + escHtml(r.project_path || '') + '">' + escHtml(r.project_id) + '</span>' : '';
       return '<div class="row" data-sid="' + escHtml(r.session_id) + '">' +
-        '<div><span class="title">' + escHtml(r.title || r.session_id.slice(0,8)) + '</span>' + badge +
+        '<div>' + proj + '<span class="title">' + escHtml(r.title || r.session_id.slice(0,8)) + '</span>' + badge +
           '<span class="meta"> · turn ' + r.turn_index + (r.ts ? ' · ' + timeAgo(r.ts) : '') + '</span></div>' +
         '<div class="excerpt">' + highlight(excerpt, q) + '</div>' +
+        '<span class="resume" data-resume="' + escHtml(r.session_id) + '" title="Continue in Claude">▶</span>' +
       '</div>';
     }).join('');
   }
@@ -188,6 +202,14 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
 
   // Click delegation
   function onRowClick(ev) {
+    // Resume button intercepts the row click — Continue-in-Claude path.
+    const resumeEl = ev.target.closest('.resume');
+    if (resumeEl) {
+      ev.stopPropagation();
+      const sid = resumeEl.getAttribute('data-resume');
+      if (sid) vscode.postMessage({ command: 'resume', sessionId: sid });
+      return;
+    }
     const row = ev.target.closest('.row');
     if (!row) return;
     const sid = row.getAttribute('data-sid');

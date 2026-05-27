@@ -263,18 +263,32 @@ export interface SyncStats {
 /** Full sync: parse every new/changed JSONL into SQLite. Returns stats. */
 export function syncToStore(
   store: SessionStore,
-  opts: { onProgress?: (done: number, total: number) => void; force?: boolean } = {},
+  opts: {
+    onProgress?: (done: number, total: number) => void;
+    /** Re-parse every JSONL on disk regardless of mtime/size cache. */
+    force?: boolean;
+    /** Re-parse the N most-recent-by-mtime JSONLs regardless of cache, while
+     * still incrementally checking the rest. Cheap way to catch on-disk edits
+     * that don't reliably bump mtime (e.g. session renames in claude code). */
+    forceRecentN?: number;
+  } = {},
 ): SyncStats {
   const t0 = Date.now();
   const disk = listAllJsonls();
   const known = store.knownPaths();
 
-  // Diff: which files are new or changed? Force mode re-parses everything so
-  // edits that don't reliably bump mtime (e.g. some claude rename flows) are
-  // still picked up when the user explicitly asks for a refresh.
+  // Build the "forced" set: top-N most-recent JSONLs if forceRecentN is set.
+  let forcedSet: Set<string> | null = null;
+  if (opts.forceRecentN && opts.forceRecentN > 0) {
+    const sorted = [...disk].sort((a, b) => b.mtime_ns - a.mtime_ns).slice(0, opts.forceRecentN);
+    forcedSet = new Set(sorted.map((d) => d.jsonl_path));
+  }
+
+  // Diff: which files are new or changed? `force` re-parses everything;
+  // `forceRecentN` re-parses just the N newest entries plus the usual delta.
   const toParse: JsonlInfo[] = [];
   for (const info of disk) {
-    if (opts.force) { toParse.push(info); continue; }
+    if (opts.force || (forcedSet && forcedSet.has(info.jsonl_path))) { toParse.push(info); continue; }
     const cached = known.get(info.jsonl_path);
     if (!cached || cached.mtime_ns !== info.mtime_ns || cached.size_bytes !== info.size_bytes) {
       toParse.push(info);

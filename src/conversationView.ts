@@ -205,13 +205,18 @@ const STYLE = `
   .toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
   .toolbar a.btn { display: inline-block; padding: 4px 12px; border: 1px solid var(--border); border-radius: 4px; color: var(--fg); text-decoration: none; font-size: 12px; background: var(--tool-bg); }
   .toolbar a.btn:hover { border-color: var(--accent); color: var(--accent); }
+  .toolbar a.btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: var(--vscode-button-background); font-weight: 600; }
+  .toolbar a.btn.primary:hover { background: var(--vscode-button-hoverBackground, var(--vscode-button-background)); color: var(--vscode-button-foreground); border-color: var(--vscode-button-background); }
   .toolbar .topic-meta { font-size: 11px; color: var(--muted); align-self: center; }
+  .proj-chip { display: inline-block; padding: 0 8px; font-size: 11px; border-radius: 10px; background: var(--tool-bg); border: 1px solid var(--border); color: var(--fg); }
+  code.dim { color: var(--muted); font-size: 11px; }
 `;
 
 function renderHtml(
   c: ParsedConversation,
   jsonlPath: string,
   topics?: Map<string, { topic: string; topic_norm: string }>,
+  project?: { id: string | null; path: string | null },
 ): string {
   const totalTurns = c.summary.totalTurns;
   const totalTools = c.summary.totalTools;
@@ -225,6 +230,10 @@ function renderHtml(
   const classifyUrl = `command:claudeSessions.classifyTopics?${classifyArg}`;
   const trajectoryArg = encodeURIComponent(JSON.stringify([c.sessionId, c.title || ""]));
   const trajectoryUrl = `command:claudeSessions.showTrajectory?${trajectoryArg}`;
+  const resumeArg = encodeURIComponent(JSON.stringify([{ session: c.sessionId, title: c.title || "" }]));
+  const resumeUrl = `command:claudeSessions.resume?${resumeArg}`;
+  const revealArg = project?.path ? encodeURIComponent(JSON.stringify([project.path])) : "";
+  const revealUrl = revealArg ? `command:claudeSessions.revealProjectFolder?${revealArg}` : "";
   const classifiedCount = topics?.size ?? 0;
   const eligibleCount = c.turns.filter((t) => t.userText.trim().length > 0).length;
   const meta =
@@ -256,9 +265,13 @@ function renderHtml(
 <h1>${escapeHtml(c.title || "(no title)")}</h1>
 <div class="hdr-sub">
   <code>${escapeHtml(c.sessionId)}</code>
+  ${project?.id ? ` · <span class="proj-chip">📁 ${escapeHtml(project.id)}</span>` : ""}
+  ${project?.path ? ` · <code class="dim">${escapeHtml(project.path)}</code>` : ""}
   · ${escapeHtml(jsonlPath)}
 </div>
 <div class="toolbar">
+  <a class="btn primary" href="${resumeUrl}">▶ Continue in Claude</a>
+  ${revealUrl ? `<a class="btn" href="${revealUrl}" title="Reveal the project folder in Finder/Explorer">📁 Reveal project folder</a>` : ""}
   <a class="btn" href="${classifyUrl}">${classifiedCount > 0 ? "Re-analyze topics" : "Analyze topics"}</a>
   <a class="btn" href="${trajectoryUrl}">Show trajectory</a>
   <span class="topic-meta">${escapeHtml(meta)}</span>
@@ -305,7 +318,9 @@ export function openConversationViewer(
       if (!parsed.title) parsed.title = title;
       if (!parsed.sessionId) parsed.sessionId = sessionId;
       const topics = store ? store.topicsForSession(parsed.sessionId) : undefined;
-      panel.webview.html = renderHtml(parsed, jsonlPath, topics);
+      const row = store ? store.getById(parsed.sessionId) : null;
+      const project = row ? { id: row.project_id, path: row.project_path } : undefined;
+      panel.webview.html = renderHtml(parsed, jsonlPath, topics, project);
     } catch (e: any) {
       panel.webview.html = `<pre>Failed to parse ${escapeHtml(jsonlPath)}\n\n${escapeHtml(e?.message || String(e))}</pre>`;
     }

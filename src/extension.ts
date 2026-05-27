@@ -78,6 +78,62 @@ function exec(
  * every 5 s when at least one session is active, drops to 30 s when idle.
  * Hover shows a per-session breakdown; click opens the live monitor.
  */
+/** Daily cost budget meter. Hidden when no budget is configured. Reuses
+ * the live-monitor's `buildUpdate(store).costToday` so we don't double-poll. */
+function createCostBudgetTile(
+  ctx: vscode.ExtensionContext,
+  store: SessionStore,
+): { item: vscode.StatusBarItem; tick: () => void } {
+  const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  item.name = "Claude · cost today";
+  item.command = "claudeSessions.openInsights";
+
+  const tick = () => {
+    const cfg = vscode.workspace.getConfiguration("claudeSessions");
+    const budget = cfg.get<number>("costBudget.daily", 0);
+    if (budget <= 0) {
+      item.hide();
+      return;
+    }
+    let costToday = 0;
+    try {
+      costToday = buildUpdate(store).costToday;
+    } catch {
+      item.hide();
+      return;
+    }
+    const pct = budget > 0 ? Math.min(999, Math.round((costToday / budget) * 100)) : 0;
+    let icon = "$(symbol-currency)";
+    item.backgroundColor = undefined;
+    if (pct >= 100) {
+      icon = "$(error)";
+      item.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+    } else if (pct >= 80) {
+      icon = "$(warning)";
+      item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+    }
+    item.text = `${icon} \\$${costToday.toFixed(2)} / \\$${budget.toFixed(0)} (${pct}%)`;
+    const md = new vscode.MarkdownString();
+    md.appendMarkdown(`**Claude — today**\n\n`);
+    md.appendMarkdown(`Spend: **\\$${costToday.toFixed(2)}**\n\n`);
+    md.appendMarkdown(`Daily budget: \\$${budget.toFixed(2)}\n\n`);
+    md.appendMarkdown(`Used: **${pct}%** of budget\n\n`);
+    if (pct >= 100) md.appendMarkdown(`⚠ **Over budget.** Click for Insights.`);
+    else if (pct >= 80) md.appendMarkdown(`Approaching budget — click for Insights.`);
+    else md.appendMarkdown(`Click for Insights.`);
+    item.tooltip = md;
+    item.show();
+  };
+  tick();
+  ctx.subscriptions.push(
+    item,
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("claudeSessions.costBudget")) tick();
+    }),
+  );
+  return { item, tick };
+}
+
 function createLiveStatusBar(
   ctx: vscode.ExtensionContext,
   store: SessionStore,
@@ -264,6 +320,7 @@ interface SessionRow {
   topic_counts?: Array<[string, number]>;
   /** Epoch seconds of the last assistant text response, or 0 when unknown. */
   last_response_epoch?: number;
+  is_starred?: boolean;
 }
 
 /**
@@ -380,6 +437,11 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         } catch {
           // topics are decorative; ignore errors
         }
+        // Decorate with starred state.
+        try {
+          const starred = this.store.starredSessionIds();
+          for (const r of this.rows) r.is_starred = starred.has(r.session);
+        } catch { /* ignore */ }
         this.lastError = null;
         return;
       } catch (e: any) {
@@ -426,6 +488,14 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       // Filter automated rows up front so bucket totals match the displayed rows.
       const visibleRows = this.rows.filter((r) => showAutomated || !r.is_automated);
       const automatedCount = this.rows.length - visibleRows.length;
+      const out: vscode.TreeItem[] = [];
+
+      // Starred section (only when there are any). Always rendered first.
+      const starredRows = visibleRows.filter((r) => r.is_starred);
+      if (starredRows.length > 0) {
+        out.push(new StarredBucketItem(starredRows.length));
+      }
+
       const byBucket = new Map<string, SessionRow[]>();
       for (const r of visibleRows) {
         const b = dayBucket(new Date(r.mtime_epoch * 1000));
@@ -433,15 +503,16 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         arr.push(r);
         byBucket.set(b, arr);
       }
-      const buckets = BUCKET_ORDER.filter((b) => byBucket.has(b)).map((b) => {
+      for (const b of BUCKET_ORDER.filter((bb) => byBucket.has(bb))) {
         const arr = byBucket.get(b)!;
         const totals = {
           tokens: arr.reduce((n, r) => n + r.tokens_total, 0),
           cost: arr.reduce((n, r) => n + r.cost_usd, 0),
           subagents: arr.reduce((n, r) => n + (r.subagents || 0), 0),
         };
-        return new BucketItem(b, arr.length, "session", totals) as vscode.TreeItem;
-      });
+        out.push(new BucketItem(b, arr.length, "session", totals));
+      }
+      const buckets = out;
       if (!showAutomated && automatedCount > 0) {
         const tip = new vscode.TreeItem(
           `${automatedCount} automated/cron sessions hidden`,
@@ -457,6 +528,12 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return buckets;
     }
 
+    if (el instanceof StarredBucketItem) {
+      const rows = this.rows
+        .filter((r) => (showAutomated || !r.is_automated) && r.is_starred)
+        .sort((a, b) => b.mtime_epoch - a.mtime_epoch);
+      return rows.map((r) => new SessionItem(r));
+    }
     if (el instanceof BucketItem && el.kind === "session") {
       const rows = this.rows
         .filter((r) => showAutomated || !r.is_automated)
@@ -468,6 +545,14 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return el.metricsChildren();
     }
     return [];
+  }
+}
+
+class StarredBucketItem extends vscode.TreeItem {
+  constructor(public readonly count: number) {
+    super(`★ Starred — ${count} session${count === 1 ? "" : "s"}`, vscode.TreeItemCollapsibleState.Expanded);
+    this.iconPath = new vscode.ThemeIcon("star-full");
+    this.contextValue = "bucket-starred";
   }
 }
 
@@ -568,13 +653,16 @@ class SessionItem extends vscode.TreeItem {
       ].join("\n"),
     );
     this.iconPath = new vscode.ThemeIcon(
-      row.is_automated
-        ? "watch"
-        : row.active === "*"
-          ? "pulse"
-          : "comment-discussion",
+      row.is_starred
+        ? "star-full"
+        : row.is_automated
+          ? "watch"
+          : row.active === "*"
+            ? "pulse"
+            : "comment-discussion",
     );
-    this.contextValue = row.is_automated ? "sessionAutomated" : "session";
+    const base = row.is_automated ? "sessionAutomated" : "session";
+    this.contextValue = row.is_starred ? `${base}-starred` : base;
     // No `command` here: clicking expands the children. Use the explicit
     // "Resume" command via the inline action / right-click instead.
   }
@@ -1218,7 +1306,11 @@ export function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push({ dispose: () => store?.close() });
 
   // Always-visible live status bar
-  if (store) createLiveStatusBar(ctx, store);
+  let costBudgetTick: (() => void) | null = null;
+  if (store) {
+    createLiveStatusBar(ctx, store);
+    costBudgetTick = createCostBudgetTile(ctx, store).tick;
+  }
 
   // Background topic classifier — picks up unclassified turns and works
   // through them via Ollama (opt-in via settings for claude-p).
@@ -1339,11 +1431,18 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("claudeSessions.refresh", async () => {
-      // Incremental re-sync from disk before re-rendering. Without this,
-      // the refresh button only re-reads the SQLite cache and never picks
-      // up things like a session rename that just landed in the JSONL.
+      // Incremental sync from disk + force re-parse the top-N most-recent
+      // sessions. The forced top-N catches on-disk edits that don't reliably
+      // bump mtime (most notably claude-code session renames, which sometimes
+      // overwrite the JSONL in place at the same size).
       if (store) {
-        try { syncToStore(store); } catch (e) { console.error("[claude-sessions] refresh sync failed", e); }
+        const cfg = vscode.workspace.getConfiguration("claudeSessions");
+        const recent = Math.max(0, cfg.get<number>("refresh.forceRecent", 100));
+        try {
+          syncToStore(store, recent > 0 ? { forceRecentN: recent } : {});
+        } catch (e) {
+          console.error("[claude-sessions] refresh sync failed", e);
+        }
       }
       await sessions.refresh();
     }),
@@ -1581,6 +1680,31 @@ export function activate(ctx: vscode.ExtensionContext) {
       currentAgentGraphPanel.reveal();
       currentAgentGraphPanel.webview.postMessage({ command: "toggleMode" });
     }),
+    vscode.commands.registerCommand("claudeSessions.starSession", async (arg: SessionRow | SessionItem | undefined) => {
+      if (!store) return;
+      const row = arg && typeof arg === "object" && "row" in arg ? (arg as SessionItem).row : (arg as SessionRow | undefined);
+      if (!row?.session) return;
+      store.starSession(row.session);
+      sessions.refresh();
+    }),
+    vscode.commands.registerCommand("claudeSessions.unstarSession", async (arg: SessionRow | SessionItem | undefined) => {
+      if (!store) return;
+      const row = arg && typeof arg === "object" && "row" in arg ? (arg as SessionItem).row : (arg as SessionRow | undefined);
+      if (!row?.session) return;
+      store.unstarSession(row.session);
+      sessions.refresh();
+    }),
+    vscode.commands.registerCommand("claudeSessions.revealProjectFolder", async (projectPath: string) => {
+      if (!projectPath || typeof projectPath !== "string") return;
+      const expanded = expandHome(projectPath);
+      try {
+        const uri = vscode.Uri.file(expanded);
+        // `revealFileInOS` opens Finder/Explorer pointing at the folder.
+        await vscode.commands.executeCommand("revealFileInOS", uri);
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Cannot reveal ${expanded}: ${e.message}`);
+      }
+    }),
     vscode.commands.registerCommand("claudeSessions.focusActivityView", async () => {
       // VS Code provides workbench.view.extension.<containerId> to focus a
       // view container. Wrapping it makes the keybinding discoverable in the
@@ -1646,6 +1770,35 @@ export function activate(ctx: vscode.ExtensionContext) {
   const tasksTimer = setInterval(() => tasks.refresh(), 30_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(tasksTimer) });
 
+  // KB-changes + Projects views are git-log driven, so they don't move unless
+  // we re-read git or the local-day rolls past midnight. Re-poll every 2 min
+  // so new commits / new days show up automatically.
+  const kbProjectsTimer = setInterval(() => {
+    kb.refresh();
+    projects.refresh();
+  }, 2 * 60 * 1000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(kbProjectsTimer) });
+
+  // Day-rollover detection. The date-bucket label is computed at render time
+  // from `new Date()`, so when local midnight passes nothing moves from
+  // "Today" to "Yesterday" until something else triggers a refresh. We
+  // detect the rollover once a minute and refresh every bucketed view.
+  let lastDayKey = todayKey();
+  function todayKey(): number {
+    const d = new Date();
+    return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+  }
+  const dayRolloverTimer = setInterval(() => {
+    const k = todayKey();
+    if (k === lastDayKey) return;
+    lastDayKey = k;
+    sessions.refresh();
+    kb.refresh();
+    projects.refresh();
+    tasks.refresh();
+  }, 60_000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(dayRolloverTimer) });
+
   // Sessions view: incremental re-sync + re-render every 10 s so the
   // leading "time since last activity" column stays close to real-time.
   // syncToStore is incremental — it only re-parses JSONLs whose (mtime,size)
@@ -1659,6 +1812,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     // Give the background classifier a nudge so newly-detected turns get
     // queued without waiting for its own discovery interval.
     bgClassifier?.notifySyncCompleted();
+    // Refresh the daily cost budget tile alongside the live tile.
+    costBudgetTick?.();
   }, 10_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(sessionsTimer) });
 }

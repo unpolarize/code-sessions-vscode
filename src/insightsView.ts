@@ -33,6 +33,7 @@ interface SessionRow {
   first_ts_epoch?: number;
   entrypoint?: string;
   is_automated?: boolean;
+  topic_counts?: Array<[string, number]>;
 }
 
 function escapeHtml(s: string): string {
@@ -345,6 +346,66 @@ function projectMix(rows: SessionRow[]): { project: string; cost: number; sessio
     .sort((a, b) => b.cost - a.cost);
 }
 
+/** Richer per-project rollup for the Insights table. Cost is split across
+ * touched projects (matches `projectMix`); tokens use the same split. */
+interface ProjectRollup {
+  project: string;
+  sessions: number;
+  cost: number;
+  tokens: number;
+  subagents: number;
+  lastActiveEpoch: number; // mtime_epoch (sec) of most-recent session
+  topTopic: string | null;
+}
+function projectRollup(rows: SessionRow[]): ProjectRollup[] {
+  const acc = new Map<string, {
+    sessions: number;
+    cost: number;
+    tokens: number;
+    subagents: number;
+    lastActiveEpoch: number;
+    topicCounts: Map<string, number>;
+  }>();
+  for (const r of rows) {
+    const projs = r.projects_touched.length > 0 ? r.projects_touched : [r.project || "(unknown)"];
+    const share = 1 / projs.length;
+    for (const p of projs) {
+      const cur = acc.get(p) ?? {
+        sessions: 0, cost: 0, tokens: 0, subagents: 0, lastActiveEpoch: 0,
+        topicCounts: new Map<string, number>(),
+      };
+      cur.sessions += 1;
+      cur.cost += r.cost_usd * share;
+      cur.tokens += (r.tokens_total ?? 0) * share;
+      cur.subagents += (r.subagents ?? 0) * share;
+      if ((r.mtime_epoch ?? 0) > cur.lastActiveEpoch) cur.lastActiveEpoch = r.mtime_epoch;
+      // Roll up the session's top topics (if classified) into the project bucket.
+      if (r.topic_counts && r.topic_counts.length > 0) {
+        for (const [topic, n] of r.topic_counts) {
+          cur.topicCounts.set(topic, (cur.topicCounts.get(topic) ?? 0) + n);
+        }
+      }
+      acc.set(p, cur);
+    }
+  }
+  return Array.from(acc.entries())
+    .map(([project, v]) => {
+      let topTopic: string | null = null;
+      let bestN = 0;
+      for (const [t, n] of v.topicCounts) if (n > bestN) { bestN = n; topTopic = t; }
+      return {
+        project,
+        sessions: v.sessions,
+        cost: v.cost,
+        tokens: Math.round(v.tokens),
+        subagents: Math.round(v.subagents),
+        lastActiveEpoch: v.lastActiveEpoch,
+        topTopic,
+      };
+    })
+    .sort((a, b) => b.cost - a.cost);
+}
+
 function hourDayHeatmap(rows: SessionRow[]): number[][] {
   // [dayOfWeek 0=Sun][hour 0..23]
   const m: number[][] = Array.from({ length: 7 }, () => new Array(24).fill(0));
@@ -459,6 +520,14 @@ table.top-sessions th { text-align: left; padding: 6px 4px; border-bottom: 1px s
 table.top-sessions td { padding: 5px 4px; border-bottom: 1px solid var(--border); }
 table.top-sessions td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.top-sessions tr:last-child td { border-bottom: none; }
+table.project-rollup { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.project-rollup th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); color: var(--muted); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+table.project-rollup td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+table.project-rollup td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.project-rollup tr:last-child td { border-bottom: none; }
+table.project-rollup tr:hover td { background: var(--vscode-list-hoverBackground, rgba(127,127,127,0.06)); }
+table.project-rollup code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
+.muted { color: var(--muted); font-style: italic; }
 `;
 
 function renderDashboard(opts: {
@@ -506,6 +575,44 @@ function renderDashboard(opts: {
     })),
     { width: 720, color: "var(--vscode-charts-blue, #4c9aff)", format: fmt$ },
   );
+
+  // ---------- Project rollup table ---------- //
+  const rollup = projectRollup(rows).slice(0, 24);
+  const agoStr = (epochSec: number): string => {
+    if (!epochSec) return "—";
+    const diffSec = Math.max(0, Math.floor(Date.now() / 1000 - epochSec));
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+    return `${Math.floor(diffSec / 86400)}d ago`;
+  };
+  const projectTable = rollup.length === 0
+    ? '<div class="subtitle">No projects to rollup yet.</div>'
+    : `
+    <table class="project-rollup">
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th class="num">Sessions</th>
+          <th class="num">Cost</th>
+          <th class="num">Tokens</th>
+          <th class="num">🪄</th>
+          <th>Top topic</th>
+          <th>Last active</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rollup.map((p) => `
+        <tr>
+          <td><code>${escapeHtml(p.project)}</code></td>
+          <td class="num">${p.sessions.toLocaleString()}</td>
+          <td class="num">${escapeHtml(fmt$(p.cost))}</td>
+          <td class="num">${escapeHtml(fmtTok(p.tokens))}</td>
+          <td class="num">${p.subagents > 0 ? p.subagents : ""}</td>
+          <td>${p.topTopic ? escapeHtml(p.topTopic) : '<span class="muted">(unclassified)</span>'}</td>
+          <td>${escapeHtml(agoStr(p.lastActiveEpoch))}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>`;
 
   // ---------- Heatmap ---------- //
   const heat = hourDayHeatmap(rows);
@@ -614,6 +721,12 @@ function renderDashboard(opts: {
 
 <h2>Top projects by cost</h2>
 <div class="card">${projectChart}</div>
+
+<h2>Project rollup</h2>
+<div class="card">
+  <div class="subtitle">Per-project totals over the last ${lookbackDays} days. Tokens and cost are split evenly when a session touched multiple projects (matches "Top projects").</div>
+  ${projectTable}
+</div>
 
 <h2>Tool usage (top ${toolSorted.length})</h2>
 <div class="card">
