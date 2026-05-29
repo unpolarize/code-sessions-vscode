@@ -227,13 +227,13 @@ function renderHtml(
   const waitingDur = sessionDur != null ? Math.max(0, sessionDur - toolDur) : null;
 
   const classifyArg = encodeURIComponent(JSON.stringify([c.sessionId, jsonlPath, c.title || ""]));
-  const classifyUrl = `command:claudeSessions.classifyTopics?${classifyArg}`;
+  const classifyUrl = `command:coderSessions.classifyTopics?${classifyArg}`;
   const trajectoryArg = encodeURIComponent(JSON.stringify([c.sessionId, c.title || ""]));
-  const trajectoryUrl = `command:claudeSessions.showTrajectory?${trajectoryArg}`;
+  const trajectoryUrl = `command:coderSessions.showTrajectory?${trajectoryArg}`;
   const resumeArg = encodeURIComponent(JSON.stringify([{ session: c.sessionId, title: c.title || "" }]));
-  const resumeUrl = `command:claudeSessions.resume?${resumeArg}`;
+  const resumeUrl = `command:coderSessions.resume?${resumeArg}`;
   const revealArg = project?.path ? encodeURIComponent(JSON.stringify([project.path])) : "";
-  const revealUrl = revealArg ? `command:claudeSessions.revealProjectFolder?${revealArg}` : "";
+  const revealUrl = revealArg ? `command:coderSessions.revealProjectFolder?${revealArg}` : "";
   const classifiedCount = topics?.size ?? 0;
   const eligibleCount = c.turns.filter((t) => t.userText.trim().length > 0).length;
   const meta =
@@ -335,7 +335,7 @@ export function openConversationViewer(
   // classification in the background and refresh the panel when done. This
   // caches topics eagerly so subsequent opens are instant.
   if (store) {
-    const cfg = vscode.workspace.getConfiguration("claudeSessions");
+    const cfg = vscode.workspace.getConfiguration("coderSessions");
     const auto = cfg.get<boolean>("classify.autoOnOpen", true);
     const backend = cfg.get<"ollama" | "claude-p">("classify.backend", "ollama");
     // Only auto-run for ollama — claude-p costs real subscription tokens, so

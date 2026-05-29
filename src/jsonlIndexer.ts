@@ -209,6 +209,7 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
 
   const session: SessionRow = {
     session_id: parsed.sessionId || path.basename(info.jsonl_path, ".jsonl"),
+    source: "claude",
     project_path: projectPath,
     project_id: projectId,
     projects_touched: projectsTouched.length > 0 ? projectsTouched : projectId ? [projectId] : [],

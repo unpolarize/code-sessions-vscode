@@ -1,10 +1,12 @@
-// SQLite cache for Claude Code session metadata.
+// SQLite cache for coder-CLI session metadata (Claude Code + Grok Build).
 //
 // One DB at `<extensionGlobalStorageUri>/sessions-cache.db`. WAL mode.
 // Migrations are numbered SQL strings, applied via PRAGMA user_version.
 //
-// All providers should read session metadata through this store, NOT by
-// shelling out to session-center.sh on every refresh.
+// On first activation after the v1.0 rename, the constructor probes the
+// sibling `<globalStorage>/zhirafovod.claude-sessions/sessions-cache.db` and
+// copies it across so existing topic-classifications survive the rebrand. See
+// `SessionStore.open` for details.
 
 import Database from "better-sqlite3";
 import * as fs from "fs";
@@ -132,10 +134,33 @@ const MIGRATIONS: string[] = [
     starred_at  INTEGER NOT NULL
   );
   `,
+
+  // v7 — coder source tagging. 'claude' for sessions from ~/.claude/projects,
+  // 'grok' for sessions from ~/.grok/sessions. Existing rows default to claude.
+  `
+  ALTER TABLE session ADD COLUMN source TEXT NOT NULL DEFAULT 'claude';
+  CREATE INDEX idx_session_source ON session(source);
+  `,
+
+  // v8 — one-time-migration ledger. Tracks named migrations (e.g. the
+  // pre-v1.0 zhirafovod.claude-sessions import) so we can rerun a previously
+  // failed merge without re-importing rows that already landed.
+  `
+  CREATE TABLE migration (
+    name        TEXT PRIMARY KEY,
+    applied_at  INTEGER NOT NULL,
+    detail      TEXT
+  );
+  `,
 ];
+
+export type CoderSourceId = "claude" | "grok";
 
 export interface SessionRow {
   session_id: string;
+  /** Which coder CLI produced this session. Defaults to 'claude' for rows
+   * migrated from pre-v1.0 DBs. */
+  source: CoderSourceId;
   project_path: string;
   project_id: string | null;
   projects_touched: string[];
@@ -181,6 +206,7 @@ export interface TurnRow {
 function rowToSession(r: any): SessionRow {
   return {
     session_id: r.session_id,
+    source: (r.source as CoderSourceId) || "claude",
     project_path: r.project_path,
     project_id: r.project_id,
     projects_touched: r.projects_touched ? String(r.projects_touched).split(",").filter(Boolean) : [],
@@ -218,11 +244,165 @@ export class SessionStore {
     this.db.pragma("foreign_keys = ON");
   }
 
+  /** Result of the one-shot cross-extension DB import. Reported to the
+   * caller so it can show a toast / log line on first activation after the
+   * v1.0 rename — and on any later activation that finally completes the
+   * merge if the user e.g. reinstalls or restores the old DB. */
+  static migrationReport: {
+    migrated: boolean;
+    sessions: number;
+    classifiedTurns: number;
+  } | null = null;
+
   static open(globalStorageDir: string): SessionStore {
     fs.mkdirSync(globalStorageDir, { recursive: true });
-    const store = new SessionStore(path.join(globalStorageDir, "sessions-cache.db"));
+    const dbPath = path.join(globalStorageDir, "sessions-cache.db");
+
+    // Open (or create) our own DB and run schema migrations up through v8
+    // — this ensures the `migration` ledger table exists before we look for
+    // a prior import marker.
+    const store = new SessionStore(dbPath);
     store.migrate();
+
+    // One-shot import from the pre-v1.0 sibling extension directory. Unlike
+    // earlier versions that just copied the file when the new DB didn't
+    // exist (and silently no-op'd otherwise), this is an attached-DB MERGE
+    // gated on a `migration` ledger row. That means:
+    //   - works on a fresh install (no existing rows → copies everything)
+    //   - works on a half-populated NEW DB (e.g. test runs that pre-seeded
+    //     it before VS Code first activated): missing rows still backfill,
+    //     existing rows are kept (INSERT OR IGNORE)
+    //   - won't re-import on every activation thanks to the ledger row
+    const IMPORT_NAME = "import_from_claude_sessions_v1";
+    const alreadyImported = (store.db
+      .prepare("SELECT 1 FROM migration WHERE name = ?")
+      .get(IMPORT_NAME) as any) != null;
+
+    if (!alreadyImported) {
+      const oldDir = path.join(path.dirname(globalStorageDir), "zhirafovod.claude-sessions");
+      const oldDb = path.join(oldDir, "sessions-cache.db");
+      if (fs.existsSync(oldDb)) {
+        const merged = store.mergeFromOldExtensionDb(oldDb);
+        store.db
+          .prepare("INSERT OR IGNORE INTO migration (name, applied_at, detail) VALUES (?, ?, ?)")
+          .run(IMPORT_NAME, Date.now(), JSON.stringify(merged));
+        SessionStore.migrationReport = {
+          migrated: true,
+          sessions: merged.sessionsAfter,
+          classifiedTurns: merged.topicsAfter,
+        };
+      }
+    }
     return store;
+  }
+
+  /** Merge rows from the pre-v1.0 sibling DB into this one. Idempotent via
+   * INSERT OR IGNORE on each table's primary key. Returns before/after row
+   * counts for diagnostics. */
+  private mergeFromOldExtensionDb(oldDbPath: string): {
+    sessionsBefore: number; sessionsAfter: number;
+    turnsBefore: number; turnsAfter: number;
+    topicsBefore: number; topicsAfter: number;
+  } {
+    const sessionsBefore = (this.db.prepare("SELECT COUNT(*) AS n FROM session").get() as any).n;
+    const turnsBefore = (this.db.prepare("SELECT COUNT(*) AS n FROM turn").get() as any).n;
+    const topicsBefore = (this.db.prepare("SELECT COUNT(*) AS n FROM turn_topic").get() as any).n;
+
+    // ATTACH the old DB as `old.*` then INSERT OR IGNORE across every table
+    // we want to preserve. The old schema is v6 and predates the `source`
+    // column on `session` — supply 'claude' as the literal default. Wrap in
+    // a single transaction so a failure mid-merge rolls back cleanly.
+    this.db.exec(`ATTACH DATABASE '${oldDbPath.replace(/'/g, "''")}' AS old`);
+    try {
+      const tx = this.db.transaction(() => {
+        // Repair pass for users whose NEW DB was populated by a buggy earlier
+        // pre-release: grok's `session_kind: "claude_import"` sessions had
+        // been indexed and their UPSERTs overwrote authentic claude rows on
+        // the session_id PK, then `deleteTurnsForSession` cascade-deleted
+        // the turn_topic rows. Detect that state and demote those grok rows
+        // before the OLD merge so the authentic claude data wins.
+        //
+        // FK constraints: this cascade-deletes the offending session's turns
+        // and topics. That's exactly what we want — the grok-attributed
+        // turns/topics are inferior copies; OLD's authoritative versions are
+        // restored by the INSERT OR IGNORE statements below.
+        this.db.exec(`
+          DELETE FROM session
+          WHERE source = 'grok'
+            AND session_id IN (SELECT session_id FROM old.session)
+        `);
+
+        // session: explicit column list so the new `source` column is
+        // populated even though it doesn't exist in the old schema.
+        this.db.exec(`
+          INSERT OR IGNORE INTO session (
+            session_id, source, project_path, project_id, projects_touched,
+            jsonl_path, mtime_ns, size_bytes, started_at, ended_at,
+            message_count, tool_count, subagent_count,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            cost_usd, model, title, first_user_msg,
+            entrypoint, is_automated, indexed_at, last_assistant_text_at
+          )
+          SELECT
+            session_id, 'claude', project_path, project_id, projects_touched,
+            jsonl_path, mtime_ns, size_bytes, started_at, ended_at,
+            message_count, tool_count, subagent_count,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            cost_usd, model, title, first_user_msg,
+            entrypoint, is_automated, indexed_at,
+            ${this.oldHasColumn("session", "last_assistant_text_at") ? "last_assistant_text_at" : "NULL"}
+          FROM old.session
+        `);
+
+        this.db.exec(`INSERT OR IGNORE INTO turn SELECT * FROM old.turn`);
+        this.db.exec(`INSERT OR IGNORE INTO turn_topic SELECT * FROM old.turn_topic`);
+        this.db.exec(`INSERT OR IGNORE INTO classification_batch SELECT * FROM old.classification_batch`);
+
+        // session_embedding gained `cluster_id` at v4; old DBs through v3
+        // lack that column.
+        if (this.oldHasColumn("session_embedding", "cluster_id")) {
+          this.db.exec(`INSERT OR IGNORE INTO session_embedding SELECT * FROM old.session_embedding`);
+        } else if (this.oldHasTable("session_embedding")) {
+          this.db.exec(`
+            INSERT OR IGNORE INTO session_embedding
+              (session_id, embedding, embedding_model, embedding_dim, computed_at, umap_x, umap_y, umap_fitted_at)
+            SELECT session_id, embedding, embedding_model, embedding_dim, computed_at, umap_x, umap_y, umap_fitted_at
+            FROM old.session_embedding
+          `);
+        }
+        if (this.oldHasTable("turn_embedding")) {
+          this.db.exec(`INSERT OR IGNORE INTO turn_embedding SELECT * FROM old.turn_embedding`);
+        }
+        if (this.oldHasTable("session_star")) {
+          this.db.exec(`INSERT OR IGNORE INTO session_star SELECT * FROM old.session_star`);
+        }
+      });
+      tx();
+    } finally {
+      this.db.exec("DETACH DATABASE old");
+    }
+
+    const sessionsAfter = (this.db.prepare("SELECT COUNT(*) AS n FROM session").get() as any).n;
+    const turnsAfter = (this.db.prepare("SELECT COUNT(*) AS n FROM turn").get() as any).n;
+    const topicsAfter = (this.db.prepare("SELECT COUNT(*) AS n FROM turn_topic").get() as any).n;
+    return { sessionsBefore, sessionsAfter, turnsBefore, turnsAfter, topicsBefore, topicsAfter };
+  }
+
+  /** Helper used by the merge: does an attached `old` DB have this table? */
+  private oldHasTable(tableName: string): boolean {
+    const r = this.db
+      .prepare("SELECT 1 FROM old.sqlite_master WHERE type='table' AND name=?")
+      .get(tableName);
+    return r != null;
+  }
+
+  /** Helper used by the merge: does an attached `old` DB have this column?
+   * Required because PRAGMA table_info doesn't accept the schema prefix as
+   * a parameter, so we have to parse the schema name into the SQL. */
+  private oldHasColumn(tableName: string, columnName: string): boolean {
+    if (!this.oldHasTable(tableName)) return false;
+    const rows = this.db.prepare(`PRAGMA old.table_info(${tableName})`).all() as any[];
+    return rows.some((r) => r.name === columnName);
   }
 
   migrate(): void {
@@ -278,14 +458,14 @@ export class SessionStore {
   upsertSession(s: SessionRow): void {
     this.db.prepare(`
       INSERT INTO session (
-        session_id, project_path, project_id, projects_touched, jsonl_path,
+        session_id, source, project_path, project_id, projects_touched, jsonl_path,
         mtime_ns, size_bytes, started_at, ended_at,
         message_count, tool_count, subagent_count,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
         cost_usd, model, title, first_user_msg,
         entrypoint, is_automated, indexed_at, last_assistant_text_at
       ) VALUES (
-        @session_id, @project_path, @project_id, @projects_touched, @jsonl_path,
+        @session_id, @source, @project_path, @project_id, @projects_touched, @jsonl_path,
         @mtime_ns, @size_bytes, @started_at, @ended_at,
         @message_count, @tool_count, @subagent_count,
         @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens,
@@ -293,6 +473,7 @@ export class SessionStore {
         @entrypoint, @is_automated, @indexed_at, @last_assistant_text_at
       )
       ON CONFLICT(session_id) DO UPDATE SET
+        source              = excluded.source,
         project_path        = excluded.project_path,
         project_id          = excluded.project_id,
         projects_touched    = excluded.projects_touched,

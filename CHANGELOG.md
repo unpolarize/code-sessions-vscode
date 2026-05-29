@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.0 — 2026-05-28
+
+Rebrand to **Coder Sessions** + first-class Grok Build support.
+
+### Breaking — rebrand from `claude-sessions` to `coder-sessions`
+- Extension id, publisher product name, activity-bar container, every command id (`claudeSessions.*` → `coderSessions.*`), every view id (`claudeSessions`, `claudeKbChanges`, `claudeProjectsActivity`, `claudeTasks` → `coderSessions`, `coderKbChanges`, `coderProjectsActivity`, `coderTasks`), and every settings key all renamed. Old settings values do **not** carry over — reconfigure once.
+- Repo moved to [zhirafovod/coder-sessions-vscode](https://github.com/zhirafovod/coder-sessions-vscode). Marketplace listing is a new entry; the old `zhirafovod.claude-sessions` is frozen.
+
+### DB migration on first activation (no reclassification needed)
+- On first run, the extension `ATTACH`es the sibling `<globalStorage>/zhirafovod.claude-sessions/sessions-cache.db` and merges every table (`session`, `turn`, `turn_topic`, `classification_batch`, `session_embedding`, `turn_embedding`, `session_star`) into its own DB via `INSERT OR IGNORE`. Migration v7 adds a `source TEXT NOT NULL DEFAULT 'claude'` column; v8 adds a `migration` ledger table that records the import so it doesn't re-run on every activation.
+- **Self-heal for the v1.0 pre-release bug:** if grok's `session_kind: "claude_import"` rows had been indexed into the new DB and overwritten the authentic claude rows, the merge `DELETE`s those grok-attributed sessions first (cascading their turns/topics) and restores the authoritative claude data from the old DB.
+- A one-shot info toast reports the import count: *"Imported N sessions and M topic classifications from your previous Claude Sessions install."*
+- Old global-storage dir is left untouched. VS Code globalState keys (classifier paused / failed lists) reset to defaults — they're cheap to recover and VS Code doesn't expose another extension's globalState.
+
+### Grok Build sessions
+- New source: walks `~/.grok/sessions/<urlencoded-cwd>/<uuid>/` and indexes each session's `summary.json` + `chat_history.jsonl` into the shared SQLite cache with `source='grok'`.
+- **Skips `session_kind: "claude_import"` sessions** — grok-side duplicates of authentic claude sessions, which keep the original claude UUID but carry inferior fidelity (no token usage, no per-event timestamps). Indexing them would collide on the `session_id` PK with the canonical claude row, overwriting metadata and cascade-deleting topic classifications. The claude indexer is authoritative for these sessions.
+- Sessions tree groups by source at the root: two nodes — **Claude Code** and **Grok Build** — each expanding to the existing day-bucket structure. Single-source environments collapse back to the flat layout so users on one CLI don't see a redundant wrapper.
+- Grok tool_calls parsed from the assistant entries: `read_file`, `search_replace`, `write`, `run_terminal_command`, MCP tools, etc. all count toward the session's `tool_count`. File-edit paths from `search_replace.file_path` and `write.filePath` populate `projects_touched`.
+- Classifier and search work source-agnostically against the merged corpus.
+- New setting `coderSessions.grok.enabled` (default `true`) toggles grok discovery.
+
+### Out of scope for v1.0 (deferred)
+- Token usage / cost columns for grok (no per-turn token counts in `chat_history.jsonl`).
+- Agent graph / Tasks for grok (no sub-agent spawn/end events).
+- "Continue in Grok" resume action (no external `--resume` CLI flag).
+
+See [specs/006-coder-rebrand-grok/spec.md](specs/006-coder-rebrand-grok/spec.md) for the full design.
+
 ## 0.14.2 — 2026-05-27
 
 - **Fix: workspace filter was hiding everything.** The DB's `project_path` is the JSONL container directory under `~/.claude/projects/-Users-<name>-...` — not the actual source path. The filter compared that container against `/Users/<name>/docs` and matched nothing, so every session from `~/docs` got reported as "from another folder" and the view rendered empty. Added a small decoder ([`extension.ts:482-487`](src/extension.ts#L482-L487)) that reverses claude-code's `/` → `-` encoding on the directory basename and compares the decoded source path against the workspace folder. Lossy only when the real source path itself contains a literal `-`.

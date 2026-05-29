@@ -761,7 +761,7 @@ function renderDashboard(opts: {
 // --------------------------------------------------------------------------- //
 
 export async function openInsightsView(ctx: vscode.ExtensionContext, store?: import("./db").SessionStore | null): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration("claudeSessions");
+  const cfg = vscode.workspace.getConfiguration("coderSessions");
   const limit = cfg.get<number>("limit", 100);
   const showAutomated = cfg.get<boolean>("showAutomated", false);
   const cacheEnabled = cfg.get<boolean>("cacheEnabled", true);

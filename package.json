@@ -1,12 +1,12 @@
 {
-  "name": "claude-sessions",
-  "displayName": "Claude Sessions",
-  "description": "Central sidebar for Claude Code activity: sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "0.14.2",
+  "name": "coder-sessions",
+  "displayName": "Coder Sessions",
+  "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
+  "version": "1.0.0",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zhirafovod/claude-sessions-vscode.git"
+    "url": "https://github.com/zhirafovod/coder-sessions-vscode.git"
   },
   "engines": {
     "vscode": "^1.90.0"
@@ -16,43 +16,43 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onView:claudeSessions",
-    "onView:claudeKbChanges",
-    "onView:claudeProjectsActivity",
-    "onView:claudeTasks"
+    "onView:coderSessions",
+    "onView:coderKbChanges",
+    "onView:coderProjectsActivity",
+    "onView:coderTasks"
   ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "claude-activity",
-          "title": "Claude Activity",
+          "id": "coder-activity",
+          "title": "Coder Activity",
           "icon": "$(comment-discussion)"
         }
       ]
     },
     "views": {
-      "claude-activity": [
+      "coder-activity": [
         {
-          "id": "claudeSessions",
+          "id": "coderSessions",
           "name": "Sessions",
           "icon": "$(history)",
-          "contextualTitle": "Claude Sessions"
+          "contextualTitle": "Coder Sessions"
         },
         {
-          "id": "claudeKbChanges",
+          "id": "coderKbChanges",
           "name": "KB changes",
           "icon": "$(book)",
           "contextualTitle": "Knowledge base file changes"
         },
         {
-          "id": "claudeProjectsActivity",
+          "id": "coderProjectsActivity",
           "name": "Projects",
           "icon": "$(folder-active)",
           "contextualTitle": "Per-project file changes"
         },
         {
-          "id": "claudeTasks",
+          "id": "coderTasks",
           "name": "Tasks",
           "icon": "$(checklist)",
           "contextualTitle": "Tasks (Claude sub-agents, scheduled routines, crontab)"
@@ -61,298 +61,303 @@
     },
     "commands": [
       {
-        "command": "claudeSessions.refresh",
+        "command": "coderSessions.refresh",
         "title": "Refresh sessions",
         "icon": "$(refresh)"
       },
       {
-        "command": "claudeSessions.refreshFull",
+        "command": "coderSessions.refreshFull",
         "title": "Refresh sessions (force full rescan)"
       },
       {
-        "command": "claudeSessions.resume",
+        "command": "coderSessions.resume",
         "title": "Continue in Claude",
         "icon": "$(play)"
       },
       {
-        "command": "claudeSessions.openTranscript",
+        "command": "coderSessions.openTranscript",
         "title": "Open transcript (JSONL)"
       },
       {
-        "command": "claudeSessions.viewConversation",
+        "command": "coderSessions.viewConversation",
         "title": "View conversation",
         "icon": "$(preview)"
       },
       {
-        "command": "claudeSessions.openInsights",
+        "command": "coderSessions.openInsights",
         "title": "Open insights dashboard",
         "icon": "$(graph)"
       },
       {
-        "command": "claudeSessions.openLiveMonitor",
+        "command": "coderSessions.openLiveMonitor",
         "title": "Open live monitor",
         "icon": "$(pulse)"
       },
       {
-        "command": "claudeSessions.classifyTopics",
+        "command": "coderSessions.classifyTopics",
         "title": "Analyze conversation topics"
       },
       {
-        "command": "claudeSessions.showAgentGraph",
+        "command": "coderSessions.showAgentGraph",
         "title": "Show 2D agent graph",
         "icon": "$(circuit-board)"
       },
       {
-        "command": "claudeSessions.search",
-        "title": "Search Claude history",
+        "command": "coderSessions.search",
+        "title": "Search coder history",
         "icon": "$(search)"
       },
       {
-        "command": "claudeSessions.classifyControls",
+        "command": "coderSessions.classifyControls",
         "title": "Auto-classify controls (pause / retry failed)"
       },
       {
-        "command": "claudeSessions.classifyTogglePause",
+        "command": "coderSessions.classifyTogglePause",
         "title": "Auto-classify: pause / resume"
       },
       {
-        "command": "claudeSessions.classifyRetryFailed",
+        "command": "coderSessions.classifyRetryFailed",
         "title": "Auto-classify: retry failed sessions"
       },
       {
-        "command": "claudeSessions.agentGraphToggleMode",
+        "command": "coderSessions.agentGraphToggleMode",
         "title": "Agent graph: toggle 2D / 3D"
       },
       {
-        "command": "claudeSessions.focusActivityView",
-        "title": "Focus Claude Activity sidebar"
+        "command": "coderSessions.focusActivityView",
+        "title": "Focus Coder Activity sidebar"
       },
       {
-        "command": "claudeSessions.revealProjectFolder",
+        "command": "coderSessions.revealProjectFolder",
         "title": "Reveal project folder in Finder/Explorer"
       },
       {
-        "command": "claudeSessions.starSession",
+        "command": "coderSessions.starSession",
         "title": "Star session (pin to top)",
         "icon": "$(star-empty)"
       },
       {
-        "command": "claudeSessions.unstarSession",
+        "command": "coderSessions.unstarSession",
         "title": "Unstar session",
         "icon": "$(star-full)"
       },
       {
-        "command": "claudeSessions.showTrajectory",
+        "command": "coderSessions.showTrajectory",
         "title": "Show conversation trajectory"
       },
       {
-        "command": "claudeSessions.reembedSessions",
+        "command": "coderSessions.reembedSessions",
         "title": "Drop cached embeddings and re-embed",
         "icon": "$(refresh)"
       },
       {
-        "command": "claudeKbChanges.refresh",
+        "command": "coderKbChanges.refresh",
         "title": "Refresh KB changes",
         "icon": "$(refresh)"
       },
       {
-        "command": "claudeKbChanges.openFile",
+        "command": "coderKbChanges.openFile",
         "title": "Open file"
       },
       {
-        "command": "claudeKbChanges.diff",
+        "command": "coderKbChanges.diff",
         "title": "Show diff against HEAD~1"
       },
       {
-        "command": "claudeProjectsActivity.refresh",
+        "command": "coderProjectsActivity.refresh",
         "title": "Refresh project activity",
         "icon": "$(refresh)"
       },
       {
-        "command": "claudeProjectsActivity.openFile",
+        "command": "coderProjectsActivity.openFile",
         "title": "Open file"
       },
       {
-        "command": "claudeProjectsActivity.diff",
+        "command": "coderProjectsActivity.diff",
         "title": "Show diff against HEAD~1"
       },
       {
-        "command": "claudeTasks.refresh",
+        "command": "coderTasks.refresh",
         "title": "Refresh tasks",
         "icon": "$(refresh)"
       },
       {
-        "command": "claudeTasks.editCrontab",
+        "command": "coderTasks.editCrontab",
         "title": "Edit crontab",
         "icon": "$(edit)"
       },
       {
-        "command": "claudeTasks.openSession",
+        "command": "coderTasks.openSession",
         "title": "Open parent session"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "claudeSessions.openLiveMonitor",
-          "when": "view == claudeSessions",
+          "command": "coderSessions.openLiveMonitor",
+          "when": "view == coderSessions",
           "group": "navigation@1"
         },
         {
-          "command": "claudeSessions.openInsights",
-          "when": "view == claudeSessions",
+          "command": "coderSessions.openInsights",
+          "when": "view == coderSessions",
           "group": "navigation@2"
         },
         {
-          "command": "claudeSessions.showAgentGraph",
-          "when": "view == claudeSessions",
+          "command": "coderSessions.showAgentGraph",
+          "when": "view == coderSessions",
           "group": "navigation@3"
         },
         {
-          "command": "claudeSessions.search",
-          "when": "view == claudeSessions",
+          "command": "coderSessions.search",
+          "when": "view == coderSessions",
           "group": "navigation@4"
         },
         {
-          "command": "claudeSessions.refresh",
-          "when": "view == claudeSessions",
+          "command": "coderSessions.refresh",
+          "when": "view == coderSessions",
           "group": "navigation@5"
         },
         {
-          "command": "claudeKbChanges.refresh",
-          "when": "view == claudeKbChanges",
+          "command": "coderKbChanges.refresh",
+          "when": "view == coderKbChanges",
           "group": "navigation"
         },
         {
-          "command": "claudeProjectsActivity.refresh",
-          "when": "view == claudeProjectsActivity",
+          "command": "coderProjectsActivity.refresh",
+          "when": "view == coderProjectsActivity",
           "group": "navigation"
         },
         {
-          "command": "claudeTasks.editCrontab",
-          "when": "view == claudeTasks",
+          "command": "coderTasks.editCrontab",
+          "when": "view == coderTasks",
           "group": "navigation@1"
         },
         {
-          "command": "claudeTasks.refresh",
-          "when": "view == claudeTasks",
+          "command": "coderTasks.refresh",
+          "when": "view == coderTasks",
           "group": "navigation@2"
         }
       ],
       "view/item/context": [
         {
-          "command": "claudeSessions.resume",
-          "when": "view == claudeSessions && (viewItem == session || viewItem == sessionAutomated || viewItem == session-starred || viewItem == sessionAutomated-starred)",
+          "command": "coderSessions.resume",
+          "when": "view == coderSessions && (viewItem == session || viewItem == sessionAutomated || viewItem == session-starred || viewItem == sessionAutomated-starred)",
           "group": "inline"
         },
         {
-          "command": "claudeSessions.starSession",
-          "when": "view == claudeSessions && (viewItem == session || viewItem == sessionAutomated)",
+          "command": "coderSessions.starSession",
+          "when": "view == coderSessions && (viewItem == session || viewItem == sessionAutomated)",
           "group": "navigation@0"
         },
         {
-          "command": "claudeSessions.unstarSession",
-          "when": "view == claudeSessions && (viewItem == session-starred || viewItem == sessionAutomated-starred)",
+          "command": "coderSessions.unstarSession",
+          "when": "view == coderSessions && (viewItem == session-starred || viewItem == sessionAutomated-starred)",
           "group": "navigation@0"
         },
         {
-          "command": "claudeSessions.openTranscript",
-          "when": "view == claudeSessions && viewItem == session",
+          "command": "coderSessions.openTranscript",
+          "when": "view == coderSessions && viewItem == session",
           "group": "navigation@1"
         },
         {
-          "command": "claudeKbChanges.diff",
-          "when": "view == claudeKbChanges && viewItem == fileChange",
+          "command": "coderKbChanges.diff",
+          "when": "view == coderKbChanges && viewItem == fileChange",
           "group": "inline"
         },
         {
-          "command": "claudeProjectsActivity.diff",
-          "when": "view == claudeProjectsActivity && viewItem == fileChange",
+          "command": "coderProjectsActivity.diff",
+          "when": "view == coderProjectsActivity && viewItem == fileChange",
           "group": "inline"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "claudeSessions.focusActivityView",
+        "command": "coderSessions.focusActivityView",
         "key": "ctrl+alt+c",
         "mac": "cmd+alt+c"
       },
       {
-        "command": "claudeSessions.openLiveMonitor",
+        "command": "coderSessions.openLiveMonitor",
         "key": "ctrl+alt+l",
         "mac": "cmd+alt+l"
       },
       {
-        "command": "claudeSessions.openInsights",
+        "command": "coderSessions.openInsights",
         "key": "ctrl+alt+d",
         "mac": "cmd+alt+d"
       },
       {
-        "command": "claudeSessions.showAgentGraph",
+        "command": "coderSessions.showAgentGraph",
         "key": "ctrl+alt+g",
         "mac": "cmd+alt+g"
       },
       {
-        "command": "claudeSessions.agentGraphToggleMode",
+        "command": "coderSessions.agentGraphToggleMode",
         "key": "ctrl+alt+3",
         "mac": "cmd+alt+3"
       }
     ],
     "configuration": {
-      "title": "Claude Sessions",
+      "title": "Coder Sessions",
       "properties": {
-        "claudeSessions.limit": {
+        "coderSessions.limit": {
           "type": "number",
           "default": 100,
           "description": "Maximum number of most-recent sessions to load."
         },
-        "claudeSessions.refresh.forceRecent": {
+        "coderSessions.refresh.forceRecent": {
           "type": "number",
           "default": 100,
           "description": "When the Refresh button is pressed, force a full re-parse of the N most recently-modified JSONLs (regardless of mtime cache). Catches on-disk edits — most notably session renames — that don't always bump mtime. Set to 0 to use only the cheap incremental sync."
         },
-        "claudeSessions.scriptPath": {
+        "coderSessions.scriptPath": {
           "type": "string",
           "default": "~/.claude/skills/sessions/session-center.sh",
-          "description": "Path to session-center.sh (fallback when cacheEnabled is false)."
+          "description": "Path to session-center.sh (fallback when cacheEnabled is false). Claude only."
         },
-        "claudeSessions.cacheEnabled": {
+        "coderSessions.cacheEnabled": {
           "type": "boolean",
           "default": true,
-          "description": "Use the SQLite cache. When true (default), the sidebar reads from a local DB and only re-parses JSONLs whose (mtime,size) changed. When false, falls back to spawning session-center.sh on every refresh (v0.6.x behavior)."
+          "description": "Use the SQLite cache. When true (default), the sidebar reads from a local DB and only re-parses JSONLs whose (mtime,size) changed. When false, falls back to spawning session-center.sh on every refresh (legacy claude-only path)."
         },
-        "claudeSessions.showAutomated": {
+        "coderSessions.showAutomated": {
           "type": "boolean",
           "default": false,
           "description": "Show automated / cron-triggered sessions (entrypoint = sdk-cli, sdk, routine, etc.). Hidden by default since they're usually scheduled jobs (Google Doc digests, KB ingest, daily reports) rather than interactive work."
         },
-        "claudeSessions.filterByCurrentWorkspace": {
+        "coderSessions.filterByCurrentWorkspace": {
           "type": "boolean",
           "default": true,
           "description": "Show only sessions that originated from the current workspace's first folder (or a subfolder of it). Default on — keeps the sidebar focused on sessions you can actually resume from this window. Toggle off to see every session across every project."
         },
-        "claudeSessions.insightsLookbackDays": {
+        "coderSessions.insightsLookbackDays": {
           "type": "number",
           "default": 14,
           "description": "Insights dashboard: how many days of activity to chart."
         },
-        "claudeSessions.insightsDeepParse": {
+        "coderSessions.insightsDeepParse": {
           "type": "number",
           "default": 20,
           "description": "Insights dashboard: how many most-recent sessions to parse deeply for thinking-time / tool-mix / burst-rate metrics. Higher = better stats, slower load."
         },
-        "claudeKbChanges.repoPath": {
+        "coderSessions.grok.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Discover and index Grok Build sessions from ~/.grok/sessions/ alongside Claude Code sessions."
+        },
+        "coderKbChanges.repoPath": {
           "type": "string",
           "default": "",
           "description": "Path to the git repo whose changes will be listed. Leave empty to auto-detect from the first workspace folder."
         },
-        "claudeKbChanges.lookbackDays": {
+        "coderKbChanges.lookbackDays": {
           "type": "number",
           "default": 14,
           "description": "How many days of git history to load."
         },
-        "claudeProjectsActivity.repoPaths": {
+        "coderProjectsActivity.repoPaths": {
           "type": "array",
           "default": [
             "~/projects/unpolarize",
@@ -360,73 +365,73 @@
           ],
           "description": "Explicit list of project repos to watch. Auto-discovery is also applied (any ~/projects/* with commits in the lookback)."
         },
-        "claudeProjectsActivity.autoDiscover": {
+        "coderProjectsActivity.autoDiscover": {
           "type": "boolean",
           "default": true,
           "description": "Walk ~/projects/ (depth 2) and include any git repo with commits in the lookback window."
         },
-        "claudeProjectsActivity.discoveryRoot": {
+        "coderProjectsActivity.discoveryRoot": {
           "type": "string",
           "default": "~/projects",
           "description": "Root for auto-discovery (depth 2)."
         },
-        "claudeProjectsActivity.lookbackDays": {
+        "coderProjectsActivity.lookbackDays": {
           "type": "number",
           "default": 14,
           "description": "How many days of git history to load per project."
         },
-        "claudeSessions.classify.backend": {
+        "coderSessions.classify.backend": {
           "type": "string",
           "enum": ["ollama", "claude-p"],
           "default": "ollama",
           "description": "Where topic classification runs. `ollama` calls a local Ollama daemon (free, offline). `claude-p` invokes the Claude CLI in headless mode, using your subscription."
         },
-        "claudeSessions.liveStatusBar.enabled": {
+        "coderSessions.liveStatusBar.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show a compact 'Claude · N active' indicator in the status bar. Polls every 5 s while sessions are active, 30 s when idle. Hover for a per-session breakdown; click to open the Live monitor."
+          "description": "Show a compact 'Coder · N active' indicator in the status bar. Polls every 5 s while sessions are active, 30 s when idle. Hover for a per-session breakdown; click to open the Live monitor."
         },
-        "claudeSessions.awaitingUser.notify": {
+        "coderSessions.awaitingUser.notify": {
           "type": "boolean",
           "default": true,
           "description": "Pop a VS Code toast the first time a session enters an awaiting-user state (AskUserQuestion or ExitPlanMode). The status-bar item and Live monitor banner always highlight these; this only controls the one-shot toast."
         },
-        "claudeSessions.costBudget.daily": {
+        "coderSessions.costBudget.daily": {
           "type": "number",
           "default": 0,
           "description": "Daily Claude-Code budget in USD. When > 0, a status-bar tile shows today's spend vs this number; it turns amber at 80% and red at 100%. Set to 0 (default) to hide the tile."
         },
-        "claudeSessions.classify.autoOnOpen": {
+        "coderSessions.classify.autoOnOpen": {
           "type": "boolean",
           "default": true,
           "description": "When the conversation viewer opens and the session has unclassified turns, run topic classification in the background and refresh when done. Only fires when `classify.backend = ollama` to avoid burning paid `claude-p` tokens automatically."
         },
-        "claudeSessions.classify.autoBackground": {
+        "coderSessions.classify.autoBackground": {
           "type": "boolean",
           "default": true,
           "description": "Run topic classification continuously in the background: at extension startup the daemon scans for any session with unclassified turns and works through them one at a time, then re-scans on every sessions-view sync tick so new turns get picked up automatically. Per-turn cache means re-runs cost nothing once classified. Default backend is Ollama; see `classify.allowAutoBackgroundClaude` to opt into claude-p auto-runs."
         },
-        "claudeSessions.classify.allowAutoBackgroundClaude": {
+        "coderSessions.classify.allowAutoBackgroundClaude": {
           "type": "boolean",
           "default": false,
           "description": "Explicit opt-in: allow `classify.autoBackground` to run even when the backend is `claude-p`. Off by default so the daemon never quietly spends subscription tokens."
         },
-        "claudeSessions.classify.model": {
+        "coderSessions.classify.model": {
           "type": "string",
           "default": "llama3.2:3b",
           "description": "Model id passed to the chosen classification backend. For `ollama`, try `llama3.2:3b`, `qwen2.5:3b`, `gemma2:2b`. For `claude-p`, try `claude-haiku-4-5`."
         },
-        "claudeSessions.classify.batchSize": {
+        "coderSessions.classify.batchSize": {
           "type": "number",
           "default": 10,
           "description": "How many turns to classify per backend invocation. Smaller batches are more reliable with local Ollama models, which tend to drop ids when asked to echo back 20+ items. Drop to 5 if you still see 'N turns missing in response' errors."
         },
-        "claudeSessions.classify.claudeBin": {
+        "coderSessions.classify.claudeBin": {
           "type": "string",
           "default": "",
           "description": "Optional override for the `claude` CLI path. Only used when `classify.backend = claude-p`. Empty = use PATH."
         },
-        "claudeSessions.embedding.preferred": {
+        "coderSessions.embedding.preferred": {
           "type": "string",
           "enum": [
             "ollama",
@@ -435,42 +440,42 @@
           "default": "ollama",
           "description": "Which embedding backend to try first for the agent graph."
         },
-        "claudeSessions.embedding.ollamaUrl": {
+        "coderSessions.embedding.ollamaUrl": {
           "type": "string",
           "default": "http://127.0.0.1:11434",
           "description": "Base URL for a local Ollama daemon."
         },
-        "claudeSessions.embedding.ollamaModel": {
+        "coderSessions.embedding.ollamaModel": {
           "type": "string",
           "default": "nomic-embed-text",
           "description": "Ollama embedding model name."
         },
-        "claudeSessions.embedding.transformersjsModel": {
+        "coderSessions.embedding.transformersjsModel": {
           "type": "string",
           "default": "Xenova/bge-small-en-v1.5",
           "description": "Transformers.js fallback model id."
         },
-        "claudeSessions.cluster.minPts": {
+        "coderSessions.cluster.minPts": {
           "type": "number",
           "default": 3,
           "description": "DBSCAN minPts for clustering sessions on the agent graph. With small corpora (<100 sessions) 3 finds clusters that 5 misses. If DBSCAN still finds none, the extension falls back to k-means."
         },
-        "claudeSessions.cluster.epsScale": {
+        "coderSessions.cluster.epsScale": {
           "type": "number",
           "default": 0.04,
           "description": "DBSCAN eps as a fraction of the agent graph's axis range. Smaller = tighter clusters."
         },
-        "claudeSessions.trajectory.driftPercentile": {
+        "coderSessions.trajectory.driftPercentile": {
           "type": "number",
           "default": 90,
           "description": "Segments above this percentile of cosine distance between consecutive turns are flagged as topic drift in the trajectory view."
         },
-        "claudeTasks.showCrontab": {
+        "coderTasks.showCrontab": {
           "type": "boolean",
           "default": true,
           "description": "Show the user's crontab as a section in the Tasks view. Clicking a row opens the crontab in an editor; saving installs it via `crontab <file>`."
         },
-        "claudeTasks.subagentLookbackMin": {
+        "coderTasks.subagentLookbackMin": {
           "type": "number",
           "default": 5,
           "description": "Tasks view: a Claude session counts as 'active sub-tasks running' if its JSONL was modified within this many minutes AND it currently has at least one running subagent. Set to 0 to disable the section."
@@ -481,7 +486,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "rebuild-native": "electron-rebuild --version 39.8.8 --module-dir . --types prod",
+    "rebuild-native": "rm -rf node_modules/better-sqlite3/build && cd node_modules/better-sqlite3 && ../.bin/node-gyp rebuild --target=39.8.8 --runtime=electron --dist-url=https://electronjs.org/headers --release --arch=arm64",
     "package": "npm run compile && npm run rebuild-native && vsce package --allow-missing-repository",
     "vscode:prepublish": "npm run compile"
   },

@@ -51,7 +51,7 @@ npm run rebuild-native
 echo "==> packaging"
 npx --yes @vscode/vsce package --allow-missing-repository >/dev/null
 
-VSIX="$(ls -t claude-sessions-*.vsix | head -n 1)"
+VSIX="$(ls -t coder-sessions-*.vsix 2>/dev/null | head -n 1)"
 if [ -z "${VSIX}" ]; then
   echo "No .vsix produced — did vsce package fail?" >&2
   exit 1

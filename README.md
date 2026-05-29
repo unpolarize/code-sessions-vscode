@@ -1,21 +1,28 @@
-# Claude Sessions
+# Coder Sessions
 
-A VS Code sidebar that gives you a **central command center** for Claude Code activity: every session across every project (with tokens, cost, subagents, projects-touched, duration), plus the file changes your work produced (knowledge base + project repos), all in one place. Click a session to resume it inside the official Claude Code extension panel. Click **🔍 View conversation** to open a per-turn timeline of the chat with every tool call, input, output, and subagent invocation.
+A VS Code sidebar that gives you a **central command center** for coding-agent CLI activity: every session from Claude Code (`~/.claude/projects/`) **and** Grok Build (`~/.grok/sessions/`), grouped by source and by day. Tokens, cost, subagents, projects-touched, duration, topic classification, plus the file changes your work produced (knowledge base + project repos) — all in one place. Click a Claude session to resume it inside the official Claude Code extension panel. Click **🔍 View conversation** for a per-turn timeline.
+
+> **v1.0 upgrade note.** This extension was renamed from `claude-sessions` to `coder-sessions`. On first activation it imports your existing session index + topic classifications from the old extension's global-storage dir, so you won't trigger a full reclassification. Settings keys are renamed (`claudeSessions.*` → `coderSessions.*`) and **do not** migrate — reconfigure once.
 
 ```
-[Activity bar icon] Claude Activity
+[Activity bar icon] Coder Activity
 ├─ Sessions
-│   ▼ Today — 4 sessions · $812 · 1.2M tok · 🪄7
-│       ▼ Research cookie management in Claude search tools  💬1561 · $709 · ⏱26h · 12m ago
-│           💬 1561 msgs · $709.20 · 398M tok · 🪄7 · ⏱26h · 12m ago
-│           📁 docs, unpolarize, ai/otelo
-│           🔍 View conversation       ← opens timeline webview
-│           ▶ Resume in Claude         ← opens in Claude Code extension panel
-│           📜 Open raw JSONL
-│       ▶ Build depolarization platform...  💬804 · $211 · ⏱4h · 1d ago
-│   ▶ Yesterday — 9 sessions · $187 · 14M tok
-│   ▶ Last 7 days — 47 sessions · $1,420 · 250M tok
-│   ▶ Older — 1,315 sessions
+│   ▼ Claude Code — 1,373 sessions
+│       ▼ Today — 4 sessions · $812 · 1.2M tok · 🪄7
+│           ▼ Research cookie management in Claude search tools  💬1561 · $709 · ⏱26h · 12m ago
+│               💬 1561 msgs · $709.20 · 398M tok · 🪄7 · ⏱26h · 12m ago
+│               📁 docs, unpolarize, ai/otelo
+│               🔍 View conversation       ← opens timeline webview
+│               ▶ Resume in Claude         ← opens in Claude Code extension panel
+│               📜 Open raw JSONL
+│       ▶ Yesterday — 9 sessions · $187 · 14M tok
+│       ▶ Last 7 days — 47 sessions · $1,420 · 250M tok
+│       ▶ Older — 1,315 sessions
+│   ▼ Grok Build — 1,424 sessions
+│       ▼ Today — 18 sessions
+│           ▶ Coder rebrand + Grok support · model=grok-build · 💬41 · 🛠32
+│       ▶ Yesterday — 22 sessions
+│       ▶ Older — 1,384 sessions
 ├─ KB changes
 │   ▼ Today — 14 files · 3 commits
 │       knowledge/tech/security/fetcher-exposure-unpolarize.md       [M]

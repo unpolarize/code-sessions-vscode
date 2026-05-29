@@ -6,7 +6,7 @@
 //   are picked up automatically.
 // - The worker processes one session at a time so we don't blast the local
 //   Ollama daemon (or the Claude CLI) with parallel calls.
-// - Only runs when `claudeSessions.classify.backend = ollama` by default —
+// - Only runs when `coderSessions.classify.backend = ollama` by default —
 //   we don't want to burn subscription tokens behind the user's back.
 // - Per-turn caching is already enforced by `classifySession`, which skips
 //   any turn that already has a `turn_topic` row — so re-runs on a fully
@@ -19,6 +19,11 @@ import { classifySession, ClassifyBackend } from "./topicClassifier";
 const DISCOVERY_INTERVAL_MS = 60_000; // re-scan for new unclassified sessions
 const WORKER_TICK_MS = 1500;          // throttle between classify calls
 const STATUS_BAR_PRIORITY = 99;        // just left of the existing Claude · Live item
+
+// Persistence keys (ctx.globalState). Keeping them as module-scope constants
+// so a typo in one of the mutators can't drift from the hydrator.
+const STATE_KEY_PAUSED = "coderSessions.classifier.paused";
+const STATE_KEY_FAILED = "coderSessions.classifier.failedIds";
 
 export class BackgroundClassifier {
   private queue: string[] = [];
@@ -57,6 +62,10 @@ export class BackgroundClassifier {
     if (this.stopped) return;
     if (!this.isEnabled()) return;
 
+    // Hydrate persisted state BEFORE any discovery so we honor the previous
+    // paused flag and the previous failed list from the first tick.
+    this.hydratePersistedState();
+
     // A tiny status-bar tile so the user can see something is happening (and
     // tell whether the daemon got stuck). Hidden when idle and queue empty.
     this.statusItem = vscode.window.createStatusBarItem(
@@ -65,7 +74,7 @@ export class BackgroundClassifier {
     );
     this.statusItem.name = "Claude · auto-classify";
     // Click → Quick Pick with Pause/Resume/Retry.
-    this.statusItem.command = "claudeSessions.classifyControls";
+    this.statusItem.command = "coderSessions.classifyControls";
     this.ctx.subscriptions.push(this.statusItem);
     this.renderStatus();
 
@@ -73,8 +82,8 @@ export class BackgroundClassifier {
     this.ctx.subscriptions.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (
-          e.affectsConfiguration("claudeSessions.classify.autoBackground") ||
-          e.affectsConfiguration("claudeSessions.classify.backend")
+          e.affectsConfiguration("coderSessions.classify.autoBackground") ||
+          e.affectsConfiguration("coderSessions.classify.backend")
         ) {
           if (this.isEnabled()) this.discoveryTick();
           else this.queue = [];
@@ -114,24 +123,28 @@ export class BackgroundClassifier {
   failedCount(): number { return this.failedIds.size; }
 
   /** Toggle the paused flag. The discovery loop keeps running so the queue
-   * is up-to-date when the user resumes. */
+   * is up-to-date when the user resumes. Persists so a paused daemon stays
+   * paused across window reloads. */
   togglePause(): void {
     this.paused = !this.paused;
+    this.persistPaused();
     this.renderStatus();
   }
 
   setPaused(p: boolean): void {
     if (this.paused === p) return;
     this.paused = p;
+    this.persistPaused();
     this.renderStatus();
   }
 
-  /** Move every session that errored this run back into the queue. The list
-   * of failed ids is cleared; new errors during the retry will repopulate it
-   * as they happen. */
+  /** Move every session that errored back into the queue. The persistent
+   * fail-list is cleared too, so retried-then-still-failed sessions get
+   * a clean record. */
   retryFailed(): number {
     const ids = [...this.failedIds];
     this.failedIds.clear();
+    this.persistFailedIds();
     let added = 0;
     for (const id of ids) {
       if (this.inQueue.has(id)) continue;
@@ -147,10 +160,48 @@ export class BackgroundClassifier {
     return added;
   }
 
+  // ----- persistence -----
+
+  /** Load failedIds + paused from ctx.globalState. Prunes failedIds that no
+   * longer correspond to a session with unclassified turns (e.g. they got
+   * classified through some other path), so the "N failed" tooltip stays
+   * truthful. Safe to call multiple times. */
+  private hydratePersistedState(): void {
+    try {
+      this.paused = this.ctx.globalState.get<boolean>(STATE_KEY_PAUSED, false);
+    } catch { /* default false */ }
+
+    const persisted = (() => {
+      try { return this.ctx.globalState.get<string[]>(STATE_KEY_FAILED, []) ?? []; }
+      catch { return []; }
+    })();
+    if (persisted.length === 0) return;
+
+    let pending: Set<string> | null = null;
+    try {
+      pending = new Set(this.store.sessionsWithUnclassifiedTurns(10_000));
+    } catch { /* fall back to keeping everything */ }
+
+    let pruned = false;
+    for (const id of persisted) {
+      if (pending && !pending.has(id)) { pruned = true; continue; }
+      this.failedIds.add(id);
+    }
+    if (pruned) this.persistFailedIds();
+  }
+
+  private persistFailedIds(): void {
+    void this.ctx.globalState.update(STATE_KEY_FAILED, [...this.failedIds]);
+  }
+
+  private persistPaused(): void {
+    void this.ctx.globalState.update(STATE_KEY_PAUSED, this.paused);
+  }
+
   // ----- internals -----
 
   private isEnabled(): boolean {
-    const cfg = vscode.workspace.getConfiguration("claudeSessions");
+    const cfg = vscode.workspace.getConfiguration("coderSessions");
     if (!cfg.get<boolean>("classify.autoBackground", true)) return false;
     // Default to refusing claude-p auto-classify so we don't quietly burn
     // subscription tokens. The user can flip the override if they actively
@@ -208,7 +259,7 @@ export class BackgroundClassifier {
     if (this.queue.length + 1 > this.peakQueue) this.peakQueue = this.queue.length + 1;
     this.renderStatus();
 
-    const cfg = vscode.workspace.getConfiguration("claudeSessions");
+    const cfg = vscode.workspace.getConfiguration("coderSessions");
     const backend = cfg.get<ClassifyBackend>("classify.backend", "ollama");
     const model = cfg.get<string>("classify.model", "llama3.2:3b");
     const batchSize = cfg.get<number>("classify.batchSize", 20);
@@ -233,6 +284,7 @@ export class BackgroundClassifier {
         this.lastError = res.errors[0].slice(0, 200);
         this.lastErrorAt = Date.now();
         this.failedIds.add(id);
+        this.persistFailedIds();
       }
       // If we got rate-limited / capped, pause discovery for a while.
       if (res.errors.some((e) => /rate.?limit|usage.?cap/i.test(e))) {
@@ -242,6 +294,7 @@ export class BackgroundClassifier {
       this.lastError = String(e?.message ?? e).slice(0, 200);
       this.lastErrorAt = Date.now();
       this.failedIds.add(id);
+      this.persistFailedIds();
     } finally {
       this.busy = false;
       this.currentId = null;
@@ -404,7 +457,7 @@ export class BackgroundClassifier {
       const ageSec = Math.max(0, Math.floor((Date.now() - this.lastErrorAt) / 1000));
       md.appendMarkdown(`\n_Last error (${ageSec}s ago):_ ${escMd(this.lastError)}\n`);
     }
-    md.appendMarkdown(`\n_Toggle via setting:_ \`claudeSessions.classify.autoBackground\`.`);
+    md.appendMarkdown(`\n_Toggle via setting:_ \`coderSessions.classify.autoBackground\`.`);
     this.statusItem.tooltip = md;
     this.statusItem.show();
   }
