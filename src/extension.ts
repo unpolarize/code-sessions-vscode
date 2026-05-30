@@ -1982,7 +1982,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       try {
         await vscode.commands.executeCommand("workbench.view.extension.coder-activity");
       } catch (e: any) {
-        vscode.window.showErrorMessage(`Cannot focus Coder Activity: ${e.message}`);
+        vscode.window.showErrorMessage(`Cannot focus Coder Sessions: ${e.message}`);
       }
     }),
 

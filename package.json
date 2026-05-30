@@ -139,7 +139,7 @@
       },
       {
         "command": "coderSessions.focusActivityView",
-        "title": "Focus Coder Activity sidebar",
+        "title": "Focus Coder Sessions sidebar",
         "category": "Coder Sessions"
       },
       {
