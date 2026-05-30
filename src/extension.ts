@@ -493,20 +493,33 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
    * under a folder whose name is the absolute source path with `/`
    * replaced by `-`. This is lossy when the real path itself contains a
    * dash — there's no perfect inverse — but for typical layouts (`/Users/
-   * <name>/docs`, `/Users/<name>/projects/<repo>`) it round-trips. */
-  private static decodeClaudeProjectDir(jsonlContainerPath: string): string {
-    const base = path.basename(jsonlContainerPath);
+   * <name>/docs`, `/Users/<name>/projects/<repo>`) it round-trips.
+   *
+   * Grok rows store the *already decoded* cwd directly (e.g.
+   * `/Users/zhirafovod/docs`) — those should pass through unchanged.
+   * Heuristic: only apply the dash-decode when the basename starts with
+   * a `-`, which is the marker of claude-code's encoding scheme. */
+  private static decodeClaudeProjectDir(projectPath: string): string {
+    const base = path.basename(projectPath);
+    if (!base.startsWith("-")) return projectPath;
     return "/" + base.replace(/^-/, "").replace(/-/g, "/");
+  }
+
+  /** Resolve a session row's `project_path` to the absolute cwd it ran in.
+   * Source-aware: claude stores `~/.claude/projects/-Users-...` (dash-encoded);
+   * grok stores `/Users/...` directly. Re-uses the dash-start heuristic so
+   * either form is handled correctly. */
+  static sessionCwd(row: SessionRow): string | null {
+    if (!row.project_path) return null;
+    return path.resolve(SessionsProvider.decodeClaudeProjectDir(row.project_path));
   }
 
   /** Same-path or under-path test. Treats trailing-slash and case
    * differences (macOS HFS+) leniently. */
   private static sessionInWorkspace(sessionProjectPath: string | null, workspace: string): boolean {
     if (!sessionProjectPath) return false;
-    // The DB stores `~/.claude/projects/-Users-...` (the JSONL container
-    // dir). Decode back to a real source path before comparing — that's
-    // the path the session actually ran in, and the only thing the
-    // workspace folder will ever match.
+    // Claude rows store `~/.claude/projects/-Users-...` and need decoding;
+    // Grok rows already store `/Users/...` and pass through.
     const decoded = SessionsProvider.decodeClaudeProjectDir(sessionProjectPath);
     const sp = path.resolve(decoded);
     if (sp === workspace) return true;
@@ -840,8 +853,22 @@ class SessionItem extends vscode.TreeItem {
     };
     out.push(viewItem);
 
-    // "Resume" — opens the conversation back in the Claude panel.
-    const resumeItem = new vscode.TreeItem("▶ Resume in Claude");
+    // "Resume" — dispatch decided at click-time based on
+    // `coderSessions.resumeBackend` (code-build vs native per-source) and
+    // the source-specific install state. Label hints at the preferred
+    // target so the user knows what to expect; the actual handler picks.
+    const resumePref = vscode.workspace
+      .getConfiguration("coderSessions")
+      .get<"code-build" | "native">("resumeBackend", "code-build");
+    const codeBuildInstalled =
+      vscode.extensions.getExtension("zhirafovod.code-build-vscode") != null;
+    const resumeLabel =
+      resumePref === "code-build" && codeBuildInstalled
+        ? "▶ Open in Code Build"
+        : r.source === "grok"
+          ? "▶ Resume in Grok"
+          : "▶ Resume in Claude";
+    const resumeItem = new vscode.TreeItem(resumeLabel);
     resumeItem.iconPath = new vscode.ThemeIcon("play");
     resumeItem.contextValue = "sessionResume";
     resumeItem.command = {
@@ -1647,8 +1674,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand("coderProjectsActivity.refresh", () => projects.refresh()),
 
     vscode.commands.registerCommand("coderSessions.resume", async (arg: SessionRow | SessionItem | undefined) => {
-      // The inline action passes the TreeItem; the per-child "Resume in Claude"
-      // child passes a SessionRow directly. Accept either.
+      // The inline action passes the TreeItem; the per-child "Resume" child
+      // passes a SessionRow directly. Accept either.
       const row: SessionRow | null =
         arg && typeof arg === "object" && "row" in arg
           ? (arg as SessionItem).row
@@ -1657,11 +1684,88 @@ export function activate(ctx: vscode.ExtensionContext) {
         vscode.window.showWarningMessage("No session to resume.");
         return;
       }
-      // Prefer the official Claude Code VS Code extension panel.
-      // Discovered signature (from extension internals):
-      //   claude-vscode.primaryEditor.open(sessionId, prompt?, viewColumn?)
-      //   claude-vscode.editor.open(sessionId, prompt?, viewColumn?)
-      // Both call createPanel(sessionId, prompt, viewColumn) under the hood.
+
+      // Cwd resolution is source-aware: claude stores a dash-encoded JSONL
+      // container path, grok stores the absolute cwd. The terminal-fallback
+      // branches cd into this when spawning the CLI.
+      const cwd = SessionsProvider.sessionCwd(row) ?? undefined;
+      const cfg = vscode.workspace.getConfiguration("coderSessions");
+      const preferredBackend = cfg.get<"code-build" | "native">("resumeBackend", "code-build");
+
+      // Preferred backend = code-build: open zhirafovod.code-build-vscode's
+      // chat UI. The newer `codeBuild.openExternalSession` command (v0.0.2+)
+      // imports the upstream session — for claude that's a true `--resume`,
+      // for grok a fresh chat in the same cwd. Older code-build builds only
+      // offer `codeBuild.newConversation` (a blank chat); we fall through to
+      // that, and the user can still access the original transcript via
+      // "View conversation" on the row.
+      if (preferredBackend === "code-build") {
+        const codeBuildExt = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
+        if (codeBuildExt) {
+          try {
+            if (!codeBuildExt.isActive) await codeBuildExt.activate();
+            const allCommands = await vscode.commands.getCommands(true);
+            if (allCommands.includes("codeBuild.openExternalSession") && cwd) {
+              await vscode.commands.executeCommand("codeBuild.openExternalSession", {
+                source: row.source,
+                sessionId: row.session,
+                cwd,
+                title: row.title,
+              });
+              vscode.window.setStatusBarMessage(
+                row.source === "claude"
+                  ? `Code Build is resuming claude session ${row.session.slice(0, 8)}…`
+                  : `Code Build opened a Grok session in ${path.basename(cwd)} (grok has no external resume yet — pick from clock-icon if needed).`,
+                8000,
+              );
+            } else {
+              await vscode.commands.executeCommand("codeBuild.newConversation");
+              vscode.window.setStatusBarMessage(
+                `Code Build opened (new conversation; upgrade code-build for true session import). Original ${row.source} session ${row.session.slice(0, 8)} stays in "View conversation".`,
+                8000,
+              );
+            }
+            return;
+          } catch {
+            // fall through to native dispatch below
+          }
+        }
+        // code-build not installed → continue with native dispatch
+      }
+
+      // Native per-source dispatch. Each branch tries the corresponding
+      // sidebar extension first (claude-vscode does a TRUE resume by id;
+      // grok-build-vscode opens its panel and the user picks from history),
+      // falling back to spawning the CLI in a terminal cd'd to the cwd.
+      if (row.source === "grok") {
+        const grokExt = vscode.extensions.getExtension("pawelhuryn.grok-vscode-phuryn");
+        if (grokExt) {
+          try {
+            if (!grokExt.isActive) await grokExt.activate();
+            await vscode.commands.executeCommand("grok.open");
+            vscode.window.setStatusBarMessage(
+              `Opened Grok Build — pick session ${row.session.slice(0, 8)} from the clock-icon history.`,
+              6000,
+            );
+            return;
+          } catch {
+            // fall through to terminal
+          }
+        }
+        const term = vscode.window.createTerminal({
+          name: `grok:${row.session.slice(0, 8)}`,
+          cwd,
+        });
+        term.show();
+        term.sendText("grok");
+        vscode.window.setStatusBarMessage(
+          `Launched grok CLI — pick session ${row.session.slice(0, 8)} from the history.`,
+          6000,
+        );
+        return;
+      }
+
+      // Claude branch — anthropic.claude-code truly resumes by session id.
       const candidates = [
         "claude-vscode.primaryEditor.open",
         "claude-vscode.editor.open",
@@ -1679,9 +1783,10 @@ export function activate(ctx: vscode.ExtensionContext) {
           // try the next one
         }
       }
-      // Fallback: open in a terminal (e.g., if anthropic.claude-code isn't installed).
+      // Terminal fallback: `claude --resume <id>` in the session's cwd.
       const term = vscode.window.createTerminal({
         name: `claude:${row.session.slice(0, 8)}`,
+        cwd,
       });
       term.show();
       term.sendText(`claude --resume ${row.session}`);

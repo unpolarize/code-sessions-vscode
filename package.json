@@ -71,7 +71,7 @@
       },
       {
         "command": "coderSessions.resume",
-        "title": "Continue in Claude",
+        "title": "Resume session",
         "icon": "$(play)"
       },
       {
@@ -346,6 +346,19 @@
           "type": "boolean",
           "default": true,
           "description": "Discover and index Grok Build sessions from ~/.grok/sessions/ alongside Claude Code sessions."
+        },
+        "coderSessions.resumeBackend": {
+          "type": "string",
+          "enum": [
+            "code-build",
+            "native"
+          ],
+          "enumDescriptions": [
+            "Open the session in zhirafovod.code-build-vscode (unified chat UI for any coding-agent CLI). Falls back to the native per-source extension if code-build isn't installed. Note: code-build opens a fresh conversation in the session's cwd — it cannot yet resume an arbitrary claude/grok session-id, so use 'View conversation' on the row for the original transcript.",
+            "Use the per-source native extension: anthropic.claude-code (truly resumes the session by id) for claude rows; pawelhuryn.grok-vscode-phuryn (opens the panel — pick from history) for grok rows. Falls back to the CLI in a terminal if neither is installed."
+          ],
+          "default": "code-build",
+          "description": "Which extension to prefer when clicking 'Resume' on a session. Code Build is the unified UI but loses per-session resume fidelity; native is best for resume but splits across two extensions."
         },
         "coderKbChanges.repoPath": {
           "type": "string",
