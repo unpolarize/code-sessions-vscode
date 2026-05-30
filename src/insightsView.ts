@@ -15,6 +15,11 @@ import { execFile } from "child_process";
 import { parseConversation, ParsedConversation } from "./conversationParser";
 
 interface SessionRow {
+  /** Source CLI that produced the session. Defaults to 'claude' when absent
+   * (legacy rows from before v1.0's source-tagging migration). */
+  source?: 'claude' | 'grok';
+  /** Detected model id (e.g. claude-opus-4-7, grok-build). May be null. */
+  model?: string | null;
   mtime_epoch: number;
   active: string;
   project: string;
@@ -34,6 +39,10 @@ interface SessionRow {
   entrypoint?: string;
   is_automated?: boolean;
   topic_counts?: Array<[string, number]>;
+}
+
+function isGrokRow(r: SessionRow): boolean {
+  return r.source === 'grok';
 }
 
 function escapeHtml(s: string): string {
@@ -538,6 +547,12 @@ function renderDashboard(opts: {
   parsedCount: number;
 }): string {
   const { rows, deep, lookbackDays, showAutomated, parsedCount } = opts;
+  // Per-source counts for the subtitle. Source is derived from the row's
+  // entrypoint heuristic when not present on the view-row interface
+  // (legacy in-memory shape doesn't carry it); falling back to entrypoint
+  // is safe — grok sessions carry agent_name like 'grok-build-plan'.
+  const claudeCount = rows.filter((r) => !isGrokRow(r)).length;
+  const grokCount = rows.length - claudeCount;
 
   // ---------- KPIs ---------- //
   const totalCost = rows.reduce((n, r) => n + r.cost_usd, 0);
@@ -682,8 +697,8 @@ function renderDashboard(opts: {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src data:;">
 <style>${STYLE}</style>
 </head><body>
-<h1>Claude Code · Insights</h1>
-<div class="subtitle">Last ${lookbackDays} days · ${rows.length} sessions (${showAutomated ? "incl. automated" : "interactive only"}) · deep metrics from top ${parsedCount} parsed</div>
+<h1>Coder · Insights</h1>
+<div class="subtitle">Last ${lookbackDays} days · ${rows.length} sessions (${claudeCount} Claude + ${grokCount} Grok${showAutomated ? "" : ", interactive only"}) · cost &amp; tokens are Claude-only (Grok records no token usage); deep metrics from top ${parsedCount} Claude sessions</div>
 
 <section class="kpis">
   <div class="kpi"><div class="label">Cost</div><div class="value">${escapeHtml(fmt$(totalCost))}</div><div class="sub">avg ${escapeHtml(fmt$(avgCost))}/session</div></div>
@@ -772,8 +787,8 @@ export async function openInsightsView(ctx: vscode.ExtensionContext, store?: imp
   const deepParseMax = cfg.get<number>("insightsDeepParse", 20);
 
   const panel = vscode.window.createWebviewPanel(
-    "claudeInsights",
-    "Claude · Insights",
+    "coderInsights",
+    "Coder · Insights",
     vscode.ViewColumn.Active,
     { enableScripts: false, retainContextWhenHidden: true },
   );
@@ -786,6 +801,8 @@ export async function openInsightsView(ctx: vscode.ExtensionContext, store?: imp
     try {
       const dbRows = store.listRecent(limit, true);
       allRows = dbRows.map((r) => ({
+        source: r.source,
+        model: r.model,
         mtime_epoch: Math.floor(r.mtime_ns / 1e9),
         active: " ",
         project: r.project_id || "",

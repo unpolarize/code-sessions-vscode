@@ -300,6 +300,9 @@ function escapeMd(s: string): string {
 
 interface SessionRow {
   source: "claude" | "grok";
+  /** Dominant / last-seen model id from the JSONL (`claude-opus-4-7`,
+   * `grok-build`, etc.). Null if the indexer hasn't pinned one yet. */
+  model: string | null;
   mtime_epoch: number;
   active: string;
   project: string;
@@ -382,6 +385,7 @@ function formatDurationSec(sec: number): string {
 function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
   return {
     source: r.source,
+    model: r.model,
     mtime_epoch: Math.floor(r.mtime_ns / 1e9),
     active: r.indexed_at && Date.now() / 1000 - r.mtime_ns / 1e9 < 120 ? "*" : " ",
     project: r.project_id || "",
@@ -405,6 +409,74 @@ function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
     is_automated: r.is_automated,
     last_response_epoch: r.last_assistant_text_at ? Math.floor(r.last_assistant_text_at / 1000) : 0,
   };
+}
+
+// Cost rates per 1M tokens — mirrors the table in jsonlIndexer.ts so the
+// tooltip breakdown reconciles with the headline figure the indexer wrote
+// to session.cost_usd. (We don't import the indexer's table because that
+// pulls fs/native deps into the view module; the rates are stable enough
+// that two-place duplication is cheaper than a refactor.)
+interface CostRates { input: number; output: number; cacheRead: number; cacheWrite: number }
+const COST_RATES: Record<string, CostRates> = {
+  opus:   { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 },
+  sonnet: { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
+  haiku:  { input: 1, output: 5,  cacheWrite: 1.25, cacheRead: 0.1 }
+};
+function ratesForModel(modelId: string | null | undefined): { rates: CostRates; family: string } {
+  const m = (modelId ?? "").toLowerCase();
+  if (m.includes("opus")) return { rates: COST_RATES.opus, family: "Opus" };
+  if (m.includes("sonnet")) return { rates: COST_RATES.sonnet, family: "Sonnet" };
+  if (m.includes("haiku")) return { rates: COST_RATES.haiku, family: "Haiku" };
+  return { rates: COST_RATES.sonnet, family: "Sonnet (default)" };
+}
+function fmtNum(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
+/** Multi-line markdown showing how the session's cost_usd splits across
+ * input / output / cache-read / cache-write at the detected model's list
+ * rates, plus a short explanation of what the cache lines mean and what
+ * the discount/premium ratio is. Grok rows (no recorded usage) get a
+ * minimal version so the tooltip stays readable. */
+function buildCostBreakdown(row: SessionRow): string[] {
+  if (row.source === "grok") {
+    return [
+      "",
+      "**Cost breakdown**",
+      "Grok Build's `chat_history.jsonl` doesn't record per-turn token usage,",
+      "so cost can't be attributed for this session.",
+      `Messages: ${row.messages} · Tool calls: (see Code Build for live spend)`,
+    ];
+  }
+  const { rates, family } = ratesForModel(row.model);
+  const input = row.tokens_input ?? 0;
+  const output = row.tokens_output ?? 0;
+  const cacheR = row.tokens_cache_read ?? 0;
+  const cacheW = row.tokens_cache_write ?? 0;
+  const inputCost = (input * rates.input) / 1_000_000;
+  const outputCost = (output * rates.output) / 1_000_000;
+  const cacheRCost = (cacheR * rates.cacheRead) / 1_000_000;
+  const cacheWCost = (cacheW * rates.cacheWrite) / 1_000_000;
+  const total = row.cost_usd;
+  // Pad token figures to a fixed width so the columns line up in the tooltip.
+  const lines = [
+    "",
+    `**Cost breakdown** — ${family} list rates (USD per 1M tokens)`,
+    "| Bucket | Tokens | Rate | Cost |",
+    "|---|---:|---:|---:|",
+    `| Input | ${fmtNum(input)} | $${rates.input} | $${inputCost.toFixed(2)} |`,
+    `| Output | ${fmtNum(output)} | $${rates.output} | $${outputCost.toFixed(2)} |`,
+    `| Cache **read** (hits) | ${fmtNum(cacheR)} | $${rates.cacheRead} | $${cacheRCost.toFixed(2)} |`,
+    `| Cache **write** (seeds) | ${fmtNum(cacheW)} | $${rates.cacheWrite} | $${cacheWCost.toFixed(2)} |`,
+    `| **Total** | ${fmtNum(input + output + cacheR + cacheW)} | | **$${total.toFixed(2)}** |`,
+    "",
+    "_Cache **read** = the prompt already lived in Anthropic's prompt cache and was billed at **10% of input** (90% discount). Cache hits are the single biggest cost lever for long-running sessions._",
+    "_Cache **write** = the first time a prefix is seeded into the cache; billed at **125% of input**. Paid once per cache entry; subsequent reads of that prefix are cheap._"
+  ];
+  return lines;
 }
 
 class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
@@ -782,20 +854,29 @@ class SessionItem extends vscode.TreeItem {
             ...row.topic_counts.slice(0, 12).map(([t, n]) => `- \`${t}\` _(${n})_`),
           ]
         : [];
-    this.tooltip = new vscode.MarkdownString(
+    // Cost breakdown — split the headline figure across input/output/cache-R/cache-W
+    // at the model's list rates so the user sees where the spend went and what the
+    // cache lines mean. Falls back to the Sonnet rates for unknown models (matches
+    // the indexer's default).
+    const costLines = buildCostBreakdown(row);
+    const md = new vscode.MarkdownString(
       [
         `**${row.title || "(no title)"}**`,
         ``,
         `\`${row.session}\``,
+        `Source: ${row.source === "grok" ? "Grok Build" : "Claude Code"}` +
+          (row.model ? `  ·  Model: \`${row.model}\`` : ""),
         `Modified: ${row.modified}`,
         `Messages: ${row.messages}  ·  Subagents: ${row.subagents}`,
-        `Tokens: ${row.tokens_total.toLocaleString()} (in ${row.tokens_input}, out ${row.tokens_output}, cache R ${row.tokens_cache_read}, cache W ${row.tokens_cache_write})`,
-        `Cost: $${cost}`,
+        ...costLines,
         `Projects touched: ${row.projects_touched?.join(", ") || "(none recorded)"}`,
         ...topicLines,
         row.active === "*" ? `\n_Active (mtime < 2 min)_` : "",
       ].join("\n"),
     );
+    md.isTrusted = true; // allows markdown tables to render
+    md.supportHtml = true;
+    this.tooltip = md;
     this.iconPath = new vscode.ThemeIcon(
       row.is_starred
         ? "star-full"
