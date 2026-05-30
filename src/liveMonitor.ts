@@ -185,8 +185,8 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
 
 export function openLiveMonitor(ctx: vscode.ExtensionContext, store: SessionStore): vscode.WebviewPanel {
   const panel = vscode.window.createWebviewPanel(
-    "claudeLiveMonitor",
-    "Claude · Live",
+    "coderLiveMonitor",
+    "AI Coders · Live",
     vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: false },
   );

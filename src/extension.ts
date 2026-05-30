@@ -86,7 +86,7 @@ function createCostBudgetTile(
   store: SessionStore,
 ): { item: vscode.StatusBarItem; tick: () => void } {
   const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-  item.name = "Claude · cost today";
+  item.name = "AI Coders · cost today";
   item.command = "coderSessions.openInsights";
 
   const tick = () => {
@@ -155,7 +155,7 @@ function createLiveStatusBar(
     const md = new vscode.MarkdownString();
     md.isTrusted = true;
     md.supportThemeIcons = true;
-    md.appendMarkdown(`**Claude · Live** &nbsp; *(updated ${new Date().toLocaleTimeString()})*\n\n`);
+    md.appendMarkdown(`**AI Coders · Live** &nbsp; *(updated ${new Date().toLocaleTimeString()})*\n\n`);
     md.appendMarkdown(
       `$(pulse) **${p.activeCount}** active · $(tools) **${p.toolsPerMin}** tools/min · ` +
         `$(symbol-numeric) **${fmtTok(p.tokensToday)}** tokens · $(rocket) **${p.subagentsToday}** subagents · ` +
@@ -211,7 +211,7 @@ function createLiveStatusBar(
           // Prefer the awaiting session in the status-bar label.
           const a = awaiting[0];
           const lbl = a.now.detail === "ExitPlanMode" ? "awaiting plan" : "awaiting answer";
-          item.text = `$(warning) Claude · ${awaiting.length} ${lbl}`;
+          item.text = `$(warning) AI Coders · ${awaiting.length} ${lbl}`;
           item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
         } else {
           const top = payload.cards[0];
@@ -221,11 +221,11 @@ function createLiveStatusBar(
               : top.now.kind === "responding"
                 ? "responding"
                 : "idle";
-          item.text = `$(pulse) Claude · ${payload.activeCount} active · ${tag}`;
+          item.text = `$(pulse) AI Coders · ${payload.activeCount} active · ${tag}`;
           item.backgroundColor = undefined;
         }
       } else {
-        item.text = `$(comment-discussion) Claude · idle`;
+        item.text = `$(comment-discussion) AI Coders · idle`;
         item.backgroundColor = undefined;
       }
 
@@ -258,7 +258,7 @@ function createLiveStatusBar(
       if (timer) clearTimeout(timer);
       timer = setTimeout(tick, payload.activeCount > 0 ? 5_000 : 30_000);
     } catch (e: any) {
-      item.text = `$(warning) Claude`;
+      item.text = `$(warning) AI Coders`;
       item.tooltip = `coder-sessions: ${e.message}`;
       if (timer) clearTimeout(timer);
       timer = setTimeout(tick, 30_000);

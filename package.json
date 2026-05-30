@@ -26,7 +26,7 @@
       "activitybar": [
         {
           "id": "coder-activity",
-          "title": "Coder Activity",
+          "title": "Coder Sessions",
           "icon": "$(comment-discussion)"
         }
       ]
@@ -63,132 +63,161 @@
       {
         "command": "coderSessions.refresh",
         "title": "Refresh sessions",
-        "icon": "$(refresh)"
+        "icon": "$(refresh)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.refreshFull",
-        "title": "Refresh sessions (force full rescan)"
+        "title": "Refresh sessions (force full rescan)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.resume",
         "title": "Resume session",
-        "icon": "$(play)"
+        "icon": "$(play)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.openTranscript",
-        "title": "Open transcript (JSONL)"
+        "title": "Open transcript (JSONL)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.viewConversation",
         "title": "View conversation",
-        "icon": "$(preview)"
+        "icon": "$(preview)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.openInsights",
         "title": "Open insights dashboard",
-        "icon": "$(graph)"
+        "icon": "$(graph)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.openLiveMonitor",
         "title": "Open live monitor",
-        "icon": "$(pulse)"
+        "icon": "$(pulse)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.classifyTopics",
-        "title": "Analyze conversation topics"
+        "title": "Analyze conversation topics",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.showAgentGraph",
         "title": "Show 2D agent graph",
-        "icon": "$(circuit-board)"
+        "icon": "$(circuit-board)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.search",
         "title": "Search coder history",
-        "icon": "$(search)"
+        "icon": "$(search)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.classifyControls",
-        "title": "Auto-classify controls (pause / retry failed)"
+        "title": "Auto-classify controls (pause / retry failed)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.classifyTogglePause",
-        "title": "Auto-classify: pause / resume"
+        "title": "Auto-classify: pause / resume",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.classifyRetryFailed",
-        "title": "Auto-classify: retry failed sessions"
+        "title": "Auto-classify: retry failed sessions",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.agentGraphToggleMode",
-        "title": "Agent graph: toggle 2D / 3D"
+        "title": "Agent graph: toggle 2D / 3D",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.focusActivityView",
-        "title": "Focus Coder Activity sidebar"
+        "title": "Focus Coder Activity sidebar",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.revealProjectFolder",
-        "title": "Reveal project folder in Finder/Explorer"
+        "title": "Reveal project folder in Finder/Explorer",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.starSession",
         "title": "Star session (pin to top)",
-        "icon": "$(star-empty)"
+        "icon": "$(star-empty)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.unstarSession",
         "title": "Unstar session",
-        "icon": "$(star-full)"
+        "icon": "$(star-full)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.showTrajectory",
-        "title": "Show conversation trajectory"
+        "title": "Show conversation trajectory",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderSessions.reembedSessions",
         "title": "Drop cached embeddings and re-embed",
-        "icon": "$(refresh)"
+        "icon": "$(refresh)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderKbChanges.refresh",
         "title": "Refresh KB changes",
-        "icon": "$(refresh)"
+        "icon": "$(refresh)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderKbChanges.openFile",
-        "title": "Open file"
+        "title": "Open file",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderKbChanges.diff",
-        "title": "Show diff against HEAD~1"
+        "title": "Show diff against HEAD~1",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderProjectsActivity.refresh",
         "title": "Refresh project activity",
-        "icon": "$(refresh)"
+        "icon": "$(refresh)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderProjectsActivity.openFile",
-        "title": "Open file"
+        "title": "Open file",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderProjectsActivity.diff",
-        "title": "Show diff against HEAD~1"
+        "title": "Show diff against HEAD~1",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderTasks.refresh",
         "title": "Refresh tasks",
-        "icon": "$(refresh)"
+        "icon": "$(refresh)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderTasks.editCrontab",
         "title": "Edit crontab",
-        "icon": "$(edit)"
+        "icon": "$(edit)",
+        "category": "Coder Sessions"
       },
       {
         "command": "coderTasks.openSession",
-        "title": "Open parent session"
+        "title": "Open parent session",
+        "category": "Coder Sessions"
       }
     ],
     "menus": {
@@ -395,7 +424,10 @@
         },
         "coderSessions.classify.backend": {
           "type": "string",
-          "enum": ["ollama", "claude-p"],
+          "enum": [
+            "ollama",
+            "claude-p"
+          ],
           "default": "ollama",
           "description": "Where topic classification runs. `ollama` calls a local Ollama daemon (free, offline). `claude-p` invokes the Claude CLI in headless mode, using your subscription."
         },
