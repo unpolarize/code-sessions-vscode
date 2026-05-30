@@ -16,11 +16,28 @@ import { parseConversation, ParsedConversation } from "./conversationParser";
 
 const PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
 
-// Prices in USD per 1M tokens (Opus 4.x list — adjust per real plan).
-const RATE_INPUT = 15;
-const RATE_OUTPUT = 75;
-const RATE_CACHE_READ = 1.5;
-const RATE_CACHE_WRITE = 18.75;
+// Prices in USD per 1M tokens (2026 Anthropic list). Cache read = 0.1x input,
+// cache write = 1.25x input. Selected per detected model; DEFAULT is Sonnet
+// because that is the Claude Code default and most sessions are Sonnet.
+interface ModelRates {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+const RATES_OPUS: ModelRates = { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 };
+const RATES_SONNET: ModelRates = { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 };
+const RATES_HAIKU: ModelRates = { input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 };
+
+/** Pick the per-1M-token rates for a given model id. Unknown/missing → Sonnet. */
+function ratesForModel(model: string | null | undefined): ModelRates {
+  const m = (model ?? "").toLowerCase();
+  if (m.includes("opus")) return RATES_OPUS;
+  if (m.includes("sonnet")) return RATES_SONNET;
+  if (m.includes("haiku")) return RATES_HAIKU;
+  return RATES_SONNET; // Claude Code default
+}
 
 // Truncations for storage
 const USER_TEXT_MAX = 4096;
@@ -162,6 +179,7 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
   let entrypoint: string | null = null;
   let isAutomated = false;
   let rawMessageCount = 0; // every user/assistant line, matches session-center.sh
+  let sessionModel: string | null = null; // last non-empty model id seen
   try {
     const raw = fs.readFileSync(info.jsonl_path, "utf-8");
     for (const ln of raw.split("\n")) {
@@ -179,6 +197,10 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
         outputTok += u.output_tokens || 0;
         cacheReadTok += u.cache_read_input_tokens || 0;
         cacheWriteTok += u.cache_creation_input_tokens || 0;
+        // Model id lives on assistant lines as obj.message.model
+        // (e.g. "claude-sonnet-4-6-..." / "claude-opus-4-...").
+        const m = obj?.message?.model;
+        if (typeof m === "string" && m) sessionModel = m;
       } else if (obj?.type === "user" && !firstUserMsg) {
         const content = obj?.message?.content;
         if (typeof content === "string") firstUserMsg = content;
@@ -193,11 +215,12 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
     // ignore
   }
   const totalTok = inputTok + outputTok + cacheReadTok + cacheWriteTok;
+  const r = ratesForModel(sessionModel);
   const cost =
-    (inputTok * RATE_INPUT +
-      outputTok * RATE_OUTPUT +
-      cacheReadTok * RATE_CACHE_READ +
-      cacheWriteTok * RATE_CACHE_WRITE) /
+    (inputTok * r.input +
+      outputTok * r.output +
+      cacheReadTok * r.cacheRead +
+      cacheWriteTok * r.cacheWrite) /
     1_000_000;
 
   const totalToolCalls = parsed.summary.totalTools;
@@ -226,7 +249,7 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
     cache_read_tokens: cacheReadTok,
     cache_write_tokens: cacheWriteTok,
     cost_usd: Number(cost.toFixed(4)),
-    model: null,
+    model: sessionModel,
     title: parsed.title || firstUserMsg.slice(0, 70),
     first_user_msg: firstUserMsg.slice(0, 4096),
     entrypoint,
