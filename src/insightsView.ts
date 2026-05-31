@@ -545,8 +545,11 @@ function renderDashboard(opts: {
   lookbackDays: number;
   showAutomated: boolean;
   parsedCount: number;
+  /** When set, the dashboard shows a session-focused header (title, source,
+   * model, full session id) instead of the "last N days" lookback banner. */
+  focusSession?: SessionRow;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -697,8 +700,12 @@ function renderDashboard(opts: {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src data:;">
 <style>${STYLE}</style>
 </head><body>
-<h1>Coder · Insights</h1>
-<div class="subtitle">Last ${lookbackDays} days · ${rows.length} sessions (${claudeCount} Claude + ${grokCount} Grok${showAutomated ? "" : ", interactive only"}) · cost &amp; tokens are Claude-only (Grok records no token usage); deep metrics from top ${parsedCount} Claude sessions</div>
+${focusSession
+  ? `<h1>${escapeHtml(focusSession.title || focusSession.session.slice(0, 8))}</h1>
+     <div class="subtitle">${focusSession.source === "grok" ? "Grok Build" : "Claude Code"}${focusSession.model ? ` · <code>${escapeHtml(focusSession.model)}</code>` : ""} · <code>${escapeHtml(focusSession.session)}</code> · ${escapeHtml(focusSession.project || "—")}</div>`
+  : `<h1>Coder · Insights</h1>
+     <div class="subtitle">Last ${lookbackDays} days · ${rows.length} sessions (${claudeCount} Claude + ${grokCount} Grok${showAutomated ? "" : ", interactive only"}) · cost &amp; tokens are Claude-only (Grok records no token usage); deep metrics from top ${parsedCount} Claude sessions</div>`
+}
 
 <section class="kpis">
   <div class="kpi"><div class="label">Cost</div><div class="value">${escapeHtml(fmt$(totalCost))}</div><div class="sub">avg ${escapeHtml(fmt$(avgCost))}/session</div></div>
@@ -775,7 +782,18 @@ function renderDashboard(opts: {
 // Entry point
 // --------------------------------------------------------------------------- //
 
-export async function openInsightsView(ctx: vscode.ExtensionContext, store?: import("./db").SessionStore | null): Promise<void> {
+export interface InsightsOptions {
+  /** When set, restrict every KPI/chart to this single session — used by the
+   * "click metrics row → drill in" command. Without it, the dashboard shows
+   * the full last-N-day rollup. */
+  focusSessionId?: string;
+}
+
+export async function openInsightsView(
+  ctx: vscode.ExtensionContext,
+  store?: import("./db").SessionStore | null,
+  opts: InsightsOptions = {},
+): Promise<void> {
   const cfg = vscode.workspace.getConfiguration("coderSessions");
   const limit = cfg.get<number>("limit", 100);
   const showAutomated = cfg.get<boolean>("showAutomated", false);
@@ -788,7 +806,7 @@ export async function openInsightsView(ctx: vscode.ExtensionContext, store?: imp
 
   const panel = vscode.window.createWebviewPanel(
     "coderInsights",
-    "Coder · Insights",
+    opts.focusSessionId ? `Insights · ${opts.focusSessionId.slice(0, 8)}` : "Coder · Insights",
     vscode.ViewColumn.Active,
     { enableScripts: false, retainContextWhenHidden: true },
   );
@@ -841,6 +859,29 @@ export async function openInsightsView(ctx: vscode.ExtensionContext, store?: imp
       panel.webview.html = `<pre style="padding:24px;">JSON parse failed: ${escapeHtml(e?.message || String(e))}</pre>`;
       return;
     }
+  }
+
+  // Focus filter: when the dashboard was opened from a specific session row,
+  // narrow to just that session and skip the lookback window (we want the
+  // session's lifetime view, not a 14-day slice of it). Also force-include
+  // automated rows in this mode so we don't accidentally drop the focused
+  // session if it happens to be cron-flagged.
+  if (opts.focusSessionId) {
+    const winRows = allRows.filter((r) => r.session === opts.focusSessionId);
+    if (winRows.length === 0) {
+      panel.webview.html = `<pre style="padding:24px;">No session matched id ${escapeHtml(opts.focusSessionId)} in the current cache. Refresh the Sessions view and try again.</pre>`;
+      return;
+    }
+    const deep = await computeDeepMetrics(winRows, deepParseMax);
+    panel.webview.html = renderDashboard({
+      rows: winRows,
+      deep,
+      lookbackDays: 0,
+      showAutomated: true,
+      parsedCount: deep.parsedSessions,
+      focusSession: winRows[0],
+    });
+    return;
   }
 
   // Filter to interactive vs. include automated based on the same setting the

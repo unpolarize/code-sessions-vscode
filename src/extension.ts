@@ -303,6 +303,9 @@ interface SessionRow {
   /** Dominant / last-seen model id from the JSONL (`claude-opus-4-7`,
    * `grok-build`, etc.). Null if the indexer hasn't pinned one yet. */
   model: string | null;
+  /** Source-specific telemetry — currently grok signals.json contents
+   * (turn/tool/file counts, latency, peak RSS). Serialised JSON. */
+  extras_json: string | null;
   mtime_epoch: number;
   active: string;
   project: string;
@@ -386,6 +389,7 @@ function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
   return {
     source: r.source,
     model: r.model,
+    extras_json: r.extras_json ?? null,
     mtime_epoch: Math.floor(r.mtime_ns / 1e9),
     active: r.indexed_at && Date.now() / 1000 - r.mtime_ns / 1e9 < 120 ? "*" : " ",
     project: r.project_id || "",
@@ -436,20 +440,83 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
+/** Helper: decode the row's signals JSON blob (grok-only). Tolerates a
+ * missing / malformed blob — returns null in either case. */
+function readGrokSignals(row: SessionRow): Record<string, any> | null {
+  if (!row.extras_json) return null;
+  try { return JSON.parse(row.extras_json); } catch { return null; }
+}
+
+function fmtBytes(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
 /** Multi-line markdown showing how the session's cost_usd splits across
  * input / output / cache-read / cache-write at the detected model's list
  * rates, plus a short explanation of what the cache lines mean and what
- * the discount/premium ratio is. Grok rows (no recorded usage) get a
- * minimal version so the tooltip stays readable. */
+ * the discount/premium ratio is. Grok rows fall through to signals.json
+ * telemetry — context size, tools, file-edit volume, latency, RSS — when
+ * available; a stub when the signals sidecar is missing. */
 function buildCostBreakdown(row: SessionRow): string[] {
   if (row.source === "grok") {
-    return [
+    const s = readGrokSignals(row);
+    if (!s) {
+      return [
+        "",
+        "**Grok session — no telemetry sidecar**",
+        "This session was indexed before grok started writing `signals.json`,",
+        "or the file was missing. Open the session in Grok Build to refresh it.",
+      ];
+    }
+    const ctxPct =
+      typeof s.contextWindowUsage === "number"
+        ? `${s.contextWindowUsage}%`
+        : s.contextTokensUsed && s.contextWindowTokens
+          ? `${Math.round((s.contextTokensUsed / s.contextWindowTokens) * 100)}%`
+          : "";
+    const lines = [
       "",
-      "**Cost breakdown**",
-      "Grok Build's `chat_history.jsonl` doesn't record per-turn token usage,",
-      "so cost can't be attributed for this session.",
-      `Messages: ${row.messages} · Tool calls: (see Code Build for live spend)`,
+      `**Grok telemetry** — from \`signals.json\` (Grok Build doesn't record per-turn input/output token splits, so cost can't be computed — these are the closest metrics it does expose)`,
+      "| Metric | Value | Note |",
+      "|---|---:|---|",
     ];
+    if (typeof s.contextTokensUsed === "number") {
+      lines.push(
+        `| Context tokens | ${fmtNum(s.contextTokensUsed)}${s.contextWindowTokens ? ` / ${fmtNum(s.contextWindowTokens)}` : ""}${ctxPct ? ` (${ctxPct})` : ""} | how full the context window got |`
+      );
+    }
+    if (typeof s.totalTokensBeforeCompaction === "number" && s.totalTokensBeforeCompaction > 0) {
+      lines.push(`| Tokens before compaction | ${fmtNum(s.totalTokensBeforeCompaction)} | trimmed by ${s.compactionCount ?? "?"} compaction event(s) |`);
+    }
+    if (typeof s.toolCallCount === "number") {
+      const toolList = Array.isArray(s.toolsUsed) && s.toolsUsed.length > 0 ? s.toolsUsed.slice(0, 6).join(", ") : "";
+      lines.push(`| Tool calls | ${s.toolCallCount.toLocaleString()} | ${toolList || "—"} |`);
+    }
+    if (Array.isArray(s.modelsUsed) && s.modelsUsed.length > 0) {
+      lines.push(`| Models used | ${s.modelsUsed.length} | ${s.modelsUsed.join(", ")} |`);
+    }
+    if (typeof s.agentLinesAdded === "number" || typeof s.agentLinesRemoved === "number" || typeof s.agentFilesTouched === "number") {
+      const added = s.agentLinesAdded ?? 0;
+      const removed = s.agentLinesRemoved ?? 0;
+      const files = s.agentFilesTouched ?? 0;
+      lines.push(`| File edits | +${added.toLocaleString()} / -${removed.toLocaleString()} | across ${files} file${files === 1 ? "" : "s"} |`);
+    }
+    if (typeof s.avgTimeToFirstTokenMs === "number" || typeof s.avgResponseTimeMs === "number") {
+      const ttft = typeof s.avgTimeToFirstTokenMs === "number" ? `${Math.round(s.avgTimeToFirstTokenMs)}ms` : "—";
+      const rt = typeof s.avgResponseTimeMs === "number" ? `${Math.round(s.avgResponseTimeMs)}ms` : "—";
+      lines.push(`| Latency (avg) | ${ttft} TTFT · ${rt} response | first-token / full-response |`);
+    }
+    if (typeof s.peakRssBytes === "number") {
+      lines.push(`| Peak RAM | ${fmtBytes(s.peakRssBytes)} | local grok process (laptop memory) |`);
+    }
+    if (typeof s.sessionDurationSeconds === "number" && s.sessionDurationSeconds > 0) {
+      lines.push(`| Duration | ${formatDurationSec(s.sessionDurationSeconds)} | wall-clock |`);
+    }
+    lines.push("", "_Grok Build runs against xAI's API; per-turn input/output token splits are not persisted to disk, so $ cost can't be computed locally. xAI bills via subscription (SuperGrok Heavy) or API key (per-token, visible in console.x.ai)._");
+    return lines;
   }
   const { rates, family } = ratesForModel(row.model);
   const input = row.tokens_input ?? 0;
@@ -913,6 +980,29 @@ class SessionItem extends vscode.TreeItem {
     );
     stats.iconPath = new vscode.ThemeIcon("graph");
     stats.contextValue = "sessionMetric";
+    // Mirror the parent SessionItem's rich breakdown tooltip onto this row
+    // so the user sees the cost-by-bucket / signals table when hovering the
+    // metrics line they're actually pointing at. Without this, hover only
+    // worked on the collapsed parent and felt broken on the unfolded child.
+    const statsTooltip = new vscode.MarkdownString(
+      [
+        `**${r.title || "(no title)"}**`,
+        ``,
+        `Source: ${r.source === "grok" ? "Grok Build" : "Claude Code"}` +
+          (r.model ? `  ·  Model: \`${r.model}\`` : ""),
+        ...buildCostBreakdown(r),
+      ].join("\n"),
+    );
+    statsTooltip.isTrusted = true;
+    statsTooltip.supportHtml = true;
+    stats.tooltip = statsTooltip;
+    // Click to open Coder Insights filtered to this session — turns the
+    // metric line into a clickable shortcut into the deeper drilldown view.
+    stats.command = {
+      command: "coderSessions.openInsightsForSession",
+      title: "Open insights filtered to this session",
+      arguments: [r],
+    };
     out.push(stats);
 
     if (r.projects_touched && r.projects_touched.length > 0) {
@@ -1744,6 +1834,13 @@ export function activate(ctx: vscode.ExtensionContext) {
       await sessions.refresh();
     }),
     vscode.commands.registerCommand("coderSessions.openInsights", () => openInsightsView(ctx, store)),
+    // Drilldown variant: called from a session row's metrics line. Opens the
+    // Insights panel but pre-filters every chart and KPI to just that session
+    // so the user sees its cost/tokens/messages in context of the dashboards.
+    vscode.commands.registerCommand("coderSessions.openInsightsForSession", (row: SessionRow | undefined) => {
+      if (!row || !row.session) return;
+      openInsightsView(ctx, store, { focusSessionId: row.session });
+    }),
     vscode.commands.registerCommand("coderSessions.openLiveMonitor", () => {
       if (!store) {
         vscode.window.showWarningMessage("Live monitor requires the SQLite cache. Enable coderSessions.cacheEnabled.");

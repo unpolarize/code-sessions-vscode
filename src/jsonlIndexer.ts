@@ -256,6 +256,8 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
     is_automated: isAutomated,
     indexed_at: Date.now(),
     last_assistant_text_at: parsed.lastAssistantTextMs,
+    // Claude-side extras are still tabular fields; no JSON blob needed yet.
+    extras_json: null,
   };
 
   const turns: TurnRow[] = parsed.turns.map((t, i) => ({

@@ -152,6 +152,15 @@ const MIGRATIONS: string[] = [
     detail      TEXT
   );
   `,
+
+  // v9 — extras blob. Source-specific telemetry that doesn't fit the
+  // tabular schema (grok's signals.json with context tokens, tool list,
+  // peak RSS, latency; future claude metadata) lives here as JSON. NULL
+  // for sources that don't emit it. Keeping it as a generic blob avoids
+  // an explosion of source-specific columns.
+  `
+  ALTER TABLE session ADD COLUMN extras_json TEXT;
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok";
@@ -187,6 +196,9 @@ export interface SessionRow {
    * `ended_at` when the parser hasn't seen any text (or for rows indexed
    * before migration v5). */
   last_assistant_text_at: number | null;
+  /** Source-specific telemetry blob (e.g. grok signals.json contents).
+   * NULL for sources that don't emit it. See migration v9. */
+  extras_json: string | null;
 }
 
 export interface TurnRow {
@@ -230,6 +242,7 @@ function rowToSession(r: any): SessionRow {
     is_automated: !!r.is_automated,
     indexed_at: r.indexed_at,
     last_assistant_text_at: r.last_assistant_text_at ?? null,
+    extras_json: r.extras_json ?? null,
   };
 }
 
@@ -463,14 +476,16 @@ export class SessionStore {
         message_count, tool_count, subagent_count,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
         cost_usd, model, title, first_user_msg,
-        entrypoint, is_automated, indexed_at, last_assistant_text_at
+        entrypoint, is_automated, indexed_at, last_assistant_text_at,
+        extras_json
       ) VALUES (
         @session_id, @source, @project_path, @project_id, @projects_touched, @jsonl_path,
         @mtime_ns, @size_bytes, @started_at, @ended_at,
         @message_count, @tool_count, @subagent_count,
         @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens,
         @cost_usd, @model, @title, @first_user_msg,
-        @entrypoint, @is_automated, @indexed_at, @last_assistant_text_at
+        @entrypoint, @is_automated, @indexed_at, @last_assistant_text_at,
+        @extras_json
       )
       ON CONFLICT(session_id) DO UPDATE SET
         source              = excluded.source,
@@ -496,12 +511,14 @@ export class SessionStore {
         entrypoint          = excluded.entrypoint,
         is_automated        = excluded.is_automated,
         indexed_at          = excluded.indexed_at,
-        last_assistant_text_at = excluded.last_assistant_text_at
+        last_assistant_text_at = excluded.last_assistant_text_at,
+        extras_json         = excluded.extras_json
     `).run({
       ...s,
       projects_touched: s.projects_touched.join(","),
       is_automated: s.is_automated ? 1 : 0,
       last_assistant_text_at: s.last_assistant_text_at ?? null,
+      extras_json: s.extras_json ?? null,
     });
   }
 

@@ -58,6 +58,39 @@ interface GrokSummary {
   session_kind?: string;
 }
 
+/** Telemetry sidecar grok writes per session. Not all fields appear in every
+ * session (older grok versions emit fewer); everything here is optional. */
+interface GrokSignals {
+  turnCount?: number;
+  userMessageCount?: number;
+  assistantMessageCount?: number;
+  toolCallCount?: number;
+  toolsUsed?: string[];
+  modelsUsed?: string[];
+  primaryModelId?: string;
+  /** Tokens currently resident in the context window — closest proxy grok
+   * exposes to "input tokens used this session". Doesn't separate input /
+   * output, doesn't break out cache hits. Still useful as a "how big did
+   * this conversation get". */
+  contextTokensUsed?: number;
+  contextWindowTokens?: number;
+  /** Cumulative tokens that fell off the front of the context window via
+   * compaction events. Non-zero only after a /compact (rare). */
+  totalTokensBeforeCompaction?: number;
+  compactionCount?: number;
+  /** File-edit volume from grok's own diff accounting. */
+  agentLinesAdded?: number;
+  agentLinesRemoved?: number;
+  agentFilesTouched?: number;
+  /** Latency telemetry (ms) — used by future Insights drilldowns. */
+  avgTimeToFirstTokenMs?: number;
+  avgResponseTimeMs?: number;
+  /** Peak resident-set-size of the grok process — proxies "how much RAM
+   * did the local CLI need", complementing remote-API tokens. */
+  peakRssBytes?: number;
+  sessionDurationSeconds?: number;
+}
+
 /** URL-decode the cwd folder name. Falls back to the raw name if decoding
  * fails (which would happen on a corrupt session dir). */
 function decodeCwd(folderName: string): string {
@@ -126,6 +159,19 @@ export function listAllGrokSessions(): GrokSessionInfo[] {
 function readSummary(p: string): GrokSummary | null {
   try {
     return JSON.parse(fs.readFileSync(p, "utf-8")) as GrokSummary;
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort read of `<sessionDir>/signals.json` — grok's per-session
+ * telemetry sidecar. Returns null if the file is missing (older session
+ * dirs, or sessions interrupted before grok wrote it). */
+function readSignals(sessionDir: string): GrokSignals | null {
+  const p = path.join(sessionDir, "signals.json");
+  if (!fs.existsSync(p)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf-8")) as GrokSignals;
   } catch {
     return null;
   }
@@ -331,10 +377,21 @@ function buildRows(
 
   const projectsTouched = projectsTouchedFromGrokTurns(parsed.turns);
 
-  // Grok records no per-turn token usage in chat_history.jsonl (verified
-  // across multiple sessions: keys are content/model_fingerprint/model_id/
-  // reasoning/tool_calls/type only). Cost columns stay 0; the downstream
-  // cost-budget tile is documented as claude-only.
+  // Pull grok's own telemetry sidecar. signals.json doesn't break input vs
+  // output tokens (cost can't be computed), but it does record:
+  //   - contextTokensUsed: closest proxy to "session size in tokens"
+  //   - toolCallCount + toolsUsed: replaces our chat_history scan
+  //   - modelsUsed: multi-model sessions
+  //   - file-edit volume + peak RSS for the local process
+  // We stash contextTokensUsed into input_tokens so the headline "tok"
+  // column on the Sessions row is no longer 0 — the tooltip labels it
+  // honestly as "context tokens" since it isn't really an input/output
+  // split.
+  const signals = readSignals(info.sessionDir);
+  const contextTokens = signals?.contextTokensUsed ?? 0;
+  const toolCount =
+    typeof signals?.toolCallCount === "number" ? signals.toolCallCount : parsed.totalTools;
+
   const session: SessionRow = {
     session_id: sessionId,
     source: "grok",
@@ -347,20 +404,24 @@ function buildRows(
     started_at: startedAt,
     ended_at: endedAt,
     message_count: parsed.rawMessageCount,
-    tool_count: parsed.totalTools,
+    tool_count: toolCount,
     subagent_count: 0,
-    input_tokens: 0,
+    input_tokens: contextTokens, // see comment above — proxy
     output_tokens: 0,
     cache_read_tokens: 0,
     cache_write_tokens: 0,
     cost_usd: 0,
-    model: summary.current_model_id ?? null,
+    model: signals?.primaryModelId ?? summary.current_model_id ?? null,
     title,
     first_user_msg: firstUserMsg,
     entrypoint: summary.agent_name ?? null,
     is_automated: false,
     indexed_at: Date.now(),
     last_assistant_text_at: endedAt,
+    // Whole signals blob — the tooltip / future Insights views can pick
+    // out individual fields without re-reading the JSON sidecar on every
+    // hover. Stored as a compact JSON string.
+    extras_json: signals ? JSON.stringify(signals) : null,
   };
 
   // Per-turn synthetic timestamps: spread evenly between started_at and
