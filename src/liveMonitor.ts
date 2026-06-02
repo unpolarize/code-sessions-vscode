@@ -339,7 +339,8 @@ function liveHtml(webview: vscode.Webview): string {
       alertEl.textContent = '';
     } else {
       alertEl.className = 'alert-banner on';
-      const titles = awaiting.map(a => a.title).slice(0, 3).join(', ');
+      const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const titles = awaiting.map(a => esc(a.title)).slice(0, 3).join(', ');
       const more = awaiting.length > 3 ? ' (+' + (awaiting.length - 3) + ' more)' : '';
       alertEl.innerHTML = '<span class="dot"></span><strong>' + awaiting.length + ' session' + (awaiting.length === 1 ? '' : 's') + '</strong> awaiting your response — ' + titles + more;
     }

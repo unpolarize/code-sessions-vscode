@@ -85,7 +85,7 @@ export function listAllJsonls(): JsonlInfo[] {
 
 /** Decode the urlencoded-ish project dir name back to a usable label. */
 function projectIdFromPath(projectPath: string): string {
-  // Example: /Users/zhirafovod/.claude/projects/-Users-zhirafovod-projects-unpolarize
+  // Example: /Users/you/.claude/projects/-Users-you-projects-myrepo
   // → unpolarize
   // For ai/X: -Users-zhirafovod-projects-ai-otelo → ai/otelo
   const base = path.basename(projectPath);

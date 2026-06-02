@@ -226,4 +226,4 @@ The official Claude Code VS Code extension (`anthropic.claude-code`) declares a 
 
 ## License
 
-Private — for personal use. Not published to the marketplace.
+MIT — see [`LICENSE`](LICENSE).

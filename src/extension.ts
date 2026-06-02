@@ -635,7 +635,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
    * <name>/docs`, `/Users/<name>/projects/<repo>`) it round-trips.
    *
    * Grok rows store the *already decoded* cwd directly (e.g.
-   * `/Users/zhirafovod/docs`) — those should pass through unchanged.
+   * `/Users/you/docs`) — those should pass through unchanged.
    * Heuristic: only apply the dash-decode when the basename starts with
    * a `-`, which is the marker of claude-code's encoding scheme. */
   private static decodeClaudeProjectDir(projectPath: string): string {
