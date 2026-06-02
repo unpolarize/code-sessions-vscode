@@ -259,7 +259,7 @@ function createLiveStatusBar(
       timer = setTimeout(tick, payload.activeCount > 0 ? 5_000 : 30_000);
     } catch (e: any) {
       item.text = `$(warning) AI Coders`;
-      item.tooltip = `coder-sessions: ${e.message}`;
+      item.tooltip = `code-sessions: ${e.message}`;
       if (timer) clearTimeout(timer);
       timer = setTimeout(tick, 30_000);
     }
@@ -705,7 +705,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         tip.command = {
           command: "workbench.action.openSettings",
           title: "Open setting",
-          arguments: ["@ext:zhirafovod.coder-sessions filterByCurrentWorkspace"],
+          arguments: ["@ext:zhirafovod.code-sessions filterByCurrentWorkspace"],
         };
         out.push(tip);
       }
@@ -1537,7 +1537,7 @@ function makeInfoItem(text: string): vscode.TreeItem {
 async function openCrontabEditor(ctx: vscode.ExtensionContext, onInstalled: () => void): Promise<void> {
   const { stdout, stderr, code } = await exec("crontab", ["-l"]);
   const content = code === 0 ? stdout : /no crontab for/i.test(stderr) ? "" : "";
-  const tmpDir = path.join(os.tmpdir(), "coder-sessions");
+  const tmpDir = path.join(os.tmpdir(), "code-sessions");
   try { fs.mkdirSync(tmpDir, { recursive: true }); } catch {}
   const tmpFile = path.join(tmpDir, "crontab.cron");
   fs.writeFileSync(tmpFile, content, "utf-8");
@@ -1572,7 +1572,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   // Output channel for diagnostics — visible under View → Output → "Coder Sessions".
   const log = vscode.window.createOutputChannel("Coder Sessions");
   ctx.subscriptions.push(log);
-  log.appendLine(`[activate] coder-sessions starting (VS Code ${vscode.version})`);
+  log.appendLine(`[activate] code-sessions starting (VS Code ${vscode.version})`);
 
   // Open the SQLite cache. If the user has disabled it, leave store null
   // and the providers will fall back to running session-center.sh.
@@ -1604,7 +1604,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     log.appendLine(String(e?.stack || ""));
     vscode.window
       .showWarningMessage(
-        `coder-sessions: ${msg}. Falling back to shell-script mode.`,
+        `code-sessions: ${msg}. Falling back to shell-script mode.`,
         "Show log",
       )
       .then((sel) => {
@@ -1634,16 +1634,16 @@ export function activate(ctx: vscode.ExtensionContext) {
     setTimeout(() => {
       try {
         const stats = syncToStore(s);
-        console.log(`[coder-sessions] claude sync: ${JSON.stringify(stats)}`);
+        console.log(`[code-sessions] claude sync: ${JSON.stringify(stats)}`);
       } catch (e: any) {
-        console.error("[coder-sessions] claude sync failed:", e);
+        console.error("[code-sessions] claude sync failed:", e);
       }
       if (vscode.workspace.getConfiguration("coderSessions").get<boolean>("grok.enabled", true)) {
         try {
           const grokStats = syncGrokToStore(s);
-          console.log(`[coder-sessions] grok sync: ${JSON.stringify(grokStats)}`);
+          console.log(`[code-sessions] grok sync: ${JSON.stringify(grokStats)}`);
         } catch (e: any) {
-          console.error("[coder-sessions] grok sync failed:", e);
+          console.error("[code-sessions] grok sync failed:", e);
         }
       }
       // Refresh providers when both syncs finish so they see new rows.
@@ -1735,7 +1735,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (pick.id === "pause") vscode.commands.executeCommand("coderSessions.classifyTogglePause");
       else if (pick.id === "retry") vscode.commands.executeCommand("coderSessions.classifyRetryFailed");
       else if (pick.id === "settings")
-        vscode.commands.executeCommand("workbench.action.openSettings", "@ext:zhirafovod.coder-sessions classify");
+        vscode.commands.executeCommand("workbench.action.openSettings", "@ext:zhirafovod.code-sessions classify");
     }),
 
     vscode.commands.registerCommand("coderSessions.search", async (initialQ?: string) => {
@@ -1789,13 +1789,13 @@ export function activate(ctx: vscode.ExtensionContext) {
         try {
           syncToStore(store, recent > 0 ? { forceRecentN: recent } : {});
         } catch (e) {
-          console.error("[coder-sessions] refresh sync failed", e);
+          console.error("[code-sessions] refresh sync failed", e);
         }
         if (cfg.get<boolean>("grok.enabled", true)) {
           try {
             syncGrokToStore(store, recent > 0 ? { forceRecentN: recent } : {});
           } catch (e) {
-            console.error("[coder-sessions] refresh grok sync failed", e);
+            console.error("[code-sessions] refresh grok sync failed", e);
           }
         }
       }
@@ -2189,7 +2189,7 @@ export function activate(ctx: vscode.ExtensionContext) {
             syncGrokToStore(store);
           }
         } catch (e: any) {
-          console.error("[coder-sessions] sync failed in watcher:", e);
+          console.error("[code-sessions] sync failed in watcher:", e);
         }
       }
       sessions.refresh();
@@ -2311,7 +2311,7 @@ async function showDiff(c: FileChange) {
   } catch {
     // Fallback: spawn git show, write to a temp file, then open diff
     const { stdout } = await exec("git", ["show", `${ref}:${rel}`], repoPath);
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "coder-sessions-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "code-sessions-"));
     const tmpFile = path.join(tmpDir, `${ref}-${path.basename(rel)}`);
     fs.writeFileSync(tmpFile, stdout);
     await vscode.commands.executeCommand(

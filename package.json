@@ -1,12 +1,12 @@
 {
-  "name": "coder-sessions",
-  "displayName": "Coder Sessions",
+  "name": "code-sessions",
+  "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
   "version": "1.0.0",
   "publisher": "zhirafovod",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zhirafovod/coder-sessions-vscode.git"
+    "url": "https://github.com/unpolarize/code-sessions-vscode.git"
   },
   "engines": {
     "vscode": "^1.90.0"
@@ -26,7 +26,7 @@
       "activitybar": [
         {
           "id": "coder-activity",
-          "title": "Coder Sessions",
+          "title": "Code Sessions",
           "icon": "$(comment-discussion)"
         }
       ]
@@ -37,7 +37,7 @@
           "id": "coderSessions",
           "name": "Sessions",
           "icon": "$(history)",
-          "contextualTitle": "Coder Sessions"
+          "contextualTitle": "Code Sessions"
         },
         {
           "id": "coderKbChanges",
@@ -64,160 +64,160 @@
         "command": "coderSessions.refresh",
         "title": "Refresh sessions",
         "icon": "$(refresh)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.refreshFull",
         "title": "Refresh sessions (force full rescan)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.resume",
         "title": "Resume session",
         "icon": "$(play)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.openTranscript",
         "title": "Open transcript (JSONL)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.viewConversation",
         "title": "View conversation",
         "icon": "$(preview)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.openInsights",
         "title": "Open insights dashboard",
         "icon": "$(graph)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.openLiveMonitor",
         "title": "Open live monitor",
         "icon": "$(pulse)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.classifyTopics",
         "title": "Analyze conversation topics",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.showAgentGraph",
         "title": "Show 2D agent graph",
         "icon": "$(circuit-board)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.search",
         "title": "Search coder history",
         "icon": "$(search)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.classifyControls",
         "title": "Auto-classify controls (pause / retry failed)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.classifyTogglePause",
         "title": "Auto-classify: pause / resume",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.classifyRetryFailed",
         "title": "Auto-classify: retry failed sessions",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.agentGraphToggleMode",
         "title": "Agent graph: toggle 2D / 3D",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.focusActivityView",
-        "title": "Focus Coder Sessions sidebar",
-        "category": "Coder Sessions"
+        "title": "Focus Code Sessions sidebar",
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.revealProjectFolder",
         "title": "Reveal project folder in Finder/Explorer",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.starSession",
         "title": "Star session (pin to top)",
         "icon": "$(star-empty)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.unstarSession",
         "title": "Unstar session",
         "icon": "$(star-full)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.showTrajectory",
         "title": "Show conversation trajectory",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderSessions.reembedSessions",
         "title": "Drop cached embeddings and re-embed",
         "icon": "$(refresh)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderKbChanges.refresh",
         "title": "Refresh KB changes",
         "icon": "$(refresh)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderKbChanges.openFile",
         "title": "Open file",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderKbChanges.diff",
         "title": "Show diff against HEAD~1",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderProjectsActivity.refresh",
         "title": "Refresh project activity",
         "icon": "$(refresh)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderProjectsActivity.openFile",
         "title": "Open file",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderProjectsActivity.diff",
         "title": "Show diff against HEAD~1",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderTasks.refresh",
         "title": "Refresh tasks",
         "icon": "$(refresh)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderTasks.editCrontab",
         "title": "Edit crontab",
         "icon": "$(edit)",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       },
       {
         "command": "coderTasks.openSession",
         "title": "Open parent session",
-        "category": "Coder Sessions"
+        "category": "Code Sessions"
       }
     ],
     "menus": {
@@ -329,7 +329,7 @@
       }
     ],
     "configuration": {
-      "title": "Coder Sessions",
+      "title": "Code Sessions",
       "properties": {
         "coderSessions.limit": {
           "type": "number",
