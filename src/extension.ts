@@ -699,7 +699,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         );
         tip.iconPath = new vscode.ThemeIcon("filter");
         tip.tooltip = new vscode.MarkdownString(
-          `Showing only sessions whose project path is **${wsFilter}** (or a subfolder).\n\nToggle **Settings → Coder Sessions: Filter By Current Workspace** to see everything.`,
+          `Showing only sessions whose project path is **${wsFilter}** (or a subfolder).\n\nToggle **Settings → Code Sessions: Filter By Current Workspace** to see everything.`,
         );
         tip.contextValue = "workspaceFilterTip";
         tip.command = {
@@ -742,7 +742,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       );
       tip.iconPath = new vscode.ThemeIcon("eye-closed");
       tip.tooltip = new vscode.MarkdownString(
-        "Sessions whose `entrypoint` is not interactive (e.g. `sdk-cli`) are hidden.\n\nToggle **Settings → Coder Sessions: Show Automated** to include them.",
+        "Sessions whose `entrypoint` is not interactive (e.g. `sdk-cli`) are hidden.\n\nToggle **Settings → Code Sessions: Show Automated** to include them.",
       );
       tip.contextValue = "automatedHidden";
       out.push(tip);
@@ -1569,8 +1569,8 @@ async function openCrontabEditor(ctx: vscode.ExtensionContext, onInstalled: () =
 // --------------------------------------------------------------------------- //
 
 export function activate(ctx: vscode.ExtensionContext) {
-  // Output channel for diagnostics — visible under View → Output → "Coder Sessions".
-  const log = vscode.window.createOutputChannel("Coder Sessions");
+  // Output channel for diagnostics — visible under View → Output → "Code Sessions".
+  const log = vscode.window.createOutputChannel("Code Sessions");
   ctx.subscriptions.push(log);
   log.appendLine(`[activate] code-sessions starting (VS Code ${vscode.version})`);
 
@@ -2160,7 +2160,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       try {
         await vscode.commands.executeCommand("workbench.view.extension.coder-activity");
       } catch (e: any) {
-        vscode.window.showErrorMessage(`Cannot focus Coder Sessions: ${e.message}`);
+        vscode.window.showErrorMessage(`Cannot focus Code Sessions: ${e.message}`);
       }
     }),
 

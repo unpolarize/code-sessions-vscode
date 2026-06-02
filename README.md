@@ -1,11 +1,11 @@
-# Coder Sessions
+# Code Sessions
 
 A VS Code sidebar that gives you a **central command center** for coding-agent CLI activity: every session from Claude Code (`~/.claude/projects/`) **and** Grok Build (`~/.grok/sessions/`), grouped by source and by day. Tokens, cost, subagents, projects-touched, duration, topic classification, plus the file changes your work produced (knowledge base + project repos) — all in one place. Click a Claude session to resume it inside the official Claude Code extension panel. Click **🔍 View conversation** for a per-turn timeline.
 
-> **v1.0 upgrade note.** This extension was renamed from `claude-sessions` to `coder-sessions`. On first activation it imports your existing session index + topic classifications from the old extension's global-storage dir, so you won't trigger a full reclassification. Settings keys are renamed (`claudeSessions.*` → `coderSessions.*`) and **do not** migrate — reconfigure once.
+> **v1.0 upgrade note.** This extension was renamed from `claude-sessions` to `code-sessions`. On first activation it imports your existing session index + topic classifications from the old extension's global-storage dir, so you won't trigger a full reclassification. Settings keys are renamed (`claudeSessions.*` → `coderSessions.*`) and **do not** migrate — reconfigure once.
 
 ```
-[Activity bar icon] Coder Activity
+[Activity bar icon] Code Sessions
 ├─ Sessions
 │   ▼ Claude Code — 1,373 sessions
 │       ▼ Today — 4 sessions · $812 · 1.2M tok · 🪄7
@@ -124,22 +124,22 @@ See [`docs/architecture.md`](docs/architecture.md) and [`specs/001-cache-topics-
 The fastest path uses the bundled scripts:
 
 ```bash
-git clone git@github.com:zhirafovod/claude-sessions-vscode.git
-cd claude-sessions-vscode
+git clone git@github.com:unpolarize/code-sessions-vscode.git
+cd code-sessions-vscode
 npm install
 ./scripts/build-install.sh      # compile, package, install the .vsix
 ./scripts/ollama-setup.sh       # install Ollama if missing, start service, pull models
 ```
 
-Reload VS Code → click the new **Claude Activity** icon in the Activity Bar.
+Reload VS Code → click the new **Code Sessions** icon in the Activity Bar.
 
 The scripts are thin wrappers over standard commands; if you'd rather run them by hand:
 
 ```bash
 npm install
 npm run compile
-npx @vscode/vsce package         # → claude-sessions-X.Y.Z.vsix
-code --install-extension claude-sessions-*.vsix --force
+npx @vscode/vsce package         # → code-sessions-X.Y.Z.vsix
+code --install-extension code-sessions-*.vsix --force
 ```
 
 For build / contribute / release flow see [`CONTRIBUTING.md`](CONTRIBUTING.md).
