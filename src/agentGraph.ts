@@ -410,7 +410,7 @@ export async function openAgentGraph(
   store: SessionStore,
   onSessionClick: (sessionId: string) => void,
 ): Promise<vscode.WebviewPanel> {
-  const cfg = vscode.workspace.getConfiguration("coderSessions");
+  const cfg = vscode.workspace.getConfiguration("codeSessions");
   const embedCfg: EmbedConfig = {
     preferred: cfg.get<"ollama" | "transformersjs" | "fallback">("embedding.preferred", "ollama"),
     ollamaUrl: cfg.get<string>("embedding.ollamaUrl", "http://127.0.0.1:11434"),
@@ -457,7 +457,7 @@ export async function openAgentGraph(
       return;
     }
     if (msg?.command === "classifyAll") {
-      const cCfg = vscode.workspace.getConfiguration("coderSessions");
+      const cCfg = vscode.workspace.getConfiguration("codeSessions");
       const backend = cCfg.get<"ollama" | "claude-p">("classify.backend", "ollama");
       const model = cCfg.get<string>("classify.model", "llama3.2:3b");
       const batchSize = cCfg.get<number>("classify.batchSize", 20);

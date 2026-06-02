@@ -161,7 +161,7 @@ export async function openTrajectoryView(
   sessionId: string,
   title: string,
 ): Promise<vscode.WebviewPanel> {
-  const cfg = vscode.workspace.getConfiguration("coderSessions");
+  const cfg = vscode.workspace.getConfiguration("codeSessions");
   const embedCfg: EmbedConfig = {
     preferred: cfg.get<"ollama" | "transformersjs" | "fallback">("embedding.preferred", "ollama"),
     ollamaUrl: cfg.get<string>("embedding.ollamaUrl", "http://127.0.0.1:11434"),

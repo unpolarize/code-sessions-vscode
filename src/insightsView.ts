@@ -703,7 +703,7 @@ function renderDashboard(opts: {
 ${focusSession
   ? `<h1>${escapeHtml(focusSession.title || focusSession.session.slice(0, 8))}</h1>
      <div class="subtitle">${focusSession.source === "grok" ? "Grok Build" : "Claude Code"}${focusSession.model ? ` · <code>${escapeHtml(focusSession.model)}</code>` : ""} · <code>${escapeHtml(focusSession.session)}</code> · ${escapeHtml(focusSession.project || "—")}</div>`
-  : `<h1>Coder · Insights</h1>
+  : `<h1>Code Sessions · Insights</h1>
      <div class="subtitle">Last ${lookbackDays} days · ${rows.length} sessions (${claudeCount} Claude + ${grokCount} Grok${showAutomated ? "" : ", interactive only"}) · cost &amp; tokens are Claude-only (Grok records no token usage); deep metrics from top ${parsedCount} Claude sessions</div>`
 }
 
@@ -794,7 +794,7 @@ export async function openInsightsView(
   store?: import("./db").SessionStore | null,
   opts: InsightsOptions = {},
 ): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration("coderSessions");
+  const cfg = vscode.workspace.getConfiguration("codeSessions");
   const limit = cfg.get<number>("limit", 100);
   const showAutomated = cfg.get<boolean>("showAutomated", false);
   const cacheEnabled = cfg.get<boolean>("cacheEnabled", true);
@@ -805,8 +805,8 @@ export async function openInsightsView(
   const deepParseMax = cfg.get<number>("insightsDeepParse", 20);
 
   const panel = vscode.window.createWebviewPanel(
-    "coderInsights",
-    opts.focusSessionId ? `Insights · ${opts.focusSessionId.slice(0, 8)}` : "Coder · Insights",
+    "codeInsights",
+    opts.focusSessionId ? `Insights · ${opts.focusSessionId.slice(0, 8)}` : "Code Sessions · Insights",
     vscode.ViewColumn.Active,
     { enableScripts: false, retainContextWhenHidden: true },
   );

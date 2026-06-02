@@ -47,7 +47,7 @@ export function openSearchView(
     if (msg?.command === "resume" && typeof msg.sessionId === "string") {
       // Route through the existing resume command. The handler reads .session
       // from whatever it's given, so we just hand it the id directly.
-      await vscode.commands.executeCommand("coderSessions.resume", { session: msg.sessionId });
+      await vscode.commands.executeCommand("codeSessions.resume", { session: msg.sessionId });
       return;
     }
   });

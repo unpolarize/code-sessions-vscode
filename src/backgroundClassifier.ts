@@ -6,7 +6,7 @@
 //   are picked up automatically.
 // - The worker processes one session at a time so we don't blast the local
 //   Ollama daemon (or the Claude CLI) with parallel calls.
-// - Only runs when `coderSessions.classify.backend = ollama` by default —
+// - Only runs when `codeSessions.classify.backend = ollama` by default —
 //   we don't want to burn subscription tokens behind the user's back.
 // - Per-turn caching is already enforced by `classifySession`, which skips
 //   any turn that already has a `turn_topic` row — so re-runs on a fully
@@ -22,8 +22,8 @@ const STATUS_BAR_PRIORITY = 99;        // just left of the existing Claude · Li
 
 // Persistence keys (ctx.globalState). Keeping them as module-scope constants
 // so a typo in one of the mutators can't drift from the hydrator.
-const STATE_KEY_PAUSED = "coderSessions.classifier.paused";
-const STATE_KEY_FAILED = "coderSessions.classifier.failedIds";
+const STATE_KEY_PAUSED = "codeSessions.classifier.paused";
+const STATE_KEY_FAILED = "codeSessions.classifier.failedIds";
 
 export class BackgroundClassifier {
   private queue: string[] = [];
@@ -74,7 +74,7 @@ export class BackgroundClassifier {
     );
     this.statusItem.name = "Claude · auto-classify";
     // Click → Quick Pick with Pause/Resume/Retry.
-    this.statusItem.command = "coderSessions.classifyControls";
+    this.statusItem.command = "codeSessions.classifyControls";
     this.ctx.subscriptions.push(this.statusItem);
     this.renderStatus();
 
@@ -82,8 +82,8 @@ export class BackgroundClassifier {
     this.ctx.subscriptions.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (
-          e.affectsConfiguration("coderSessions.classify.autoBackground") ||
-          e.affectsConfiguration("coderSessions.classify.backend")
+          e.affectsConfiguration("codeSessions.classify.autoBackground") ||
+          e.affectsConfiguration("codeSessions.classify.backend")
         ) {
           if (this.isEnabled()) this.discoveryTick();
           else this.queue = [];
@@ -201,7 +201,7 @@ export class BackgroundClassifier {
   // ----- internals -----
 
   private isEnabled(): boolean {
-    const cfg = vscode.workspace.getConfiguration("coderSessions");
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
     if (!cfg.get<boolean>("classify.autoBackground", true)) return false;
     // Default to refusing claude-p auto-classify so we don't quietly burn
     // subscription tokens. The user can flip the override if they actively
@@ -259,7 +259,7 @@ export class BackgroundClassifier {
     if (this.queue.length + 1 > this.peakQueue) this.peakQueue = this.queue.length + 1;
     this.renderStatus();
 
-    const cfg = vscode.workspace.getConfiguration("coderSessions");
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
     const backend = cfg.get<ClassifyBackend>("classify.backend", "ollama");
     const model = cfg.get<string>("classify.model", "llama3.2:3b");
     const batchSize = cfg.get<number>("classify.batchSize", 20);
@@ -457,7 +457,7 @@ export class BackgroundClassifier {
       const ageSec = Math.max(0, Math.floor((Date.now() - this.lastErrorAt) / 1000));
       md.appendMarkdown(`\n_Last error (${ageSec}s ago):_ ${escMd(this.lastError)}\n`);
     }
-    md.appendMarkdown(`\n_Toggle via setting:_ \`coderSessions.classify.autoBackground\`.`);
+    md.appendMarkdown(`\n_Toggle via setting:_ \`codeSessions.classify.autoBackground\`.`);
     this.statusItem.tooltip = md;
     this.statusItem.show();
   }

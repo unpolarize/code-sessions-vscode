@@ -17,43 +17,43 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onView:coderSessions",
-    "onView:coderKbChanges",
-    "onView:coderProjectsActivity",
-    "onView:coderTasks"
+    "onView:codeSessions",
+    "onView:codeKbChanges",
+    "onView:codeProjectsActivity",
+    "onView:codeTasks"
   ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "coder-activity",
+          "id": "code-activity",
           "title": "Code Sessions",
           "icon": "$(comment-discussion)"
         }
       ]
     },
     "views": {
-      "coder-activity": [
+      "code-activity": [
         {
-          "id": "coderSessions",
+          "id": "codeSessions",
           "name": "Sessions",
           "icon": "$(history)",
           "contextualTitle": "Code Sessions"
         },
         {
-          "id": "coderKbChanges",
+          "id": "codeKbChanges",
           "name": "KB changes",
           "icon": "$(book)",
           "contextualTitle": "Knowledge base file changes"
         },
         {
-          "id": "coderProjectsActivity",
+          "id": "codeProjectsActivity",
           "name": "Projects",
           "icon": "$(folder-active)",
           "contextualTitle": "Per-project file changes"
         },
         {
-          "id": "coderTasks",
+          "id": "codeTasks",
           "name": "Tasks",
           "icon": "$(checklist)",
           "contextualTitle": "Tasks (Claude sub-agents, scheduled routines, crontab)"
@@ -62,161 +62,161 @@
     },
     "commands": [
       {
-        "command": "coderSessions.refresh",
+        "command": "codeSessions.refresh",
         "title": "Refresh sessions",
         "icon": "$(refresh)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.refreshFull",
+        "command": "codeSessions.refreshFull",
         "title": "Refresh sessions (force full rescan)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.resume",
+        "command": "codeSessions.resume",
         "title": "Resume session",
         "icon": "$(play)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.openTranscript",
+        "command": "codeSessions.openTranscript",
         "title": "Open transcript (JSONL)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.viewConversation",
+        "command": "codeSessions.viewConversation",
         "title": "View conversation",
         "icon": "$(preview)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.openInsights",
+        "command": "codeSessions.openInsights",
         "title": "Open insights dashboard",
         "icon": "$(graph)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.openLiveMonitor",
+        "command": "codeSessions.openLiveMonitor",
         "title": "Open live monitor",
         "icon": "$(pulse)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.classifyTopics",
+        "command": "codeSessions.classifyTopics",
         "title": "Analyze conversation topics",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.showAgentGraph",
+        "command": "codeSessions.showAgentGraph",
         "title": "Show 2D agent graph",
         "icon": "$(circuit-board)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.search",
-        "title": "Search coder history",
+        "command": "codeSessions.search",
+        "title": "Search session history",
         "icon": "$(search)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.classifyControls",
+        "command": "codeSessions.classifyControls",
         "title": "Auto-classify controls (pause / retry failed)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.classifyTogglePause",
+        "command": "codeSessions.classifyTogglePause",
         "title": "Auto-classify: pause / resume",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.classifyRetryFailed",
+        "command": "codeSessions.classifyRetryFailed",
         "title": "Auto-classify: retry failed sessions",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.agentGraphToggleMode",
+        "command": "codeSessions.agentGraphToggleMode",
         "title": "Agent graph: toggle 2D / 3D",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.focusActivityView",
+        "command": "codeSessions.focusActivityView",
         "title": "Focus Code Sessions sidebar",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.revealProjectFolder",
+        "command": "codeSessions.revealProjectFolder",
         "title": "Reveal project folder in Finder/Explorer",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.starSession",
+        "command": "codeSessions.starSession",
         "title": "Star session (pin to top)",
         "icon": "$(star-empty)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.unstarSession",
+        "command": "codeSessions.unstarSession",
         "title": "Unstar session",
         "icon": "$(star-full)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.showTrajectory",
+        "command": "codeSessions.showTrajectory",
         "title": "Show conversation trajectory",
         "category": "Code Sessions"
       },
       {
-        "command": "coderSessions.reembedSessions",
+        "command": "codeSessions.reembedSessions",
         "title": "Drop cached embeddings and re-embed",
         "icon": "$(refresh)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderKbChanges.refresh",
+        "command": "codeKbChanges.refresh",
         "title": "Refresh KB changes",
         "icon": "$(refresh)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderKbChanges.openFile",
+        "command": "codeKbChanges.openFile",
         "title": "Open file",
         "category": "Code Sessions"
       },
       {
-        "command": "coderKbChanges.diff",
+        "command": "codeKbChanges.diff",
         "title": "Show diff against HEAD~1",
         "category": "Code Sessions"
       },
       {
-        "command": "coderProjectsActivity.refresh",
+        "command": "codeProjectsActivity.refresh",
         "title": "Refresh project activity",
         "icon": "$(refresh)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderProjectsActivity.openFile",
+        "command": "codeProjectsActivity.openFile",
         "title": "Open file",
         "category": "Code Sessions"
       },
       {
-        "command": "coderProjectsActivity.diff",
+        "command": "codeProjectsActivity.diff",
         "title": "Show diff against HEAD~1",
         "category": "Code Sessions"
       },
       {
-        "command": "coderTasks.refresh",
+        "command": "codeTasks.refresh",
         "title": "Refresh tasks",
         "icon": "$(refresh)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderTasks.editCrontab",
+        "command": "codeTasks.editCrontab",
         "title": "Edit crontab",
         "icon": "$(edit)",
         "category": "Code Sessions"
       },
       {
-        "command": "coderTasks.openSession",
+        "command": "codeTasks.openSession",
         "title": "Open parent session",
         "category": "Code Sessions"
       }
@@ -224,107 +224,107 @@
     "menus": {
       "view/title": [
         {
-          "command": "coderSessions.openLiveMonitor",
-          "when": "view == coderSessions",
+          "command": "codeSessions.openLiveMonitor",
+          "when": "view == codeSessions",
           "group": "navigation@1"
         },
         {
-          "command": "coderSessions.openInsights",
-          "when": "view == coderSessions",
+          "command": "codeSessions.openInsights",
+          "when": "view == codeSessions",
           "group": "navigation@2"
         },
         {
-          "command": "coderSessions.showAgentGraph",
-          "when": "view == coderSessions",
+          "command": "codeSessions.showAgentGraph",
+          "when": "view == codeSessions",
           "group": "navigation@3"
         },
         {
-          "command": "coderSessions.search",
-          "when": "view == coderSessions",
+          "command": "codeSessions.search",
+          "when": "view == codeSessions",
           "group": "navigation@4"
         },
         {
-          "command": "coderSessions.refresh",
-          "when": "view == coderSessions",
+          "command": "codeSessions.refresh",
+          "when": "view == codeSessions",
           "group": "navigation@5"
         },
         {
-          "command": "coderKbChanges.refresh",
-          "when": "view == coderKbChanges",
+          "command": "codeKbChanges.refresh",
+          "when": "view == codeKbChanges",
           "group": "navigation"
         },
         {
-          "command": "coderProjectsActivity.refresh",
-          "when": "view == coderProjectsActivity",
+          "command": "codeProjectsActivity.refresh",
+          "when": "view == codeProjectsActivity",
           "group": "navigation"
         },
         {
-          "command": "coderTasks.editCrontab",
-          "when": "view == coderTasks",
+          "command": "codeTasks.editCrontab",
+          "when": "view == codeTasks",
           "group": "navigation@1"
         },
         {
-          "command": "coderTasks.refresh",
-          "when": "view == coderTasks",
+          "command": "codeTasks.refresh",
+          "when": "view == codeTasks",
           "group": "navigation@2"
         }
       ],
       "view/item/context": [
         {
-          "command": "coderSessions.resume",
-          "when": "view == coderSessions && (viewItem == session || viewItem == sessionAutomated || viewItem == session-starred || viewItem == sessionAutomated-starred)",
+          "command": "codeSessions.resume",
+          "when": "view == codeSessions && (viewItem == session || viewItem == sessionAutomated || viewItem == session-starred || viewItem == sessionAutomated-starred)",
           "group": "inline"
         },
         {
-          "command": "coderSessions.starSession",
-          "when": "view == coderSessions && (viewItem == session || viewItem == sessionAutomated)",
+          "command": "codeSessions.starSession",
+          "when": "view == codeSessions && (viewItem == session || viewItem == sessionAutomated)",
           "group": "navigation@0"
         },
         {
-          "command": "coderSessions.unstarSession",
-          "when": "view == coderSessions && (viewItem == session-starred || viewItem == sessionAutomated-starred)",
+          "command": "codeSessions.unstarSession",
+          "when": "view == codeSessions && (viewItem == session-starred || viewItem == sessionAutomated-starred)",
           "group": "navigation@0"
         },
         {
-          "command": "coderSessions.openTranscript",
-          "when": "view == coderSessions && viewItem == session",
+          "command": "codeSessions.openTranscript",
+          "when": "view == codeSessions && viewItem == session",
           "group": "navigation@1"
         },
         {
-          "command": "coderKbChanges.diff",
-          "when": "view == coderKbChanges && viewItem == fileChange",
+          "command": "codeKbChanges.diff",
+          "when": "view == codeKbChanges && viewItem == fileChange",
           "group": "inline"
         },
         {
-          "command": "coderProjectsActivity.diff",
-          "when": "view == coderProjectsActivity && viewItem == fileChange",
+          "command": "codeProjectsActivity.diff",
+          "when": "view == codeProjectsActivity && viewItem == fileChange",
           "group": "inline"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "coderSessions.focusActivityView",
+        "command": "codeSessions.focusActivityView",
         "key": "ctrl+alt+c",
         "mac": "cmd+alt+c"
       },
       {
-        "command": "coderSessions.openLiveMonitor",
+        "command": "codeSessions.openLiveMonitor",
         "key": "ctrl+alt+l",
         "mac": "cmd+alt+l"
       },
       {
-        "command": "coderSessions.openInsights",
+        "command": "codeSessions.openInsights",
         "key": "ctrl+alt+d",
         "mac": "cmd+alt+d"
       },
       {
-        "command": "coderSessions.showAgentGraph",
+        "command": "codeSessions.showAgentGraph",
         "key": "ctrl+alt+g",
         "mac": "cmd+alt+g"
       },
       {
-        "command": "coderSessions.agentGraphToggleMode",
+        "command": "codeSessions.agentGraphToggleMode",
         "key": "ctrl+alt+3",
         "mac": "cmd+alt+3"
       }
@@ -332,52 +332,52 @@
     "configuration": {
       "title": "Code Sessions",
       "properties": {
-        "coderSessions.limit": {
+        "codeSessions.limit": {
           "type": "number",
           "default": 100,
           "description": "Maximum number of most-recent sessions to load."
         },
-        "coderSessions.refresh.forceRecent": {
+        "codeSessions.refresh.forceRecent": {
           "type": "number",
           "default": 100,
           "description": "When the Refresh button is pressed, force a full re-parse of the N most recently-modified JSONLs (regardless of mtime cache). Catches on-disk edits — most notably session renames — that don't always bump mtime. Set to 0 to use only the cheap incremental sync."
         },
-        "coderSessions.scriptPath": {
+        "codeSessions.scriptPath": {
           "type": "string",
           "default": "~/.claude/skills/sessions/session-center.sh",
           "description": "Path to session-center.sh (fallback when cacheEnabled is false). Claude only."
         },
-        "coderSessions.cacheEnabled": {
+        "codeSessions.cacheEnabled": {
           "type": "boolean",
           "default": true,
           "description": "Use the SQLite cache. When true (default), the sidebar reads from a local DB and only re-parses JSONLs whose (mtime,size) changed. When false, falls back to spawning session-center.sh on every refresh (legacy claude-only path)."
         },
-        "coderSessions.showAutomated": {
+        "codeSessions.showAutomated": {
           "type": "boolean",
           "default": false,
           "description": "Show automated / cron-triggered sessions (entrypoint = sdk-cli, sdk, routine, etc.). Hidden by default since they're usually scheduled jobs (Google Doc digests, KB ingest, daily reports) rather than interactive work."
         },
-        "coderSessions.filterByCurrentWorkspace": {
+        "codeSessions.filterByCurrentWorkspace": {
           "type": "boolean",
           "default": true,
           "description": "Show only sessions that originated from the current workspace's first folder (or a subfolder of it). Default on — keeps the sidebar focused on sessions you can actually resume from this window. Toggle off to see every session across every project."
         },
-        "coderSessions.insightsLookbackDays": {
+        "codeSessions.insightsLookbackDays": {
           "type": "number",
           "default": 14,
           "description": "Insights dashboard: how many days of activity to chart."
         },
-        "coderSessions.insightsDeepParse": {
+        "codeSessions.insightsDeepParse": {
           "type": "number",
           "default": 20,
           "description": "Insights dashboard: how many most-recent sessions to parse deeply for thinking-time / tool-mix / burst-rate metrics. Higher = better stats, slower load."
         },
-        "coderSessions.grok.enabled": {
+        "codeSessions.grok.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Discover and index Grok Build sessions from ~/.grok/sessions/ alongside Claude Code sessions."
         },
-        "coderSessions.resumeBackend": {
+        "codeSessions.resumeBackend": {
           "type": "string",
           "enum": [
             "code-build",
@@ -390,17 +390,17 @@
           "default": "code-build",
           "description": "Which extension to prefer when clicking 'Resume' on a session. Code Build is the unified UI but loses per-session resume fidelity; native is best for resume but splits across two extensions."
         },
-        "coderKbChanges.repoPath": {
+        "codeKbChanges.repoPath": {
           "type": "string",
           "default": "",
           "description": "Path to the git repo whose changes will be listed. Leave empty to auto-detect from the first workspace folder."
         },
-        "coderKbChanges.lookbackDays": {
+        "codeKbChanges.lookbackDays": {
           "type": "number",
           "default": 14,
           "description": "How many days of git history to load."
         },
-        "coderProjectsActivity.repoPaths": {
+        "codeProjectsActivity.repoPaths": {
           "type": "array",
           "default": [
             "~/projects/unpolarize",
@@ -408,22 +408,22 @@
           ],
           "description": "Explicit list of project repos to watch. Auto-discovery is also applied (any ~/projects/* with commits in the lookback)."
         },
-        "coderProjectsActivity.autoDiscover": {
+        "codeProjectsActivity.autoDiscover": {
           "type": "boolean",
           "default": true,
           "description": "Walk ~/projects/ (depth 2) and include any git repo with commits in the lookback window."
         },
-        "coderProjectsActivity.discoveryRoot": {
+        "codeProjectsActivity.discoveryRoot": {
           "type": "string",
           "default": "~/projects",
           "description": "Root for auto-discovery (depth 2)."
         },
-        "coderProjectsActivity.lookbackDays": {
+        "codeProjectsActivity.lookbackDays": {
           "type": "number",
           "default": 14,
           "description": "How many days of git history to load per project."
         },
-        "coderSessions.classify.backend": {
+        "codeSessions.classify.backend": {
           "type": "string",
           "enum": [
             "ollama",
@@ -432,52 +432,52 @@
           "default": "ollama",
           "description": "Where topic classification runs. `ollama` calls a local Ollama daemon (free, offline). `claude-p` invokes the Claude CLI in headless mode, using your subscription."
         },
-        "coderSessions.liveStatusBar.enabled": {
+        "codeSessions.liveStatusBar.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Show a compact 'Coder · N active' indicator in the status bar. Polls every 5 s while sessions are active, 30 s when idle. Hover for a per-session breakdown; click to open the Live monitor."
         },
-        "coderSessions.awaitingUser.notify": {
+        "codeSessions.awaitingUser.notify": {
           "type": "boolean",
           "default": true,
           "description": "Pop a VS Code toast the first time a session enters an awaiting-user state (AskUserQuestion or ExitPlanMode). The status-bar item and Live monitor banner always highlight these; this only controls the one-shot toast."
         },
-        "coderSessions.costBudget.daily": {
+        "codeSessions.costBudget.daily": {
           "type": "number",
           "default": 0,
           "description": "Daily Claude-Code budget in USD. When > 0, a status-bar tile shows today's spend vs this number; it turns amber at 80% and red at 100%. Set to 0 (default) to hide the tile."
         },
-        "coderSessions.classify.autoOnOpen": {
+        "codeSessions.classify.autoOnOpen": {
           "type": "boolean",
           "default": true,
           "description": "When the conversation viewer opens and the session has unclassified turns, run topic classification in the background and refresh when done. Only fires when `classify.backend = ollama` to avoid burning paid `claude-p` tokens automatically."
         },
-        "coderSessions.classify.autoBackground": {
+        "codeSessions.classify.autoBackground": {
           "type": "boolean",
           "default": true,
           "description": "Run topic classification continuously in the background: at extension startup the daemon scans for any session with unclassified turns and works through them one at a time, then re-scans on every sessions-view sync tick so new turns get picked up automatically. Per-turn cache means re-runs cost nothing once classified. Default backend is Ollama; see `classify.allowAutoBackgroundClaude` to opt into claude-p auto-runs."
         },
-        "coderSessions.classify.allowAutoBackgroundClaude": {
+        "codeSessions.classify.allowAutoBackgroundClaude": {
           "type": "boolean",
           "default": false,
           "description": "Explicit opt-in: allow `classify.autoBackground` to run even when the backend is `claude-p`. Off by default so the daemon never quietly spends subscription tokens."
         },
-        "coderSessions.classify.model": {
+        "codeSessions.classify.model": {
           "type": "string",
           "default": "llama3.2:3b",
           "description": "Model id passed to the chosen classification backend. For `ollama`, try `llama3.2:3b`, `qwen2.5:3b`, `gemma2:2b`. For `claude-p`, try `claude-haiku-4-5`."
         },
-        "coderSessions.classify.batchSize": {
+        "codeSessions.classify.batchSize": {
           "type": "number",
           "default": 10,
           "description": "How many turns to classify per backend invocation. Smaller batches are more reliable with local Ollama models, which tend to drop ids when asked to echo back 20+ items. Drop to 5 if you still see 'N turns missing in response' errors."
         },
-        "coderSessions.classify.claudeBin": {
+        "codeSessions.classify.claudeBin": {
           "type": "string",
           "default": "",
           "description": "Optional override for the `claude` CLI path. Only used when `classify.backend = claude-p`. Empty = use PATH."
         },
-        "coderSessions.embedding.preferred": {
+        "codeSessions.embedding.preferred": {
           "type": "string",
           "enum": [
             "ollama",
@@ -486,42 +486,42 @@
           "default": "ollama",
           "description": "Which embedding backend to try first for the agent graph."
         },
-        "coderSessions.embedding.ollamaUrl": {
+        "codeSessions.embedding.ollamaUrl": {
           "type": "string",
           "default": "http://127.0.0.1:11434",
           "description": "Base URL for a local Ollama daemon."
         },
-        "coderSessions.embedding.ollamaModel": {
+        "codeSessions.embedding.ollamaModel": {
           "type": "string",
           "default": "nomic-embed-text",
           "description": "Ollama embedding model name."
         },
-        "coderSessions.embedding.transformersjsModel": {
+        "codeSessions.embedding.transformersjsModel": {
           "type": "string",
           "default": "Xenova/bge-small-en-v1.5",
           "description": "Transformers.js fallback model id."
         },
-        "coderSessions.cluster.minPts": {
+        "codeSessions.cluster.minPts": {
           "type": "number",
           "default": 3,
           "description": "DBSCAN minPts for clustering sessions on the agent graph. With small corpora (<100 sessions) 3 finds clusters that 5 misses. If DBSCAN still finds none, the extension falls back to k-means."
         },
-        "coderSessions.cluster.epsScale": {
+        "codeSessions.cluster.epsScale": {
           "type": "number",
           "default": 0.04,
           "description": "DBSCAN eps as a fraction of the agent graph's axis range. Smaller = tighter clusters."
         },
-        "coderSessions.trajectory.driftPercentile": {
+        "codeSessions.trajectory.driftPercentile": {
           "type": "number",
           "default": 90,
           "description": "Segments above this percentile of cosine distance between consecutive turns are flagged as topic drift in the trajectory view."
         },
-        "coderTasks.showCrontab": {
+        "codeTasks.showCrontab": {
           "type": "boolean",
           "default": true,
           "description": "Show the user's crontab as a section in the Tasks view. Clicking a row opens the crontab in an editor; saving installs it via `crontab <file>`."
         },
-        "coderTasks.subagentLookbackMin": {
+        "codeTasks.subagentLookbackMin": {
           "type": "number",
           "default": 5,
           "description": "Tasks view: a Claude session counts as 'active sub-tasks running' if its JSONL was modified within this many minutes AND it currently has at least one running subagent. Set to 0 to disable the section."

@@ -27,7 +27,7 @@ function expandHome(p: string): string {
 
 /** Returns the configured KB repo path, falling back to the first workspace folder. */
 function resolveKbRepoPath(): string {
-  const cfg = vscode.workspace.getConfiguration("coderKbChanges");
+  const cfg = vscode.workspace.getConfiguration("codeKbChanges");
   const configured = cfg.get<string>("repoPath", "");
   if (configured) return expandHome(configured);
   const first = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -87,10 +87,10 @@ function createCostBudgetTile(
 ): { item: vscode.StatusBarItem; tick: () => void } {
   const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
   item.name = "AI Coders · cost today";
-  item.command = "coderSessions.openInsights";
+  item.command = "codeSessions.openInsights";
 
   const tick = () => {
-    const cfg = vscode.workspace.getConfiguration("coderSessions");
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
     const budget = cfg.get<number>("costBudget.daily", 0);
     if (budget <= 0) {
       item.hide();
@@ -129,7 +129,7 @@ function createCostBudgetTile(
   ctx.subscriptions.push(
     item,
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("coderSessions.costBudget")) tick();
+      if (e.affectsConfiguration("codeSessions.costBudget")) tick();
     }),
   );
   return { item, tick };
@@ -140,7 +140,7 @@ function createLiveStatusBar(
   store: SessionStore,
 ): vscode.StatusBarItem {
   const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  item.command = "coderSessions.openLiveMonitor";
+  item.command = "codeSessions.openLiveMonitor";
   item.name = "Claude · Live";
   item.show();
 
@@ -234,7 +234,7 @@ function createLiveStatusBar(
       for (const c of awaiting) {
         if (notifiedAwaiting.has(c.session_id)) continue;
         notifiedAwaiting.add(c.session_id);
-        const cfg = vscode.workspace.getConfiguration("coderSessions");
+        const cfg = vscode.workspace.getConfiguration("codeSessions");
         if (cfg.get<boolean>("awaitingUser.notify", true)) {
           const action = c.now.detail === "ExitPlanMode" ? "approve the plan" : "answer the question";
           vscode.window
@@ -245,9 +245,9 @@ function createLiveStatusBar(
             )
             .then((sel) => {
               if (sel === "Open live monitor") {
-                vscode.commands.executeCommand("coderSessions.openLiveMonitor");
+                vscode.commands.executeCommand("codeSessions.openLiveMonitor");
               } else if (sel === "Open session") {
-                vscode.commands.executeCommand("coderSessions.showTrajectory", c.session_id, c.title);
+                vscode.commands.executeCommand("codeSessions.showTrajectory", c.session_id, c.title);
               }
             });
         }
@@ -268,7 +268,7 @@ function createLiveStatusBar(
   // Honor enabled flag dynamically
   const applyEnabledState = () => {
     const enabled = vscode.workspace
-      .getConfiguration("coderSessions")
+      .getConfiguration("codeSessions")
       .get<boolean>("liveStatusBar.enabled", true);
     if (enabled) {
       item.show();
@@ -284,7 +284,7 @@ function createLiveStatusBar(
     item,
     { dispose: () => { if (timer) clearTimeout(timer); } },
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("coderSessions.liveStatusBar.enabled")) applyEnabledState();
+      if (e.affectsConfiguration("codeSessions.liveStatusBar.enabled")) applyEnabledState();
     }),
   );
   return item;
@@ -559,7 +559,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   }
 
   private async load(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration("coderSessions");
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
     const limit = cfg.get<number>("limit", 100);
     const cacheEnabled = cfg.get<boolean>("cacheEnabled", true);
 
@@ -620,7 +620,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   /** Returns the absolute path to the workspace's first folder when the
    * "filter by current workspace" setting is on, else null. */
   private workspaceFilter(): string | null {
-    const cfg = vscode.workspace.getConfiguration("coderSessions");
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
     if (!cfg.get<boolean>("filterByCurrentWorkspace", true)) return null;
     const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!folder) return null;
@@ -669,7 +669,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
    * scoping). Centralised so both root and source-bucket expansions share
    * exactly the same predicate. */
   private filterVisible(rows: SessionRow[]): SessionRow[] {
-    const cfg = vscode.workspace.getConfiguration("coderSessions");
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
     const showAutomated = cfg.get<boolean>("showAutomated", false);
     const wsFilter = this.workspaceFilter();
     return rows
@@ -680,7 +680,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   /** Build the per-source children (day buckets + tips). Same shape as the
    * pre-v1.0 root structure. */
   private buildSourceChildren(source: "claude" | "grok"): vscode.TreeItem[] {
-    const cfg = vscode.workspace.getConfiguration("coderSessions");
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
     const showAutomated = cfg.get<boolean>("showAutomated", false);
     const wsFilter = this.workspaceFilter();
 
@@ -758,7 +758,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return [it];
     }
 
-    const cfg = vscode.workspace.getConfiguration("coderSessions");
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
     const showAutomated = cfg.get<boolean>("showAutomated", false);
     const wsFilter = this.workspaceFilter();
 
@@ -999,7 +999,7 @@ class SessionItem extends vscode.TreeItem {
     // Click to open Coder Insights filtered to this session — turns the
     // metric line into a clickable shortcut into the deeper drilldown view.
     stats.command = {
-      command: "coderSessions.openInsightsForSession",
+      command: "codeSessions.openInsightsForSession",
       title: "Open insights filtered to this session",
       arguments: [r],
     };
@@ -1018,18 +1018,18 @@ class SessionItem extends vscode.TreeItem {
     viewItem.tooltip =
       "Open a per-turn timeline: user prompt, assistant response, every tool call with input/output, durations, and subagent details.";
     viewItem.command = {
-      command: "coderSessions.viewConversation",
+      command: "codeSessions.viewConversation",
       title: "View conversation",
       arguments: [this],
     };
     out.push(viewItem);
 
     // "Resume" — dispatch decided at click-time based on
-    // `coderSessions.resumeBackend` (code-build vs native per-source) and
+    // `codeSessions.resumeBackend` (code-build vs native per-source) and
     // the source-specific install state. Label hints at the preferred
     // target so the user knows what to expect; the actual handler picks.
     const resumePref = vscode.workspace
-      .getConfiguration("coderSessions")
+      .getConfiguration("codeSessions")
       .get<"code-build" | "native">("resumeBackend", "code-build");
     const codeBuildInstalled =
       vscode.extensions.getExtension("zhirafovod.code-build-vscode") != null;
@@ -1043,7 +1043,7 @@ class SessionItem extends vscode.TreeItem {
     resumeItem.iconPath = new vscode.ThemeIcon("play");
     resumeItem.contextValue = "sessionResume";
     resumeItem.command = {
-      command: "coderSessions.resume",
+      command: "codeSessions.resume",
       title: "Resume",
       arguments: [r],
     };
@@ -1053,7 +1053,7 @@ class SessionItem extends vscode.TreeItem {
     const txItem = new vscode.TreeItem("📜 Open raw JSONL");
     txItem.iconPath = new vscode.ThemeIcon("file-text");
     txItem.command = {
-      command: "coderSessions.openTranscript",
+      command: "codeSessions.openTranscript",
       title: "Open transcript",
       arguments: [this],
     };
@@ -1172,7 +1172,7 @@ class FileChangeItem extends vscode.TreeItem {
     );
     this.contextValue = "fileChange";
     this.command = {
-      command: this.repoIsKB() ? "coderKbChanges.openFile" : "coderProjectsActivity.openFile",
+      command: this.repoIsKB() ? "codeKbChanges.openFile" : "codeProjectsActivity.openFile",
       title: "Open file",
       arguments: [this.change],
     };
@@ -1194,7 +1194,7 @@ class KbChangesProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private repoPath = "";
 
   refresh(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration("coderKbChanges");
+    const cfg = vscode.workspace.getConfiguration("codeKbChanges");
     this.repoPath = resolveKbRepoPath();
     const days = cfg.get<number>("lookbackDays", 14);
     return gitChanges(this.repoPath, days).then((c) => {
@@ -1242,7 +1242,7 @@ class ProjectsActivityProvider implements vscode.TreeDataProvider<vscode.TreeIte
   private grouped: Map<string, Map<string, FileChange[]>> = new Map();
 
   async refresh(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration("coderProjectsActivity");
+    const cfg = vscode.workspace.getConfiguration("codeProjectsActivity");
     const explicit = (cfg.get<string[]>("repoPaths") ?? []).map(expandHome);
     const days = cfg.get<number>("lookbackDays", 14);
     const autoDiscover = cfg.get<boolean>("autoDiscover", true);
@@ -1391,7 +1391,7 @@ class TasksProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   constructor(private readonly store: SessionStore | null) {}
 
   async refresh(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration("coderTasks");
+    const cfg = vscode.workspace.getConfiguration("codeTasks");
     this.showCrontab = cfg.get<boolean>("showCrontab", true);
     const lookback = cfg.get<number>("subagentLookbackMin", 5);
 
@@ -1503,7 +1503,7 @@ class ActiveSubagentItem extends vscode.TreeItem {
     this.iconPath = new vscode.ThemeIcon("pulse");
     this.contextValue = "activeSubagent";
     this.command = {
-      command: "coderTasks.openSession",
+      command: "codeTasks.openSession",
       title: "Open session",
       arguments: [row.sessionId],
     };
@@ -1518,7 +1518,7 @@ class CrontabItem extends vscode.TreeItem {
     this.iconPath = new vscode.ThemeIcon("calendar");
     this.contextValue = "crontabRow";
     this.command = {
-      command: "coderTasks.editCrontab",
+      command: "codeTasks.editCrontab",
       title: "Edit crontab",
       arguments: [],
     };
@@ -1568,18 +1568,100 @@ async function openCrontabEditor(ctx: vscode.ExtensionContext, onInstalled: () =
 // Activation
 // --------------------------------------------------------------------------- //
 
+/**
+ * One-time migration of user settings from the legacy `coder*` / `claude*`
+ * configuration namespaces to the current `code*` namespace.
+ *
+ * The extension's command ids, view ids, and config keys were renamed
+ * (`claude*` → `coder*` → `code*`). VS Code keys settings by their literal
+ * dotted name, so a rename orphans whatever the user had customized. This reads
+ * the keys this build actually declares (from its own package.json) and, for
+ * each, copies a value found under the old prefixes into the new key — at both
+ * the Global and Workspace scope — without overwriting a value already set on
+ * the new key. Gated on globalState so it runs at most once per profile.
+ */
+async function migrateSettingsToCodeNamespace(
+  ctx: vscode.ExtensionContext,
+  log: vscode.OutputChannel
+): Promise<void> {
+  const FLAG = "settingsMigratedToCodeNamespace_v1";
+  if (ctx.globalState.get<boolean>(FLAG)) return;
+
+  const OLD_PREFIXES: Record<string, string[]> = {
+    codeSessions: ["coderSessions", "claudeSessions"],
+    codeKbChanges: ["coderKbChanges", "claudeKbChanges"],
+    codeProjectsActivity: ["coderProjectsActivity", "claudeProjectsActivity"],
+    codeTasks: ["coderTasks", "claudeTasks"],
+  };
+
+  try {
+    // Collect every config key this build declares (contributes.configuration
+    // may be a single object or an array of them).
+    const contrib = (ctx.extension.packageJSON?.contributes?.configuration ?? []) as
+      | { properties?: Record<string, unknown> }
+      | { properties?: Record<string, unknown> }[];
+    const blocks = Array.isArray(contrib) ? contrib : [contrib];
+    const newKeys = blocks.flatMap((b) => Object.keys(b.properties ?? {}));
+
+    const cfg = vscode.workspace.getConfiguration();
+    const hasWorkspace = (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
+    let migrated = 0;
+
+    for (const newKey of newKeys) {
+      const dot = newKey.indexOf(".");
+      if (dot < 0) continue;
+      const section = newKey.slice(0, dot);
+      const leaf = newKey.slice(dot + 1);
+      const candidates = OLD_PREFIXES[section];
+      if (!candidates) continue;
+
+      const dest = cfg.inspect(newKey);
+      for (const oldPrefix of candidates) {
+        const oldKey = `${oldPrefix}.${leaf}`;
+        const src = cfg.inspect(oldKey);
+        if (!src) continue;
+        if (src.globalValue !== undefined && dest?.globalValue === undefined) {
+          await cfg.update(newKey, src.globalValue, vscode.ConfigurationTarget.Global);
+          migrated++;
+        }
+        if (hasWorkspace && src.workspaceValue !== undefined && dest?.workspaceValue === undefined) {
+          await cfg.update(newKey, src.workspaceValue, vscode.ConfigurationTarget.Workspace);
+          migrated++;
+        }
+      }
+    }
+
+    if (migrated > 0) {
+      log.appendLine(`[migrate] copied ${migrated} setting(s) to the code* namespace`);
+      void vscode.window.showInformationMessage(
+        `Code Sessions: migrated ${migrated} setting(s) from the old namespace. Old keys can be removed from settings.json.`
+      );
+    }
+  } catch (e: unknown) {
+    log.appendLine(`[migrate] settings migration skipped: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    await ctx.globalState.update(FLAG, true);
+  }
+}
+
 export function activate(ctx: vscode.ExtensionContext) {
   // Output channel for diagnostics — visible under View → Output → "Code Sessions".
   const log = vscode.window.createOutputChannel("Code Sessions");
   ctx.subscriptions.push(log);
   log.appendLine(`[activate] code-sessions starting (VS Code ${vscode.version})`);
 
+  // One-time settings migration: copy any values the user set under the old
+  // `coderSessions.*` / `claudeSessions.*` (and the KbChanges/ProjectsActivity/
+  // Tasks siblings) keys to the current `code*` namespace. Idempotent and gated
+  // on globalState so it runs once per profile. Safe no-op when nothing is set.
+  void migrateSettingsToCodeNamespace(ctx, log);
+
   // Open the SQLite cache. If the user has disabled it, leave store null
   // and the providers will fall back to running session-center.sh.
   let store: SessionStore | null = null;
   try {
     const cacheEnabled = vscode.workspace
-      .getConfiguration("coderSessions")
+      .getConfiguration("codeSessions")
       .get<boolean>("cacheEnabled", true);
     if (cacheEnabled) {
       store = SessionStore.open(ctx.globalStorageUri.fsPath);
@@ -1638,7 +1720,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       } catch (e: any) {
         console.error("[code-sessions] claude sync failed:", e);
       }
-      if (vscode.workspace.getConfiguration("coderSessions").get<boolean>("grok.enabled", true)) {
+      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
         try {
           const grokStats = syncGrokToStore(s);
           console.log(`[code-sessions] grok sync: ${JSON.stringify(grokStats)}`);
@@ -1673,7 +1755,7 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   // KB view uses createTreeView so we can set its title dynamically based on
   // the configured repoPath (e.g. "docs changes" instead of "KB changes").
-  const kbView = vscode.window.createTreeView("coderKbChanges", {
+  const kbView = vscode.window.createTreeView("codeKbChanges", {
     treeDataProvider: kb,
     showCollapseAll: false,
   });
@@ -1685,11 +1767,11 @@ export function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(kbView);
 
   ctx.subscriptions.push(
-    vscode.window.registerTreeDataProvider("coderSessions", sessions),
-    vscode.window.registerTreeDataProvider("coderProjectsActivity", projects),
-    vscode.window.registerTreeDataProvider("coderTasks", tasks),
+    vscode.window.registerTreeDataProvider("codeSessions", sessions),
+    vscode.window.registerTreeDataProvider("codeProjectsActivity", projects),
+    vscode.window.registerTreeDataProvider("codeTasks", tasks),
 
-    vscode.commands.registerCommand("coderSessions.classifyTogglePause", () => {
+    vscode.commands.registerCommand("codeSessions.classifyTogglePause", () => {
       if (!bgClassifier) return;
       bgClassifier.togglePause();
       vscode.window.setStatusBarMessage(
@@ -1697,7 +1779,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         2500,
       );
     }),
-    vscode.commands.registerCommand("coderSessions.classifyRetryFailed", () => {
+    vscode.commands.registerCommand("codeSessions.classifyRetryFailed", () => {
       if (!bgClassifier) return;
       const added = bgClassifier.retryFailed();
       vscode.window.setStatusBarMessage(
@@ -1705,7 +1787,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         2500,
       );
     }),
-    vscode.commands.registerCommand("coderSessions.classifyControls", async () => {
+    vscode.commands.registerCommand("codeSessions.classifyControls", async () => {
       if (!bgClassifier) return;
       const paused = bgClassifier.isPaused();
       const failed = bgClassifier.failedCount();
@@ -1726,22 +1808,22 @@ export function activate(ctx: vscode.ExtensionContext) {
       items.push({
         id: "settings",
         label: "$(settings-gear) Open auto-classify settings",
-        description: "coderSessions.classify.*",
+        description: "codeSessions.classify.*",
       });
       const pick = await vscode.window.showQuickPick(items, {
         placeHolder: "Background topic classification",
       });
       if (!pick) return;
-      if (pick.id === "pause") vscode.commands.executeCommand("coderSessions.classifyTogglePause");
-      else if (pick.id === "retry") vscode.commands.executeCommand("coderSessions.classifyRetryFailed");
+      if (pick.id === "pause") vscode.commands.executeCommand("codeSessions.classifyTogglePause");
+      else if (pick.id === "retry") vscode.commands.executeCommand("codeSessions.classifyRetryFailed");
       else if (pick.id === "settings")
         vscode.commands.executeCommand("workbench.action.openSettings", "@ext:zhirafovod.code-sessions classify");
     }),
 
-    vscode.commands.registerCommand("coderSessions.search", async (initialQ?: string) => {
+    vscode.commands.registerCommand("codeSessions.search", async (initialQ?: string) => {
       if (!store) {
         vscode.window.showWarningMessage(
-          "Search requires the SQLite cache. Enable coderSessions.cacheEnabled.",
+          "Search requires the SQLite cache. Enable codeSessions.cacheEnabled.",
         );
         return;
       }
@@ -1760,11 +1842,11 @@ export function activate(ctx: vscode.ExtensionContext) {
       }, typeof initialQ === "string" ? initialQ : "");
     }),
 
-    vscode.commands.registerCommand("coderTasks.refresh", () => tasks.refresh()),
-    vscode.commands.registerCommand("coderTasks.editCrontab", () =>
+    vscode.commands.registerCommand("codeTasks.refresh", () => tasks.refresh()),
+    vscode.commands.registerCommand("codeTasks.editCrontab", () =>
       openCrontabEditor(ctx, () => tasks.refresh()),
     ),
-    vscode.commands.registerCommand("coderTasks.openSession", async (sessionId: string) => {
+    vscode.commands.registerCommand("codeTasks.openSession", async (sessionId: string) => {
       if (!store) return;
       const row = store.getById(sessionId);
       if (!row) {
@@ -1778,13 +1860,13 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
     }),
 
-    vscode.commands.registerCommand("coderSessions.refresh", async () => {
+    vscode.commands.registerCommand("codeSessions.refresh", async () => {
       // Incremental sync from disk + force re-parse the top-N most-recent
       // sessions. The forced top-N catches on-disk edits that don't reliably
       // bump mtime (most notably claude-code session renames, which sometimes
       // overwrite the JSONL in place at the same size).
       if (store) {
-        const cfg = vscode.workspace.getConfiguration("coderSessions");
+        const cfg = vscode.workspace.getConfiguration("codeSessions");
         const recent = Math.max(0, cfg.get<number>("refresh.forceRecent", 100));
         try {
           syncToStore(store, recent > 0 ? { forceRecentN: recent } : {});
@@ -1801,7 +1883,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
       await sessions.refresh();
     }),
-    vscode.commands.registerCommand("coderSessions.refreshFull", async () => {
+    vscode.commands.registerCommand("codeSessions.refreshFull", async () => {
       // Force a full re-parse of every JSONL on disk. Use this if the
       // incremental sync looks stuck (e.g. titles still stale after a
       // claude rename) — slow on large catalogs.
@@ -1811,14 +1893,14 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
       const s = store;
       await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "Coder sessions: full rescan…" },
+        { location: vscode.ProgressLocation.Notification, title: "Code Sessions: full rescan…" },
         async (progress) => {
           const stats = syncToStore(s, {
             force: true,
             onProgress: (done, total) => progress.report({ message: `claude ${done}/${total}` }),
           });
           let grokParsed = 0;
-          if (vscode.workspace.getConfiguration("coderSessions").get<boolean>("grok.enabled", true)) {
+          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
             const grokStats = syncGrokToStore(s, {
               force: true,
               onProgress: (done, total) => progress.report({ message: `grok ${done}/${total}` }),
@@ -1833,25 +1915,25 @@ export function activate(ctx: vscode.ExtensionContext) {
       );
       await sessions.refresh();
     }),
-    vscode.commands.registerCommand("coderSessions.openInsights", () => openInsightsView(ctx, store)),
+    vscode.commands.registerCommand("codeSessions.openInsights", () => openInsightsView(ctx, store)),
     // Drilldown variant: called from a session row's metrics line. Opens the
     // Insights panel but pre-filters every chart and KPI to just that session
     // so the user sees its cost/tokens/messages in context of the dashboards.
-    vscode.commands.registerCommand("coderSessions.openInsightsForSession", (row: SessionRow | undefined) => {
+    vscode.commands.registerCommand("codeSessions.openInsightsForSession", (row: SessionRow | undefined) => {
       if (!row || !row.session) return;
       openInsightsView(ctx, store, { focusSessionId: row.session });
     }),
-    vscode.commands.registerCommand("coderSessions.openLiveMonitor", () => {
+    vscode.commands.registerCommand("codeSessions.openLiveMonitor", () => {
       if (!store) {
-        vscode.window.showWarningMessage("Live monitor requires the SQLite cache. Enable coderSessions.cacheEnabled.");
+        vscode.window.showWarningMessage("Live monitor requires the SQLite cache. Enable codeSessions.cacheEnabled.");
         return;
       }
       openLiveMonitor(ctx, store);
     }),
-    vscode.commands.registerCommand("coderKbChanges.refresh", () => kb.refresh()),
-    vscode.commands.registerCommand("coderProjectsActivity.refresh", () => projects.refresh()),
+    vscode.commands.registerCommand("codeKbChanges.refresh", () => kb.refresh()),
+    vscode.commands.registerCommand("codeProjectsActivity.refresh", () => projects.refresh()),
 
-    vscode.commands.registerCommand("coderSessions.resume", async (arg: SessionRow | SessionItem | undefined) => {
+    vscode.commands.registerCommand("codeSessions.resume", async (arg: SessionRow | SessionItem | undefined) => {
       // The inline action passes the TreeItem; the per-child "Resume" child
       // passes a SessionRow directly. Accept either.
       const row: SessionRow | null =
@@ -1867,7 +1949,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       // container path, grok stores the absolute cwd. The terminal-fallback
       // branches cd into this when spawning the CLI.
       const cwd = SessionsProvider.sessionCwd(row) ?? undefined;
-      const cfg = vscode.workspace.getConfiguration("coderSessions");
+      const cfg = vscode.workspace.getConfiguration("codeSessions");
       const preferredBackend = cfg.get<"code-build" | "native">("resumeBackend", "code-build");
 
       // Preferred backend = code-build: open zhirafovod.code-build-vscode's
@@ -1970,7 +2052,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       term.sendText(`claude --resume ${row.session}`);
     }),
 
-    vscode.commands.registerCommand("coderSessions.openTranscript", async (item: SessionItem) => {
+    vscode.commands.registerCommand("codeSessions.openTranscript", async (item: SessionItem) => {
       const jsonl = await locateSessionJsonl(item.row.session);
       if (!jsonl) {
         vscode.window.showWarningMessage(`Transcript not found for session ${item.row.session}`);
@@ -1980,7 +2062,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       await vscode.window.showTextDocument(doc);
     }),
 
-    vscode.commands.registerCommand("coderSessions.viewConversation", async (item: SessionItem) => {
+    vscode.commands.registerCommand("codeSessions.viewConversation", async (item: SessionItem) => {
       const jsonl = await locateSessionJsonl(item.row.session);
       if (!jsonl) {
         vscode.window.showWarningMessage(`Transcript not found for session ${item.row.session}`);
@@ -1996,15 +2078,15 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand(
-      "coderSessions.classifyTopics",
+      "codeSessions.classifyTopics",
       async (sessionId: string, jsonlPath: string, title: string) => {
         if (!store) {
           vscode.window.showWarningMessage(
-            "Topic classification requires the SQLite cache. Enable coderSessions.cacheEnabled.",
+            "Topic classification requires the SQLite cache. Enable codeSessions.cacheEnabled.",
           );
           return;
         }
-        const cfg = vscode.workspace.getConfiguration("coderSessions");
+        const cfg = vscode.workspace.getConfiguration("codeSessions");
         const backend = cfg.get<"ollama" | "claude-p">("classify.backend", "ollama");
         const model = cfg.get<string>("classify.model", "llama3.2:3b");
         const batchSize = cfg.get<number>("classify.batchSize", 20);
@@ -2062,11 +2144,11 @@ export function activate(ctx: vscode.ExtensionContext) {
     ),
 
     vscode.commands.registerCommand(
-      "coderSessions.showTrajectory",
+      "codeSessions.showTrajectory",
       async (sessionId: string, title: string) => {
         if (!store) {
           vscode.window.showWarningMessage(
-            "Trajectory view requires the SQLite cache. Enable coderSessions.cacheEnabled.",
+            "Trajectory view requires the SQLite cache. Enable codeSessions.cacheEnabled.",
           );
           return;
         }
@@ -2078,12 +2160,12 @@ export function activate(ctx: vscode.ExtensionContext) {
       },
     ),
 
-    vscode.commands.registerCommand("coderSessions.reembedSessions", async () => {
+    vscode.commands.registerCommand("codeSessions.reembedSessions", async () => {
       if (!store) {
         vscode.window.showWarningMessage("Re-embed requires the SQLite cache.");
         return;
       }
-      const cfg = vscode.workspace.getConfiguration("coderSessions");
+      const cfg = vscode.workspace.getConfiguration("codeSessions");
       const wantedOllama = cfg.get<string>("embedding.ollamaModel", "nomic-embed-text");
       const choice = await vscode.window.showInformationMessage(
         `Drop cached embeddings and re-embed on next graph open?\nCurrent model: ollama/${wantedOllama}`,
@@ -2099,10 +2181,10 @@ export function activate(ctx: vscode.ExtensionContext) {
       );
     }),
 
-    vscode.commands.registerCommand("coderSessions.showAgentGraph", async () => {
+    vscode.commands.registerCommand("codeSessions.showAgentGraph", async () => {
       if (!store) {
         vscode.window.showWarningMessage(
-          "Agent graph requires the SQLite cache. Enable coderSessions.cacheEnabled.",
+          "Agent graph requires the SQLite cache. Enable codeSessions.cacheEnabled.",
         );
         return;
       }
@@ -2120,7 +2202,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         if (currentAgentGraphPanel === panel) currentAgentGraphPanel = null;
       });
     }),
-    vscode.commands.registerCommand("coderSessions.agentGraphToggleMode", () => {
+    vscode.commands.registerCommand("codeSessions.agentGraphToggleMode", () => {
       if (!currentAgentGraphPanel) {
         vscode.window.setStatusBarMessage("Open the agent graph first (Cmd+Alt+G)", 2500);
         return;
@@ -2128,21 +2210,21 @@ export function activate(ctx: vscode.ExtensionContext) {
       currentAgentGraphPanel.reveal();
       currentAgentGraphPanel.webview.postMessage({ command: "toggleMode" });
     }),
-    vscode.commands.registerCommand("coderSessions.starSession", async (arg: SessionRow | SessionItem | undefined) => {
+    vscode.commands.registerCommand("codeSessions.starSession", async (arg: SessionRow | SessionItem | undefined) => {
       if (!store) return;
       const row = arg && typeof arg === "object" && "row" in arg ? (arg as SessionItem).row : (arg as SessionRow | undefined);
       if (!row?.session) return;
       store.starSession(row.session);
       sessions.refresh();
     }),
-    vscode.commands.registerCommand("coderSessions.unstarSession", async (arg: SessionRow | SessionItem | undefined) => {
+    vscode.commands.registerCommand("codeSessions.unstarSession", async (arg: SessionRow | SessionItem | undefined) => {
       if (!store) return;
       const row = arg && typeof arg === "object" && "row" in arg ? (arg as SessionItem).row : (arg as SessionRow | undefined);
       if (!row?.session) return;
       store.unstarSession(row.session);
       sessions.refresh();
     }),
-    vscode.commands.registerCommand("coderSessions.revealProjectFolder", async (projectPath: string) => {
+    vscode.commands.registerCommand("codeSessions.revealProjectFolder", async (projectPath: string) => {
       if (!projectPath || typeof projectPath !== "string") return;
       const expanded = expandHome(projectPath);
       try {
@@ -2153,21 +2235,21 @@ export function activate(ctx: vscode.ExtensionContext) {
         vscode.window.showErrorMessage(`Cannot reveal ${expanded}: ${e.message}`);
       }
     }),
-    vscode.commands.registerCommand("coderSessions.focusActivityView", async () => {
+    vscode.commands.registerCommand("codeSessions.focusActivityView", async () => {
       // VS Code provides workbench.view.extension.<containerId> to focus a
       // view container. Wrapping it makes the keybinding discoverable in the
       // palette under the Claude namespace.
       try {
-        await vscode.commands.executeCommand("workbench.view.extension.coder-activity");
+        await vscode.commands.executeCommand("workbench.view.extension.code-activity");
       } catch (e: any) {
         vscode.window.showErrorMessage(`Cannot focus Code Sessions: ${e.message}`);
       }
     }),
 
-    vscode.commands.registerCommand("coderKbChanges.openFile", (c: FileChange) => openChangedFile(c)),
-    vscode.commands.registerCommand("coderProjectsActivity.openFile", (c: FileChange) => openChangedFile(c)),
-    vscode.commands.registerCommand("coderKbChanges.diff", (item: FileChangeItem) => showDiff(item.change)),
-    vscode.commands.registerCommand("coderProjectsActivity.diff", (item: FileChangeItem) => showDiff(item.change)),
+    vscode.commands.registerCommand("codeKbChanges.openFile", (c: FileChange) => openChangedFile(c)),
+    vscode.commands.registerCommand("codeProjectsActivity.openFile", (c: FileChange) => openChangedFile(c)),
+    vscode.commands.registerCommand("codeKbChanges.diff", (item: FileChangeItem) => showDiff(item.change)),
+    vscode.commands.registerCommand("codeProjectsActivity.diff", (item: FileChangeItem) => showDiff(item.change)),
   );
 
   // Auto-refresh on JSONL changes
@@ -2185,7 +2267,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (store) {
         try {
           syncToStore(store);
-          if (vscode.workspace.getConfiguration("coderSessions").get<boolean>("grok.enabled", true)) {
+          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
             syncGrokToStore(store);
           }
         } catch (e: any) {
@@ -2202,13 +2284,13 @@ export function activate(ctx: vscode.ExtensionContext) {
   // Re-render trees when relevant settings flip (e.g. showAutomated).
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("coderSessions")) sessions.refresh();
-      if (e.affectsConfiguration("coderKbChanges")) {
+      if (e.affectsConfiguration("codeSessions")) sessions.refresh();
+      if (e.affectsConfiguration("codeKbChanges")) {
         kb.refresh();
-        if (e.affectsConfiguration("coderKbChanges.repoPath")) refreshKbTitle();
+        if (e.affectsConfiguration("codeKbChanges.repoPath")) refreshKbTitle();
       }
-      if (e.affectsConfiguration("coderProjectsActivity")) projects.refresh();
-      if (e.affectsConfiguration("coderTasks")) tasks.refresh();
+      if (e.affectsConfiguration("codeProjectsActivity")) projects.refresh();
+      if (e.affectsConfiguration("codeTasks")) tasks.refresh();
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       refreshKbTitle();
@@ -2262,7 +2344,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   const sessionsTimer = setInterval(() => {
     if (store) {
       try { syncToStore(store); } catch { /* swallow; next tick retries */ }
-      if (vscode.workspace.getConfiguration("coderSessions").get<boolean>("grok.enabled", true)) {
+      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
         try { syncGrokToStore(store); } catch { /* swallow; next tick retries */ }
       }
     }
