@@ -701,15 +701,20 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       : r.mtime_epoch;
   }
 
-  /** Aggregate per-turn tokens per day bucket, scoped to whichever
-   * sessions are visible right now. Returns a map keyed by the same
-   * bucket strings dayBucket() returns. Used to populate the bucket
-   * headers ("Today — N sessions · 12.3M tok") with the tokens that
-   * were ACTUALLY spent that day, not the lifetime totals of every
-   * session that happened to be touched. */
-  private tokensByBucket(visible: SessionRow[]): Record<ReturnType<typeof dayBucket>, number> {
-    const empty = { today: 0, yesterday: 0, last7: 0, older: 0 } as const;
-    if (!this.store || visible.length === 0) return { ...empty };
+  /** Aggregate per-turn tokens AND USD cost per day bucket, scoped to
+   * whichever sessions are visible right now. Returns two maps keyed by
+   * the same bucket strings dayBucket() returns. Used to populate the
+   * bucket headers with the tokens/cost ACTUALLY spent that day, not
+   * the lifetime totals of every session that happened to be touched. */
+  private tokensByBucket(
+    visible: SessionRow[]
+  ): {
+    tokens: Record<ReturnType<typeof dayBucket>, number>;
+    cost: Record<ReturnType<typeof dayBucket>, number>;
+  } {
+    const emptyT = { today: 0, yesterday: 0, last7: 0, older: 0 };
+    const emptyC = { today: 0, yesterday: 0, last7: 0, older: 0 };
+    if (!this.store || visible.length === 0) return { tokens: { ...emptyT }, cost: { ...emptyC } };
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const startOfYesterday = startOfToday - 86_400_000;
@@ -720,16 +725,20 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       SELECT
         COALESCE(SUM(CASE WHEN ended_at >= ? THEN
           input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-          ELSE 0 END), 0) AS today,
+          ELSE 0 END), 0) AS today_t,
         COALESCE(SUM(CASE WHEN ended_at >= ? AND ended_at < ? THEN
           input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-          ELSE 0 END), 0) AS yesterday,
+          ELSE 0 END), 0) AS yesterday_t,
         COALESCE(SUM(CASE WHEN ended_at >= ? AND ended_at < ? THEN
           input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-          ELSE 0 END), 0) AS last7,
+          ELSE 0 END), 0) AS last7_t,
         COALESCE(SUM(CASE WHEN ended_at IS NULL OR ended_at < ? THEN
           input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-          ELSE 0 END), 0) AS older
+          ELSE 0 END), 0) AS older_t,
+        COALESCE(SUM(CASE WHEN ended_at >= ? THEN cost_usd ELSE 0 END), 0) AS today_c,
+        COALESCE(SUM(CASE WHEN ended_at >= ? AND ended_at < ? THEN cost_usd ELSE 0 END), 0) AS yesterday_c,
+        COALESCE(SUM(CASE WHEN ended_at >= ? AND ended_at < ? THEN cost_usd ELSE 0 END), 0) AS last7_c,
+        COALESCE(SUM(CASE WHEN ended_at IS NULL OR ended_at < ? THEN cost_usd ELSE 0 END), 0) AS older_c
       FROM turn
       WHERE session_id IN (${placeholders})
     `;
@@ -741,16 +750,31 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
           startOfYesterday, startOfToday,
           startOfLast7, startOfYesterday,
           startOfLast7,
+          startOfToday,
+          startOfYesterday, startOfToday,
+          startOfLast7, startOfYesterday,
+          startOfLast7,
           ...ids
-        ) as { today: number; yesterday: number; last7: number; older: number };
+        ) as {
+          today_t: number; yesterday_t: number; last7_t: number; older_t: number;
+          today_c: number; yesterday_c: number; last7_c: number; older_c: number;
+        };
       return {
-        today: Number(row.today ?? 0),
-        yesterday: Number(row.yesterday ?? 0),
-        last7: Number(row.last7 ?? 0),
-        older: Number(row.older ?? 0),
+        tokens: {
+          today: Number(row.today_t ?? 0),
+          yesterday: Number(row.yesterday_t ?? 0),
+          last7: Number(row.last7_t ?? 0),
+          older: Number(row.older_t ?? 0),
+        },
+        cost: {
+          today: Number(row.today_c ?? 0),
+          yesterday: Number(row.yesterday_c ?? 0),
+          last7: Number(row.last7_c ?? 0),
+          older: Number(row.older_c ?? 0),
+        },
       };
     } catch {
-      return { ...empty };
+      return { tokens: { ...emptyT }, cost: { ...emptyC } };
     }
   }
 
@@ -821,17 +845,17 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       arr.push(r);
       byBucket.set(b, arr);
     }
-    // Bucket-header token sums come from per-turn tokens scoped to that
-    // day's date range (migration v11). The previous code summed the
-    // lifetime totals of every session touched that day, which over-
-    // counted by orders of magnitude for sessions whose work mostly
-    // happened on a different day.
-    const tokensByDay = this.tokensByBucket(visibleRows);
+    // Bucket-header token AND cost sums come from per-turn tokens scoped
+    // to that day's date range (migrations v11+v12). The previous code
+    // summed the lifetime totals of every session touched that day,
+    // which over-counted by orders of magnitude for sessions whose work
+    // mostly happened on a different day.
+    const dayTotals = this.tokensByBucket(visibleRows);
     for (const b of BUCKET_ORDER.filter((bb) => byBucket.has(bb))) {
       const arr = byBucket.get(b)!;
       const totals = {
-        tokens: tokensByDay[b],
-        cost: arr.reduce((n, r) => n + r.cost_usd, 0),
+        tokens: dayTotals.tokens[b],
+        cost: dayTotals.cost[b],
         subagents: arr.reduce((n, r) => n + (r.subagents || 0), 0),
       };
       out.push(new BucketItem(b, arr.length, "session", totals));

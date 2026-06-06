@@ -295,6 +295,16 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
 
   const turns: TurnRow[] = parsed.turns.map((t, i) => {
     const tok = tokensByTurn[i] ?? { input: 0, output: 0, cacheR: 0, cacheW: 0 };
+    // Per-turn cost — precomputed at index time using the session's
+    // model rate table (same rates as the session-level cost above).
+    // Lets the day-bucket header sum the costs actually paid that day
+    // rather than the lifetime total.
+    const turnCost =
+      (tok.input * r.input +
+        tok.output * r.output +
+        tok.cacheR * r.cacheRead +
+        tok.cacheW * r.cacheWrite) /
+      1_000_000;
     return {
       turn_uuid: `${session.session_id}#${i}`, // stable per session+index
       session_id: session.session_id,
@@ -311,6 +321,7 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
       output_tokens: tok.output,
       cache_read_tokens: tok.cacheR,
       cache_write_tokens: tok.cacheW,
+      cost_usd: Number(turnCost.toFixed(6)),
     };
   });
 

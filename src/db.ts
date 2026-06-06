@@ -187,6 +187,16 @@ const MIGRATIONS: string[] = [
   ALTER TABLE turn ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE turn ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0;
   `,
+
+  // v12 — per-turn USD cost. Per-day token totals were already correct
+  // after v11, but the day-bucket header was still summing
+  // `session.cost_usd` (lifetime). Computing cost in SQL would require
+  // baking rate tables into a CASE/JOIN; cleaner to precompute at index
+  // time using ratesForModel() and persist the result here. Existing
+  // turn rows default to 0; re-parse populates them.
+  `
+  ALTER TABLE turn ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok";
@@ -247,6 +257,11 @@ export interface TurnRow {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  /** Per-turn USD cost — precomputed at index time using the session's
+   * model rate table. Lets the bucket header sum costs that were
+   * actually paid that day, not the lifetime total. Default 0 for rows
+   * indexed before migration v12. */
+  cost_usd: number;
 }
 
 function rowToSession(r: any): SessionRow {
@@ -645,11 +660,11 @@ export class SessionStore {
       INSERT INTO turn (
         turn_uuid, session_id, turn_index, started_at, ended_at, duration_ms,
         user_text, assistant_excerpt, tool_names_csv, tool_count, has_subagent,
-        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd
       ) VALUES (
         @turn_uuid, @session_id, @turn_index, @started_at, @ended_at, @duration_ms,
         @user_text, @assistant_excerpt, @tool_names_csv, @tool_count, @has_subagent,
-        @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens
+        @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens, @cost_usd
       )
       ON CONFLICT(turn_uuid) DO UPDATE SET
         turn_index         = excluded.turn_index,
@@ -664,7 +679,8 @@ export class SessionStore {
         input_tokens       = excluded.input_tokens,
         output_tokens      = excluded.output_tokens,
         cache_read_tokens  = excluded.cache_read_tokens,
-        cache_write_tokens = excluded.cache_write_tokens
+        cache_write_tokens = excluded.cache_write_tokens,
+        cost_usd           = excluded.cost_usd
     `);
     const insertMany = this.db.transaction((rows: TurnRow[]) => {
       for (const r of rows) {
