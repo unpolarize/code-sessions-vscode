@@ -167,10 +167,11 @@ function findJsonlPathById(sessionId: string): string | null {
 }
 
 function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projectPath: string): { session: SessionRow; turns: TurnRow[] } {
-  // Token + cost aggregation: walk through tools and assistant blocks.
-  // We DON'T have token usage at the turn level in conversationParser yet —
-  // re-parse the JSONL once more here for those fields. Open the file and
-  // sum assistant.message.usage.
+  // Token + cost aggregation: walk the JSONL once more so we can attribute
+  // each assistant.message.usage block to its enclosing turn. Per-turn
+  // tokens land in `turn.input_tokens`/etc. (migration v11) and drive the
+  // accurate per-day rollup in the Sessions tree. We also keep the
+  // session-level totals as a sanity sum.
   let inputTok = 0,
     outputTok = 0,
     cacheReadTok = 0,
@@ -180,6 +181,16 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
   let isAutomated = false;
   let rawMessageCount = 0; // every user/assistant line, matches session-center.sh
   let sessionModel: string | null = null; // last non-empty model id seen
+  // Per-turn token accumulator. Same turn-boundary rule as
+  // conversationParser: a real user message (not a tool_result echo)
+  // starts a new turn; everything that follows until the next real user
+  // message belongs to it. Index aligned to parsed.turns[] order.
+  const tokensByTurn: Array<{ input: number; output: number; cacheR: number; cacheW: number }> = [];
+  let currentTurnIdx = -1;
+  const isToolResultLine = (obj: any): boolean =>
+    obj?.type === "user" &&
+    Array.isArray(obj?.message?.content) &&
+    obj.message.content[0]?.type === "tool_result";
   try {
     const raw = fs.readFileSync(info.jsonl_path, "utf-8");
     for (const ln of raw.split("\n")) {
@@ -191,12 +202,34 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
         continue;
       }
       if (obj?.type === "user" || obj?.type === "assistant") rawMessageCount += 1;
+      // Real user message → new turn. tool_result echoes don't move the
+      // turn boundary (they're agent-internal continuations of the same
+      // turn). Match conversationParser's logic so indices line up.
+      if (obj?.type === "user" && !isToolResultLine(obj)) {
+        currentTurnIdx += 1;
+        tokensByTurn[currentTurnIdx] = { input: 0, output: 0, cacheR: 0, cacheW: 0 };
+      }
       if (obj?.type === "assistant") {
         const u = obj?.message?.usage ?? {};
-        inputTok += u.input_tokens || 0;
-        outputTok += u.output_tokens || 0;
-        cacheReadTok += u.cache_read_input_tokens || 0;
-        cacheWriteTok += u.cache_creation_input_tokens || 0;
+        const inT = u.input_tokens || 0;
+        const outT = u.output_tokens || 0;
+        const crT = u.cache_read_input_tokens || 0;
+        const cwT = u.cache_creation_input_tokens || 0;
+        inputTok += inT;
+        outputTok += outT;
+        cacheReadTok += crT;
+        cacheWriteTok += cwT;
+        if (currentTurnIdx >= 0) {
+          // Defensive: assistant before any user (shouldn't happen, but
+          // older transcripts could have orphan assistant lines).
+          const slot = tokensByTurn[currentTurnIdx];
+          if (slot) {
+            slot.input += inT;
+            slot.output += outT;
+            slot.cacheR += crT;
+            slot.cacheW += cwT;
+          }
+        }
         // Model id lives on assistant lines as obj.message.model
         // (e.g. "claude-sonnet-4-6-..." / "claude-opus-4-...").
         const m = obj?.message?.model;
@@ -260,19 +293,26 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
     extras_json: null,
   };
 
-  const turns: TurnRow[] = parsed.turns.map((t, i) => ({
-    turn_uuid: `${session.session_id}#${i}`, // stable per session+index
-    session_id: session.session_id,
-    turn_index: i,
-    started_at: t.userTimestampMs || null,
-    ended_at: t.turnEndMs,
-    duration_ms: t.userTimestampMs && t.turnEndMs ? Math.max(0, t.turnEndMs - t.userTimestampMs) : null,
-    user_text: t.userText.slice(0, USER_TEXT_MAX),
-    assistant_excerpt: t.assistantText.slice(0, ASSISTANT_EXCERPT_MAX),
-    tool_names_csv: t.toolCalls.map((tc) => tc.name).join(","),
-    tool_count: t.toolCalls.length,
-    has_subagent: t.toolCalls.some((tc) => tc.isSubagent),
-  }));
+  const turns: TurnRow[] = parsed.turns.map((t, i) => {
+    const tok = tokensByTurn[i] ?? { input: 0, output: 0, cacheR: 0, cacheW: 0 };
+    return {
+      turn_uuid: `${session.session_id}#${i}`, // stable per session+index
+      session_id: session.session_id,
+      turn_index: i,
+      started_at: t.userTimestampMs || null,
+      ended_at: t.turnEndMs,
+      duration_ms: t.userTimestampMs && t.turnEndMs ? Math.max(0, t.turnEndMs - t.userTimestampMs) : null,
+      user_text: t.userText.slice(0, USER_TEXT_MAX),
+      assistant_excerpt: t.assistantText.slice(0, ASSISTANT_EXCERPT_MAX),
+      tool_names_csv: t.toolCalls.map((tc) => tc.name).join(","),
+      tool_count: t.toolCalls.length,
+      has_subagent: t.toolCalls.some((tc) => tc.isSubagent),
+      input_tokens: tok.input,
+      output_tokens: tok.output,
+      cache_read_tokens: tok.cacheR,
+      cache_write_tokens: tok.cacheW,
+    };
+  });
 
   return { session, turns };
 }

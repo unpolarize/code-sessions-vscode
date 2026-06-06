@@ -8,7 +8,7 @@
 // copies it across so existing topic-classifications survive the rebrand. See
 // `SessionStore.open` for details.
 
-import Database from "better-sqlite3";
+import { Database } from "./sqlite";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -161,6 +161,32 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE session ADD COLUMN extras_json TEXT;
   `,
+
+  // v10 — session_hide: user-hidden sessions (soft-hide; the JSONL on disk
+  // is untouched). Filtered out of the tree unless the showHidden setting
+  // is on. Cascade-delete with the session row so a wiped cache rebuilds
+  // cleanly.
+  `
+  CREATE TABLE session_hide (
+    session_id  TEXT PRIMARY KEY REFERENCES session(session_id) ON DELETE CASCADE,
+    hidden_at   INTEGER NOT NULL
+  );
+  `,
+
+  // v11 — per-turn token columns. The session-level token totals on
+  // `session` are lifetime sums, which made the day-bucket header
+  // misleading: a session whose mtime touched "today" but whose tokens
+  // were all spent yesterday would contribute its full lifetime total
+  // to today's bucket sum. With per-turn tokens we can scope the day
+  // total to only the turns whose ended_at falls in that day. Lifetime
+  // totals remain on `session` for the session-detail tooltip. Existing
+  // turn rows default to 0; the next jsonl re-parse fills them in.
+  `
+  ALTER TABLE turn ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE turn ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE turn ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE turn ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok";
@@ -213,6 +239,14 @@ export interface TurnRow {
   tool_names_csv: string;
   tool_count: number;
   has_subagent: boolean;
+  /** Per-turn token usage extracted from assistant.message.usage. Lets us
+   * compute correct per-day token totals (a session that spans multiple
+   * days no longer dumps its full lifetime total into a single day's
+   * bucket). Default 0 for rows indexed before migration v11. */
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
 }
 
 function rowToSession(r: any): SessionRow {
@@ -247,14 +281,64 @@ function rowToSession(r: any): SessionRow {
 }
 
 export class SessionStore {
-  readonly db: Database.Database;
+  readonly db: Database;
   private constructor(private readonly dbPath: string) {
+    // DBs written by the previous (better-sqlite3) build are in WAL mode, which
+    // the WASM engine cannot open — convert in place first. See the helper.
+    SessionStore.coerceRollbackJournal(dbPath);
     this.db = new Database(dbPath);
+    // Requesting WAL is a no-op under the WASM VFS (it has no shared-memory
+    // support and silently stays on a rollback journal), but we keep the call so
+    // the intent is documented and behaviour matches a native build elsewhere.
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
     this.db.pragma("temp_store = MEMORY");
     this.db.pragma("mmap_size = 268435456");
     this.db.pragma("foreign_keys = ON");
+  }
+
+  /** node-sqlite3-wasm's VFS has no shared-memory (xShm) support, so it cannot
+   * open a database whose file header is marked WAL (`unable to open database
+   * file`). Databases created by the previous better-sqlite3 build are in WAL
+   * mode. This rewrites the header's write/read format version bytes (offsets
+   * 18 and 19) from 2 (WAL) back to 1 (rollback journal) so the WASM engine can
+   * open the file with all data intact. Idempotent and best-effort.
+   *
+   * Safe when the WAL has been checkpointed — the normal case after a clean
+   * shutdown, where the main file holds all committed data. Any uncheckpointed
+   * `-wal` frames are dropped, which is acceptable here: this DB is a cache the
+   * indexer rebuilds from the source JSONLs. */
+  private static coerceRollbackJournal(dbPath: string): void {
+    try {
+      if (!fs.existsSync(dbPath)) return;
+      const fd = fs.openSync(dbPath, "r+");
+      let isWal = false;
+      try {
+        const hdr = Buffer.alloc(2);
+        // bytes 18 = file-format write version, 19 = read version; 1=rollback, 2=WAL
+        fs.readSync(fd, hdr, 0, 2, 18);
+        if (hdr[0] === 2 || hdr[1] === 2) {
+          isWal = true;
+          fs.writeSync(fd, Buffer.from([1, 1]), 0, 2, 18);
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+      if (isWal) {
+        // Sidecars only matter in WAL mode; once the header says rollback they
+        // are ignored, so remove them to avoid confusion on the next open.
+        for (const ext of ["-wal", "-shm"]) {
+          try {
+            fs.rmSync(dbPath + ext, { force: true });
+          } catch {
+            /* best-effort */
+          }
+        }
+      }
+    } catch {
+      // If anything goes wrong, fall through — the subsequent open() will
+      // surface the real error rather than masking it here.
+    }
   }
 
   /** Result of the one-shot cross-extension DB import. Reported to the
@@ -320,6 +404,21 @@ export class SessionStore {
     const sessionsBefore = (this.db.prepare("SELECT COUNT(*) AS n FROM session").get() as any).n;
     const turnsBefore = (this.db.prepare("SELECT COUNT(*) AS n FROM turn").get() as any).n;
     const topicsBefore = (this.db.prepare("SELECT COUNT(*) AS n FROM turn_topic").get() as any).n;
+
+    // node-sqlite3-wasm's VFS locks files via a sibling `<file>.lock` directory
+    // and can leave a stale one behind after an unclean close. A single
+    // connection tolerates its own stale lock, but ATTACH treats a locked file
+    // as "database is locked" and aborts the merge. Old DBs written by the
+    // pre-WASM (better-sqlite3) extension never have one, so this is a no-op in
+    // the common case — it just guards against a lock left by a prior WASM run.
+    try {
+      fs.rmSync(oldDbPath + ".lock", { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+    // The old DB is also a better-sqlite3 (WAL-mode) file; ATTACH would fail to
+    // open it under the WASM VFS unless we convert it to a rollback journal too.
+    SessionStore.coerceRollbackJournal(oldDbPath);
 
     // ATTACH the old DB as `old.*` then INSERT OR IGNORE across every table
     // we want to preserve. The old schema is v6 and predates the `source`
@@ -545,21 +644,27 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO turn (
         turn_uuid, session_id, turn_index, started_at, ended_at, duration_ms,
-        user_text, assistant_excerpt, tool_names_csv, tool_count, has_subagent
+        user_text, assistant_excerpt, tool_names_csv, tool_count, has_subagent,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
       ) VALUES (
         @turn_uuid, @session_id, @turn_index, @started_at, @ended_at, @duration_ms,
-        @user_text, @assistant_excerpt, @tool_names_csv, @tool_count, @has_subagent
+        @user_text, @assistant_excerpt, @tool_names_csv, @tool_count, @has_subagent,
+        @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens
       )
       ON CONFLICT(turn_uuid) DO UPDATE SET
-        turn_index        = excluded.turn_index,
-        started_at        = excluded.started_at,
-        ended_at          = excluded.ended_at,
-        duration_ms       = excluded.duration_ms,
-        user_text         = excluded.user_text,
-        assistant_excerpt = excluded.assistant_excerpt,
-        tool_names_csv    = excluded.tool_names_csv,
-        tool_count        = excluded.tool_count,
-        has_subagent      = excluded.has_subagent
+        turn_index         = excluded.turn_index,
+        started_at         = excluded.started_at,
+        ended_at           = excluded.ended_at,
+        duration_ms        = excluded.duration_ms,
+        user_text          = excluded.user_text,
+        assistant_excerpt  = excluded.assistant_excerpt,
+        tool_names_csv     = excluded.tool_names_csv,
+        tool_count         = excluded.tool_count,
+        has_subagent       = excluded.has_subagent,
+        input_tokens       = excluded.input_tokens,
+        output_tokens      = excluded.output_tokens,
+        cache_read_tokens  = excluded.cache_read_tokens,
+        cache_write_tokens = excluded.cache_write_tokens
     `);
     const insertMany = this.db.transaction((rows: TurnRow[]) => {
       for (const r of rows) {
@@ -973,6 +1078,36 @@ export class SessionStore {
   starredSessionIds(): Set<string> {
     const rows = this.db.prepare("SELECT session_id FROM session_star").all() as any[];
     return new Set(rows.map((r) => r.session_id));
+  }
+
+  // ---- hidden sessions ------------------------------------------------- //
+
+  setHidden(sessionId: string, hidden: boolean): void {
+    if (hidden) {
+      this.db
+        .prepare("INSERT OR REPLACE INTO session_hide (session_id, hidden_at) VALUES (?, ?)")
+        .run(sessionId, Date.now());
+    } else {
+      this.db.prepare("DELETE FROM session_hide WHERE session_id = ?").run(sessionId);
+    }
+  }
+
+  /** Set of hidden session ids; read on every tree refresh. */
+  hiddenSessionIds(): Set<string> {
+    const rows = this.db.prepare("SELECT session_id FROM session_hide").all() as any[];
+    return new Set(rows.map((r) => r.session_id));
+  }
+
+  /** Overwrite the cached session.title for an id. Called after a rename
+   * rewrites the source-of-truth file (Claude `aiTitle` line / Grok
+   * `summary.json.generated_title`) so the tree shows the new label
+   * immediately, without waiting for the next indexer pass to re-parse the
+   * file. The next indexer pass will re-derive the same value, so this is
+   * just a latency optimisation, not a divergence. */
+  updateSessionTitle(sessionId: string, title: string): void {
+    this.db
+      .prepare("UPDATE session SET title = ? WHERE session_id = ?")
+      .run(title, sessionId);
   }
 
   // ---- maintenance ----------------------------------------------------- //

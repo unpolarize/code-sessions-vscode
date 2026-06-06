@@ -448,6 +448,14 @@ function buildRows(
       tool_names_csv: t.toolNames.join(","),
       tool_count: t.toolNames.length,
       has_subagent: t.isSubagent,
+      // Grok's chat_history.jsonl doesn't carry per-turn token usage —
+      // the column stays 0 and the day-bucket rollup just won't include
+      // grok contributions (which matches the existing "Grok records no
+      // token usage" caveat surfaced in the Insights subtitle).
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
     };
   });
 

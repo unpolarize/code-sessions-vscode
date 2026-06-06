@@ -86,7 +86,7 @@ function createCostBudgetTile(
   store: SessionStore,
 ): { item: vscode.StatusBarItem; tick: () => void } {
   const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-  item.name = "AI Coders · cost today";
+  item.name = "AI Agents · cost today";
   item.command = "codeSessions.openInsights";
 
   const tick = () => {
@@ -155,7 +155,7 @@ function createLiveStatusBar(
     const md = new vscode.MarkdownString();
     md.isTrusted = true;
     md.supportThemeIcons = true;
-    md.appendMarkdown(`**AI Coders · Live** &nbsp; *(updated ${new Date().toLocaleTimeString()})*\n\n`);
+    md.appendMarkdown(`**AI Agents · Live** &nbsp; *(updated ${new Date().toLocaleTimeString()})*\n\n`);
     md.appendMarkdown(
       `$(pulse) **${p.activeCount}** active · $(tools) **${p.toolsPerMin}** tools/min · ` +
         `$(symbol-numeric) **${fmtTok(p.tokensToday)}** tokens · $(rocket) **${p.subagentsToday}** subagents · ` +
@@ -211,7 +211,7 @@ function createLiveStatusBar(
           // Prefer the awaiting session in the status-bar label.
           const a = awaiting[0];
           const lbl = a.now.detail === "ExitPlanMode" ? "awaiting plan" : "awaiting answer";
-          item.text = `$(warning) AI Coders · ${awaiting.length} ${lbl}`;
+          item.text = `$(warning) AI Agents · ${awaiting.length} ${lbl}`;
           item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
         } else {
           const top = payload.cards[0];
@@ -221,11 +221,11 @@ function createLiveStatusBar(
               : top.now.kind === "responding"
                 ? "responding"
                 : "idle";
-          item.text = `$(pulse) AI Coders · ${payload.activeCount} active · ${tag}`;
+          item.text = `$(pulse) AI Agents · ${payload.activeCount} active · ${tag}`;
           item.backgroundColor = undefined;
         }
       } else {
-        item.text = `$(comment-discussion) AI Coders · idle`;
+        item.text = `$(comment-discussion) AI Agents · idle`;
         item.backgroundColor = undefined;
       }
 
@@ -258,7 +258,7 @@ function createLiveStatusBar(
       if (timer) clearTimeout(timer);
       timer = setTimeout(tick, payload.activeCount > 0 ? 5_000 : 30_000);
     } catch (e: any) {
-      item.text = `$(warning) AI Coders`;
+      item.text = `$(warning) AI Agents`;
       item.tooltip = `code-sessions: ${e.message}`;
       if (timer) clearTimeout(timer);
       timer = setTimeout(tick, 30_000);
@@ -330,6 +330,7 @@ interface SessionRow {
   /** Epoch seconds of the last assistant text response, or 0 when unknown. */
   last_response_epoch?: number;
   is_starred?: boolean;
+  is_hidden?: boolean;
 }
 
 /**
@@ -586,6 +587,11 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
           const starred = this.store.starredSessionIds();
           for (const r of this.rows) r.is_starred = starred.has(r.session);
         } catch { /* ignore */ }
+        // Decorate with hidden state.
+        try {
+          const hidden = this.store.hiddenSessionIds();
+          for (const r of this.rows) r.is_hidden = hidden.has(r.session);
+        } catch { /* ignore */ }
         this.lastError = null;
         return;
       } catch (e: any) {
@@ -665,32 +671,119 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     return sp.startsWith(workspace + path.sep);
   }
 
-  /** Run the existing visible-row filtering pipeline (automated + workspace
-   * scoping). Centralised so both root and source-bucket expansions share
-   * exactly the same predicate. */
+  /** Run the existing visible-row filtering pipeline (automated + hidden +
+   * workspace scoping). Centralised so root and any sub-expansion share
+   * exactly the same predicate. Also drops "opened but never used"
+   * sessions — claude-vscode touches the jsonl when a chat panel opens
+   * (recording entrypoint, etc.) even if the user never sends a message;
+   * those rows have last_response_epoch === 0 and used to dilute the
+   * "today" bucket with sessions where the agent didn't actually do any
+   * work. */
   private filterVisible(rows: SessionRow[]): SessionRow[] {
     const cfg = vscode.workspace.getConfiguration("codeSessions");
     const showAutomated = cfg.get<boolean>("showAutomated", false);
+    const showHidden = cfg.get<boolean>("showHidden", false);
     const wsFilter = this.workspaceFilter();
     return rows
       .filter((r) => showAutomated || !r.is_automated)
+      .filter((r) => showHidden || !r.is_hidden)
+      .filter((r) => (r.last_response_epoch ?? 0) > 0)
       .filter((r) => !wsFilter || SessionsProvider.sessionInWorkspace(r.project_path, wsFilter));
   }
 
-  /** Build the per-source children (day buckets + tips). Same shape as the
-   * pre-v1.0 root structure. */
-  private buildSourceChildren(source: "claude" | "grok"): vscode.TreeItem[] {
+  /** Returns the epoch-second timestamp we treat as the session's
+   * "activity moment" for day-bucket grouping. Prefer the last assistant
+   * TEXT timestamp (the moment the agent last said something to the
+   * user) over file mtime, which fires on session-open too. */
+  private static activityEpoch(r: SessionRow): number {
+    return (r.last_response_epoch && r.last_response_epoch > 0)
+      ? r.last_response_epoch
+      : r.mtime_epoch;
+  }
+
+  /** Aggregate per-turn tokens per day bucket, scoped to whichever
+   * sessions are visible right now. Returns a map keyed by the same
+   * bucket strings dayBucket() returns. Used to populate the bucket
+   * headers ("Today — N sessions · 12.3M tok") with the tokens that
+   * were ACTUALLY spent that day, not the lifetime totals of every
+   * session that happened to be touched. */
+  private tokensByBucket(visible: SessionRow[]): Record<ReturnType<typeof dayBucket>, number> {
+    const empty = { today: 0, yesterday: 0, last7: 0, older: 0 } as const;
+    if (!this.store || visible.length === 0) return { ...empty };
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const startOfYesterday = startOfToday - 86_400_000;
+    const startOfLast7 = startOfToday - 7 * 86_400_000;
+    const ids = visible.map((r) => r.session);
+    const placeholders = ids.map(() => "?").join(",");
+    const sql = `
+      SELECT
+        COALESCE(SUM(CASE WHEN ended_at >= ? THEN
+          input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+          ELSE 0 END), 0) AS today,
+        COALESCE(SUM(CASE WHEN ended_at >= ? AND ended_at < ? THEN
+          input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+          ELSE 0 END), 0) AS yesterday,
+        COALESCE(SUM(CASE WHEN ended_at >= ? AND ended_at < ? THEN
+          input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+          ELSE 0 END), 0) AS last7,
+        COALESCE(SUM(CASE WHEN ended_at IS NULL OR ended_at < ? THEN
+          input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+          ELSE 0 END), 0) AS older
+      FROM turn
+      WHERE session_id IN (${placeholders})
+    `;
+    try {
+      const row = this.store.db
+        .prepare(sql)
+        .get(
+          startOfToday,
+          startOfYesterday, startOfToday,
+          startOfLast7, startOfYesterday,
+          startOfLast7,
+          ...ids
+        ) as { today: number; yesterday: number; last7: number; older: number };
+      return {
+        today: Number(row.today ?? 0),
+        yesterday: Number(row.yesterday ?? 0),
+        last7: Number(row.last7 ?? 0),
+        older: Number(row.older ?? 0),
+      };
+    } catch {
+      return { ...empty };
+    }
+  }
+
+  /** Build the root children: day buckets across both sources interleaved
+   * by time, plus the workspace-filter / automated-hidden / hidden-count
+   * tips. Replaces the v1.0 SourceBucketItem-first layout — sources are
+   * still visible per-row via the `[C]`/`[G]` label prefix and the
+   * source-derived default icon. */
+  private buildRootChildren(): vscode.TreeItem[] {
     const cfg = vscode.workspace.getConfiguration("codeSessions");
     const showAutomated = cfg.get<boolean>("showAutomated", false);
+    const showHidden = cfg.get<boolean>("showHidden", false);
     const wsFilter = this.workspaceFilter();
 
-    const sourceRows = this.rows.filter((r) => r.source === source);
-    const visibleRows = this.filterVisible(sourceRows);
-    const automatedCount = sourceRows.length - sourceRows.filter((r) => showAutomated || !r.is_automated).length;
+    const allRows = this.rows;
+    const visibleRows = this.filterVisible(allRows);
+
+    // Counts for the "N hidden by X" tips below. These count rows that
+    // would otherwise pass through the rest of the filters but are
+    // suppressed only by the named axis, so the user sees actionable
+    // numbers instead of cumulative hides.
+    const automatedCount = showAutomated ? 0 :
+      allRows.filter((r) => r.is_automated && (showHidden || !r.is_hidden)
+        && (!wsFilter || SessionsProvider.sessionInWorkspace(r.project_path, wsFilter))).length;
+    const hiddenCount = showHidden ? 0 :
+      allRows.filter((r) => r.is_hidden && (showAutomated || !r.is_automated)
+        && (!wsFilter || SessionsProvider.sessionInWorkspace(r.project_path, wsFilter))).length;
+
     const out: vscode.TreeItem[] = [];
 
     if (wsFilter) {
-      const hiddenByWs = sourceRows.filter((r) => (showAutomated || !r.is_automated)
+      const hiddenByWs = allRows.filter((r) => (showAutomated || !r.is_automated)
+        && (showHidden || !r.is_hidden)
         && !SessionsProvider.sessionInWorkspace(r.project_path, wsFilter)).length;
       if (hiddenByWs > 0) {
         const tip = new vscode.TreeItem(
@@ -717,34 +810,59 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       out.push(new StarredBucketItem(starredRows.length));
     }
 
+    // Bucket by the agent's "last actually-said-something" timestamp,
+    // not file mtime — mtime ticks on session-open even when the agent
+    // never wrote a reply, which used to drag empty sessions into the
+    // Today bucket.
     const byBucket = new Map<string, SessionRow[]>();
     for (const r of visibleRows) {
-      const b = dayBucket(new Date(r.mtime_epoch * 1000));
+      const b = dayBucket(new Date(SessionsProvider.activityEpoch(r) * 1000));
       const arr = byBucket.get(b) ?? [];
       arr.push(r);
       byBucket.set(b, arr);
     }
+    // Bucket-header token sums come from per-turn tokens scoped to that
+    // day's date range (migration v11). The previous code summed the
+    // lifetime totals of every session touched that day, which over-
+    // counted by orders of magnitude for sessions whose work mostly
+    // happened on a different day.
+    const tokensByDay = this.tokensByBucket(visibleRows);
     for (const b of BUCKET_ORDER.filter((bb) => byBucket.has(bb))) {
       const arr = byBucket.get(b)!;
       const totals = {
-        tokens: arr.reduce((n, r) => n + r.tokens_total, 0),
+        tokens: tokensByDay[b],
         cost: arr.reduce((n, r) => n + r.cost_usd, 0),
         subagents: arr.reduce((n, r) => n + (r.subagents || 0), 0),
       };
-      // Tag the bucket with the source so child expansion can filter back
-      // to the right rows without re-deriving from the label.
-      out.push(new BucketItem(b, arr.length, "session", totals, source));
+      out.push(new BucketItem(b, arr.length, "session", totals));
     }
     if (!showAutomated && automatedCount > 0) {
       const tip = new vscode.TreeItem(
         `${automatedCount} automated/cron sessions hidden`,
         vscode.TreeItemCollapsibleState.None,
       );
-      tip.iconPath = new vscode.ThemeIcon("eye-closed");
+      tip.iconPath = new vscode.ThemeIcon("watch");
       tip.tooltip = new vscode.MarkdownString(
         "Sessions whose `entrypoint` is not interactive (e.g. `sdk-cli`) are hidden.\n\nToggle **Settings → Code Sessions: Show Automated** to include them.",
       );
       tip.contextValue = "automatedHidden";
+      out.push(tip);
+    }
+    if (!showHidden && hiddenCount > 0) {
+      const tip = new vscode.TreeItem(
+        `${hiddenCount} hidden session${hiddenCount === 1 ? "" : "s"}`,
+        vscode.TreeItemCollapsibleState.None,
+      );
+      tip.iconPath = new vscode.ThemeIcon("eye-closed");
+      tip.tooltip = new vscode.MarkdownString(
+        "Sessions you've right-clicked → **Hide session**.\n\nToggle **Settings → Code Sessions: Show Hidden** to reveal them (with an unhide action).",
+      );
+      tip.contextValue = "userHidden";
+      tip.command = {
+        command: "workbench.action.openSettings",
+        title: "Open setting",
+        arguments: ["@ext:zhirafovod.code-sessions showHidden"],
+      };
       out.push(tip);
     }
     return out;
@@ -758,48 +876,21 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return [it];
     }
 
-    const cfg = vscode.workspace.getConfiguration("codeSessions");
-    const showAutomated = cfg.get<boolean>("showAutomated", false);
-    const wsFilter = this.workspaceFilter();
-
     if (!el) {
-      // Root: group by source. When only one source has rows we collapse
-      // back to the pre-v1.0 flat layout so single-CLI users don't see a
-      // redundant top-level wrapper.
-      const claudeRows = this.filterVisible(this.rows.filter((r) => r.source === "claude"));
-      const grokRows = this.filterVisible(this.rows.filter((r) => r.source === "grok"));
-      const sourcesPresent: Array<"claude" | "grok"> = [];
-      if (claudeRows.length > 0) sourcesPresent.push("claude");
-      if (grokRows.length > 0) sourcesPresent.push("grok");
-
-      if (sourcesPresent.length >= 2) {
-        return [
-          new SourceBucketItem("claude", claudeRows.length),
-          new SourceBucketItem("grok", grokRows.length),
-        ];
-      }
-
-      // Single-source fallback: render the existing flat layout, scoped to
-      // whichever source has rows (so the "no sessions yet" empty state for
-      // a missing source still works).
-      const onlySource: "claude" | "grok" = sourcesPresent[0] ?? "claude";
-      return this.buildSourceChildren(onlySource);
-    }
-
-    if (el instanceof SourceBucketItem) {
-      return this.buildSourceChildren(el.source);
+      // Root: day buckets across both sources interleaved by time. Sources
+      // are still visible per-row via the `[C]` / `[G]` label prefix.
+      return this.buildRootChildren();
     }
 
     if (el instanceof StarredBucketItem) {
       const rows = this.filterVisible(this.rows.filter((r) => r.is_starred))
-        .sort((a, b) => b.mtime_epoch - a.mtime_epoch);
+        .sort((a, b) => SessionsProvider.activityEpoch(b) - SessionsProvider.activityEpoch(a));
       return rows.map((r) => new SessionItem(r));
     }
     if (el instanceof BucketItem && el.kind === "session") {
       const rows = this.filterVisible(this.rows)
-        .filter((r) => !el.source || r.source === el.source)
-        .filter((r) => dayBucket(new Date(r.mtime_epoch * 1000)) === el.bucket)
-        .sort((a, b) => b.mtime_epoch - a.mtime_epoch);
+        .filter((r) => dayBucket(new Date(SessionsProvider.activityEpoch(r) * 1000)) === el.bucket)
+        .sort((a, b) => SessionsProvider.activityEpoch(b) - SessionsProvider.activityEpoch(a));
       return rows.map((r) => new SessionItem(r));
     }
     if (el instanceof SessionItem) {
@@ -814,24 +905,6 @@ class StarredBucketItem extends vscode.TreeItem {
     super(`★ Starred — ${count} session${count === 1 ? "" : "s"}`, vscode.TreeItemCollapsibleState.Expanded);
     this.iconPath = new vscode.ThemeIcon("star-full");
     this.contextValue = "bucket-starred";
-  }
-}
-
-class SourceBucketItem extends vscode.TreeItem {
-  constructor(
-    public readonly source: "claude" | "grok",
-    public readonly count: number,
-  ) {
-    const label = source === "claude"
-      ? `Claude Code — ${count} session${count === 1 ? "" : "s"}`
-      : `Grok Build — ${count} session${count === 1 ? "" : "s"}`;
-    // Both sources start expanded so the user sees activity from both
-    // immediately. Single-source environments collapse to the same UX as
-    // before because we skip emitting source buckets when only one source
-    // is present.
-    super(label, vscode.TreeItemCollapsibleState.Expanded);
-    this.iconPath = new vscode.ThemeIcon(source === "claude" ? "comment-discussion" : "rocket");
-    this.contextValue = `bucket-source-${source}`;
   }
 }
 
@@ -893,8 +966,11 @@ class SessionItem extends vscode.TreeItem {
       : row.mtime_epoch;
     const ago = formatAgoFixed(responseEpoch);
     const titleText = row.title || row.session;
+    // Source marker — always visible regardless of state. Prefix the label
+    // so it lines up with the ago column. [C] = Claude, [G] = Grok.
+    const sourceMarker = row.source === "grok" ? "[G]" : "[C]";
     super(
-      `${ago}  ·  ${titleText}`,
+      `${sourceMarker} ${ago}  ·  ${titleText}`,
       // Always collapse by default — the user opens children on demand instead
       // of every active session auto-expanding.
       vscode.TreeItemCollapsibleState.Collapsed,
@@ -944,17 +1020,27 @@ class SessionItem extends vscode.TreeItem {
     md.isTrusted = true; // allows markdown tables to render
     md.supportHtml = true;
     this.tooltip = md;
+    // Icon precedence: hidden > starred > automated > active > source default.
+    // Hidden is highest so the user can see at a glance which rows would
+    // disappear once `showHidden` flips off; source default (`rocket` for
+    // grok, `comment-discussion` for claude) carries the source signal in
+    // the default state, doubling up with the `[C]` / `[G]` label prefix.
     this.iconPath = new vscode.ThemeIcon(
-      row.is_starred
-        ? "star-full"
-        : row.is_automated
-          ? "watch"
-          : row.active === "*"
-            ? "pulse"
-            : "comment-discussion",
+      row.is_hidden
+        ? "eye-closed"
+        : row.is_starred
+          ? "star-full"
+          : row.is_automated
+            ? "watch"
+            : row.active === "*"
+              ? "pulse"
+              : row.source === "grok"
+                ? "rocket"
+                : "comment-discussion",
     );
     const base = row.is_automated ? "sessionAutomated" : "session";
-    this.contextValue = row.is_starred ? `${base}-starred` : base;
+    const starred = row.is_starred ? `${base}-starred` : base;
+    this.contextValue = row.is_hidden ? `${starred}-hidden` : starred;
     // No `command` here: clicking expands the children. Use the explicit
     // "Resume" command via the inline action / right-click instead.
   }
@@ -1024,30 +1110,40 @@ class SessionItem extends vscode.TreeItem {
     };
     out.push(viewItem);
 
-    // "Resume" — dispatch decided at click-time based on
-    // `codeSessions.resumeBackend` (code-build vs native per-source) and
-    // the source-specific install state. Label hints at the preferred
-    // target so the user knows what to expect; the actual handler picks.
-    const resumePref = vscode.workspace
-      .getConfiguration("codeSessions")
-      .get<"code-build" | "native">("resumeBackend", "code-build");
+    // Both resume targets are always shown so the user can pick at
+    // click-time without flipping the global `resumeBackend` setting.
+    // The setting still drives the inline (toolbar) "Resume" action's
+    // default — these explicit children always hard-target their backend.
     const codeBuildInstalled =
       vscode.extensions.getExtension("zhirafovod.code-build-vscode") != null;
-    const resumeLabel =
-      resumePref === "code-build" && codeBuildInstalled
-        ? "▶ Open in Code Build"
-        : r.source === "grok"
-          ? "▶ Resume in Grok"
-          : "▶ Resume in Claude";
-    const resumeItem = new vscode.TreeItem(resumeLabel);
-    resumeItem.iconPath = new vscode.ThemeIcon("play");
-    resumeItem.contextValue = "sessionResume";
-    resumeItem.command = {
-      command: "codeSessions.resume",
-      title: "Resume",
+    const codeBuildItem = new vscode.TreeItem("▶ Open in Code Build");
+    codeBuildItem.iconPath = new vscode.ThemeIcon("rocket");
+    codeBuildItem.contextValue = "sessionResume";
+    codeBuildItem.tooltip = codeBuildInstalled
+      ? "Open this session in Code Build's chat UI. For claude this imports the original transcript; for grok it opens a fresh conversation in the same cwd."
+      : "Code Build is not installed — clicking will fall back to opening the native CLI extension.";
+    codeBuildItem.command = {
+      command: "codeSessions.resumeInCodeBuild",
+      title: "Open in Code Build",
       arguments: [r],
     };
-    out.push(resumeItem);
+    out.push(codeBuildItem);
+
+    const nativeLabel = r.source === "grok"
+      ? "▶ Open in native Grok"
+      : "▶ Resume in native Claude";
+    const nativeItem = new vscode.TreeItem(nativeLabel);
+    nativeItem.iconPath = new vscode.ThemeIcon("terminal");
+    nativeItem.contextValue = "sessionResume";
+    nativeItem.tooltip = r.source === "grok"
+      ? "Open the grok-vscode-phuryn panel and pick this session from the clock-icon history. Falls back to `grok` in a terminal in the session's cwd."
+      : "Open the anthropic.claude-code editor with a true `--resume` by session id. Falls back to `claude --resume <id>` in a terminal.";
+    nativeItem.command = {
+      command: "codeSessions.resumeInNative",
+      title: "Resume in native CLI",
+      arguments: [r],
+    };
+    out.push(nativeItem);
 
     // "Open raw JSONL" as a quick child too.
     const txItem = new vscode.TreeItem("📜 Open raw JSONL");
@@ -1766,8 +1862,15 @@ export function activate(ctx: vscode.ExtensionContext) {
   refreshKbTitle();
   ctx.subscriptions.push(kbView);
 
+  // createTreeView (not registerTreeDataProvider) so the toggle command can
+  // observe `.visible` — the other three providers don't need toggle
+  // behaviour and stay on the cheaper API.
+  const sessionsTreeView = vscode.window.createTreeView("codeSessions", {
+    treeDataProvider: sessions,
+    showCollapseAll: true,
+  });
   ctx.subscriptions.push(
-    vscode.window.registerTreeDataProvider("codeSessions", sessions),
+    sessionsTreeView,
     vscode.window.registerTreeDataProvider("codeProjectsActivity", projects),
     vscode.window.registerTreeDataProvider("codeTasks", tasks),
 
@@ -1934,122 +2037,25 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand("codeProjectsActivity.refresh", () => projects.refresh()),
 
     vscode.commands.registerCommand("codeSessions.resume", async (arg: SessionRow | SessionItem | undefined) => {
-      // The inline action passes the TreeItem; the per-child "Resume" child
-      // passes a SessionRow directly. Accept either.
-      const row: SessionRow | null =
-        arg && typeof arg === "object" && "row" in arg
-          ? (arg as SessionItem).row
-          : (arg as SessionRow) ?? null;
-      if (!row || !row.session) {
-        vscode.window.showWarningMessage("No session to resume.");
-        return;
-      }
-
-      // Cwd resolution is source-aware: claude stores a dash-encoded JSONL
-      // container path, grok stores the absolute cwd. The terminal-fallback
-      // branches cd into this when spawning the CLI.
-      const cwd = SessionsProvider.sessionCwd(row) ?? undefined;
+      const row = unwrapRow(arg);
+      if (!row) { vscode.window.showWarningMessage("No session to resume."); return; }
       const cfg = vscode.workspace.getConfiguration("codeSessions");
       const preferredBackend = cfg.get<"code-build" | "native">("resumeBackend", "code-build");
-
-      // Preferred backend = code-build: open zhirafovod.code-build-vscode's
-      // chat UI. The newer `codeBuild.openExternalSession` command (v0.0.2+)
-      // imports the upstream session — for claude that's a true `--resume`,
-      // for grok a fresh chat in the same cwd. Older code-build builds only
-      // offer `codeBuild.newConversation` (a blank chat); we fall through to
-      // that, and the user can still access the original transcript via
-      // "View conversation" on the row.
       if (preferredBackend === "code-build") {
-        const codeBuildExt = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
-        if (codeBuildExt) {
-          try {
-            if (!codeBuildExt.isActive) await codeBuildExt.activate();
-            const allCommands = await vscode.commands.getCommands(true);
-            if (allCommands.includes("codeBuild.openExternalSession") && cwd) {
-              await vscode.commands.executeCommand("codeBuild.openExternalSession", {
-                source: row.source,
-                sessionId: row.session,
-                cwd,
-                title: row.title,
-              });
-              vscode.window.setStatusBarMessage(
-                row.source === "claude"
-                  ? `Code Build is resuming claude session ${row.session.slice(0, 8)}…`
-                  : `Code Build opened a Grok session in ${path.basename(cwd)} (grok has no external resume yet — pick from clock-icon if needed).`,
-                8000,
-              );
-            } else {
-              await vscode.commands.executeCommand("codeBuild.newConversation");
-              vscode.window.setStatusBarMessage(
-                `Code Build opened (new conversation; upgrade code-build for true session import). Original ${row.source} session ${row.session.slice(0, 8)} stays in "View conversation".`,
-                8000,
-              );
-            }
-            return;
-          } catch {
-            // fall through to native dispatch below
-          }
-        }
-        // code-build not installed → continue with native dispatch
+        await resumeInCodeBuild(row);
+      } else {
+        await resumeInNative(row);
       }
-
-      // Native per-source dispatch. Each branch tries the corresponding
-      // sidebar extension first (claude-vscode does a TRUE resume by id;
-      // grok-build-vscode opens its panel and the user picks from history),
-      // falling back to spawning the CLI in a terminal cd'd to the cwd.
-      if (row.source === "grok") {
-        const grokExt = vscode.extensions.getExtension("pawelhuryn.grok-vscode-phuryn");
-        if (grokExt) {
-          try {
-            if (!grokExt.isActive) await grokExt.activate();
-            await vscode.commands.executeCommand("grok.open");
-            vscode.window.setStatusBarMessage(
-              `Opened Grok Build — pick session ${row.session.slice(0, 8)} from the clock-icon history.`,
-              6000,
-            );
-            return;
-          } catch {
-            // fall through to terminal
-          }
-        }
-        const term = vscode.window.createTerminal({
-          name: `grok:${row.session.slice(0, 8)}`,
-          cwd,
-        });
-        term.show();
-        term.sendText("grok");
-        vscode.window.setStatusBarMessage(
-          `Launched grok CLI — pick session ${row.session.slice(0, 8)} from the history.`,
-          6000,
-        );
-        return;
-      }
-
-      // Claude branch — anthropic.claude-code truly resumes by session id.
-      const candidates = [
-        "claude-vscode.primaryEditor.open",
-        "claude-vscode.editor.open",
-      ];
-      for (const cmd of candidates) {
-        try {
-          await vscode.commands.executeCommand(
-            cmd,
-            row.session,
-            undefined,
-            vscode.ViewColumn.Active,
-          );
-          return;
-        } catch {
-          // try the next one
-        }
-      }
-      // Terminal fallback: `claude --resume <id>` in the session's cwd.
-      const term = vscode.window.createTerminal({
-        name: `claude:${row.session.slice(0, 8)}`,
-        cwd,
-      });
-      term.show();
-      term.sendText(`claude --resume ${row.session}`);
+    }),
+    vscode.commands.registerCommand("codeSessions.resumeInCodeBuild", async (arg: SessionRow | SessionItem | undefined) => {
+      const row = unwrapRow(arg);
+      if (!row) { vscode.window.showWarningMessage("No session to resume."); return; }
+      await resumeInCodeBuild(row);
+    }),
+    vscode.commands.registerCommand("codeSessions.resumeInNative", async (arg: SessionRow | SessionItem | undefined) => {
+      const row = unwrapRow(arg);
+      if (!row) { vscode.window.showWarningMessage("No session to resume."); return; }
+      await resumeInNative(row);
     }),
 
     vscode.commands.registerCommand("codeSessions.openTranscript", async (item: SessionItem) => {
@@ -2245,6 +2251,72 @@ export function activate(ctx: vscode.ExtensionContext) {
         vscode.window.showErrorMessage(`Cannot focus Code Sessions: ${e.message}`);
       }
     }),
+    vscode.commands.registerCommand("codeSessions.toggleActivityView", async () => {
+      // If our Sessions tree is currently visible, the side bar is open and
+      // our container is the active one → close the side bar. Otherwise
+      // reveal our container (which also focuses the tree).
+      try {
+        if (sessionsTreeView.visible) {
+          await vscode.commands.executeCommand("workbench.action.closeSidebar");
+        } else {
+          await vscode.commands.executeCommand("workbench.view.extension.code-activity");
+        }
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Toggle failed: ${e.message}`);
+      }
+    }),
+    vscode.commands.registerCommand("codeSessions.hideSession", async (arg: SessionRow | SessionItem | undefined) => {
+      if (!store) {
+        vscode.window.showWarningMessage("Hide requires the SQLite cache. Enable codeSessions.cacheEnabled.");
+        return;
+      }
+      const row = unwrapRow(arg);
+      if (!row?.session) return;
+      store.setHidden(row.session, true);
+      sessions.refresh();
+      vscode.window.setStatusBarMessage(
+        `Hidden “${(row.title || row.session).slice(0, 40)}”. Toggle “Show Hidden” to bring it back.`,
+        5000,
+      );
+    }),
+    vscode.commands.registerCommand("codeSessions.unhideSession", async (arg: SessionRow | SessionItem | undefined) => {
+      if (!store) return;
+      const row = unwrapRow(arg);
+      if (!row?.session) return;
+      store.setHidden(row.session, false);
+      sessions.refresh();
+    }),
+    vscode.commands.registerCommand("codeSessions.renameSession", async (arg: SessionRow | SessionItem | undefined) => {
+      if (!store) {
+        vscode.window.showWarningMessage("Rename requires the SQLite cache. Enable codeSessions.cacheEnabled.");
+        return;
+      }
+      const row = unwrapRow(arg);
+      if (!row?.session) return;
+      const current = row.title || "";
+      const input = await vscode.window.showInputBox({
+        prompt: `Rename ${row.source === "grok" ? "Grok" : "Claude"} session — writes to the source-of-truth file so the native CLI sees the new name on its next --resume listing.`,
+        value: current,
+        placeHolder: "New session title",
+        validateInput: (v) => v.trim().length === 0 ? "Title cannot be empty (cancel with Esc to keep current)" : null,
+      });
+      if (input === undefined) return; // cancelled
+      const next = input.trim();
+      if (next === current.trim()) return; // no-op
+      const result = await renameSessionFile(row, next);
+      if (!result.ok) {
+        vscode.window.showErrorMessage(`Rename failed: ${result.error}`);
+        return;
+      }
+      // Optimistic cache update — the next indexer pass will re-derive the
+      // same value from the file we just wrote.
+      try { store.updateSessionTitle(row.session, next); } catch { /* indexer will fix */ }
+      sessions.refresh();
+      vscode.window.setStatusBarMessage(
+        `Renamed session — the native ${row.source === "grok" ? "grok" : "claude"} CLI will show the new title next time you resume.`,
+        5000,
+      );
+    }),
 
     vscode.commands.registerCommand("codeKbChanges.openFile", (c: FileChange) => openChangedFile(c)),
     vscode.commands.registerCommand("codeProjectsActivity.openFile", (c: FileChange) => openChangedFile(c)),
@@ -2402,6 +2474,241 @@ async function showDiff(c: FileChange) {
       vscode.Uri.file(c.abs),
       `${path.basename(c.abs)} (${ref} vs working)`,
     );
+  }
+}
+
+// --------------------------------------------------------------------------- //
+// Resume helpers
+// --------------------------------------------------------------------------- //
+
+/** TreeItem (inline action) and the explicit per-child commands both feed
+ * the resume handlers — accept either and unwrap to the underlying row. */
+function unwrapRow(arg: SessionRow | SessionItem | undefined): SessionRow | null {
+  if (!arg) return null;
+  if (typeof arg === "object" && "row" in arg) return (arg as SessionItem).row;
+  return arg as SessionRow;
+}
+
+/** Open the session in zhirafovod.code-build-vscode's chat UI. Falls back
+ * to the native per-source extension when code-build isn't installed. */
+async function resumeInCodeBuild(row: SessionRow): Promise<void> {
+  const cwd = SessionsProvider.sessionCwd(row) ?? undefined;
+  const codeBuildExt = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
+  if (codeBuildExt) {
+    try {
+      if (!codeBuildExt.isActive) await codeBuildExt.activate();
+      const allCommands = await vscode.commands.getCommands(true);
+      if (allCommands.includes("codeBuild.openExternalSession") && cwd) {
+        await vscode.commands.executeCommand("codeBuild.openExternalSession", {
+          source: row.source,
+          sessionId: row.session,
+          cwd,
+          title: row.title,
+        });
+        vscode.window.setStatusBarMessage(
+          row.source === "claude"
+            ? `Code Build is resuming claude session ${row.session.slice(0, 8)}…`
+            : `Code Build opened a Grok session in ${path.basename(cwd)} (grok has no external resume yet — pick from clock-icon if needed).`,
+          8000,
+        );
+      } else {
+        await vscode.commands.executeCommand("codeBuild.newConversation");
+        vscode.window.setStatusBarMessage(
+          `Code Build opened (new conversation; upgrade code-build for true session import). Original ${row.source} session ${row.session.slice(0, 8)} stays in "View conversation".`,
+          8000,
+        );
+      }
+      return;
+    } catch {
+      // fall through to native dispatch below
+    }
+  }
+  vscode.window.setStatusBarMessage(
+    `Code Build not installed — opening native ${row.source} instead.`,
+    5000,
+  );
+  await resumeInNative(row);
+}
+
+/** Open the session in its source's native extension; fall back to a
+ * terminal CLI in the session's cwd. */
+async function resumeInNative(row: SessionRow): Promise<void> {
+  const cwd = SessionsProvider.sessionCwd(row) ?? undefined;
+  if (row.source === "grok") {
+    const grokExt = vscode.extensions.getExtension("pawelhuryn.grok-vscode-phuryn");
+    if (grokExt) {
+      try {
+        if (!grokExt.isActive) await grokExt.activate();
+        await vscode.commands.executeCommand("grok.open");
+        vscode.window.setStatusBarMessage(
+          `Opened Grok Build — pick session ${row.session.slice(0, 8)} from the clock-icon history.`,
+          6000,
+        );
+        return;
+      } catch {
+        // fall through to terminal
+      }
+    }
+    const term = vscode.window.createTerminal({
+      name: `grok:${row.session.slice(0, 8)}`,
+      cwd,
+    });
+    term.show();
+    term.sendText("grok");
+    vscode.window.setStatusBarMessage(
+      `Launched grok CLI — pick session ${row.session.slice(0, 8)} from the history.`,
+      6000,
+    );
+    return;
+  }
+  // Claude — anthropic.claude-code truly resumes by session id.
+  const candidates = [
+    "claude-vscode.primaryEditor.open",
+    "claude-vscode.editor.open",
+  ];
+  for (const cmd of candidates) {
+    try {
+      await vscode.commands.executeCommand(
+        cmd,
+        row.session,
+        undefined,
+        vscode.ViewColumn.Active,
+      );
+      return;
+    } catch {
+      // try the next one
+    }
+  }
+  const term = vscode.window.createTerminal({
+    name: `claude:${row.session.slice(0, 8)}`,
+    cwd,
+  });
+  term.show();
+  term.sendText(`claude --resume ${row.session}`);
+}
+
+// --------------------------------------------------------------------------- //
+// Rename helper — writes the new title to the source-of-truth file so the
+// native CLI's resume picker sees it too.
+// --------------------------------------------------------------------------- //
+
+const RENAME_MIN_IDLE_SECONDS = 60;
+
+/** Rewrite the session's title on disk. Claude rows mutate the
+ * `{type:"ai-title", aiTitle:"..."}` line in the JSONL; Grok rows mutate
+ * `summary.json.generated_title`. Returns `{ok}` or `{error}` — caller is
+ * responsible for showing toast.
+ *
+ * Refuses to write when the session was touched in the last
+ * RENAME_MIN_IDLE_SECONDS — claude appends with O_APPEND, so a concurrent
+ * write during our atomic-rename would lose in-flight data. */
+async function renameSessionFile(
+  row: SessionRow,
+  newTitle: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const text = newTitle.trim();
+  if (!text) return { ok: false, error: "Empty title — nothing to write." };
+  const ageSec = Math.max(0, Math.floor(Date.now() / 1000 - row.mtime_epoch));
+  if (ageSec < RENAME_MIN_IDLE_SECONDS) {
+    return {
+      ok: false,
+      error: `Session was active ${ageSec}s ago. Wait at least ${RENAME_MIN_IDLE_SECONDS}s after the last turn before renaming, so an in-flight write isn't lost.`,
+    };
+  }
+  if (row.source === "grok") {
+    return renameGrokSession(row, text);
+  }
+  return renameClaudeSession(row, text);
+}
+
+async function renameClaudeSession(
+  row: SessionRow,
+  newTitle: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const jsonl = await locateSessionJsonl(row.session);
+  if (!jsonl) return { ok: false, error: `Transcript not found for ${row.session}` };
+  let raw: string;
+  try { raw = fs.readFileSync(jsonl, "utf-8"); }
+  catch (e: any) { return { ok: false, error: `Read failed: ${e.message}` }; }
+  const lines = raw.split("\n");
+  let found = false;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (!ln) continue;
+    try {
+      const obj = JSON.parse(ln);
+      if (obj && obj.type === "ai-title") {
+        obj.aiTitle = newTitle;
+        lines[i] = JSON.stringify(obj);
+        found = true;
+        break;
+      }
+    } catch { /* skip malformed line */ }
+  }
+  if (!found) {
+    // Prepend a new ai-title line. Keep a trailing newline so JSONL append
+    // semantics on the next claude write keep working.
+    lines.unshift(JSON.stringify({ type: "ai-title", aiTitle: newTitle }));
+  }
+  const out = lines.join("\n");
+  return writeAtomic(jsonl, out);
+}
+
+async function renameGrokSession(
+  row: SessionRow,
+  newTitle: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  // Grok stores chat_history.jsonl alongside summary.json in a session dir.
+  // The cache row's `project_path` points at the cwd (NOT the session dir);
+  // we use the JSONL path from disk discovery instead via locateGrokSummary.
+  const summaryPath = locateGrokSummary(row);
+  if (!summaryPath) {
+    return { ok: false, error: `summary.json not found for grok session ${row.session}` };
+  }
+  let raw: string;
+  try { raw = fs.readFileSync(summaryPath, "utf-8"); }
+  catch (e: any) { return { ok: false, error: `Read failed: ${e.message}` }; }
+  let obj: any;
+  try { obj = JSON.parse(raw); }
+  catch (e: any) { return { ok: false, error: `summary.json parse failed: ${e.message}` }; }
+  obj.generated_title = newTitle;
+  if (typeof obj.session_summary === "string") obj.session_summary = newTitle;
+  return writeAtomic(summaryPath, JSON.stringify(obj, null, 2));
+}
+
+/** Walk ~/.grok/sessions/* looking for the directory containing this
+ * session id. Grok stores each session as a directory whose name is the
+ * uuid; chat_history.jsonl and summary.json live inside. */
+function locateGrokSummary(row: SessionRow): string | null {
+  const grokRoot = path.join(os.homedir(), ".grok", "sessions");
+  if (!fs.existsSync(grokRoot)) return null;
+  // Heuristic 1: the session uuid is the directory name in flat layouts.
+  const direct = path.join(grokRoot, row.session, "summary.json");
+  if (fs.existsSync(direct)) return direct;
+  // Heuristic 2: walk one level deeper for cwd-encoded layouts.
+  try {
+    const entries = fs.readdirSync(grokRoot, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const inner = path.join(grokRoot, e.name, row.session, "summary.json");
+      if (fs.existsSync(inner)) return inner;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+/** Same-filesystem atomic write via temp + rename. Safe against partial
+ * writes; UNSAFE against a concurrent O_APPEND writer that has the inode
+ * open — RENAME_MIN_IDLE_SECONDS guards that case at the caller. */
+function writeAtomic(target: string, contents: string): { ok: true } | { ok: false; error: string } {
+  const tmp = `${target}.rename.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, contents, "utf-8");
+    fs.renameSync(tmp, target);
+    return { ok: true };
+  } catch (e: any) {
+    try { fs.unlinkSync(tmp); } catch { /* best-effort */ }
+    return { ok: false, error: `Write failed: ${e.message}` };
   }
 }
 
