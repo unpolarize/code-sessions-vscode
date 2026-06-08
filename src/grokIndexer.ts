@@ -366,6 +366,25 @@ function buildRows(
 
   const parsed = parseGrokConversation(info.chatPath);
 
+  // Skip stillborn sessions: grok writes its skill catalog as a
+  // <system-reminder> user message on every `session/new` ACP call.
+  // If the client never sends a real `session/prompt` (panel closed,
+  // backend swapped before typing, probe-only spawn), the session
+  // file persists with exactly one user line — the catalog — and no
+  // assistant turns. These showed up in the sidebar as tiny
+  // "<system-reminder>↵↵- refre…" rows that cluttered the day-bucket
+  // view (~20 of them accumulated in 2 days on the docs project).
+  // Drop them at index time; the chat_history.jsonl stays on disk in
+  // case the user wants to inspect it, but it doesn't pollute the
+  // sessions view. See knowledge/tech/projects/code-build/grok-stillborn-sessions.md.
+  const hasAssistant = parsed.turns.some((t) => t.assistantText.trim().length > 0);
+  const onlyTurn = parsed.turns.length === 1 ? parsed.turns[0] : null;
+  const stillbornCatalog =
+    !hasAssistant &&
+    !!onlyTurn &&
+    onlyTurn.userText.trimStart().startsWith("<system-reminder>");
+  if (stillbornCatalog) return null;
+
   // Title preference: generated_title > session_summary > first user msg.
   let firstUserMsg = "";
   if (parsed.turns.length > 0) firstUserMsg = parsed.turns[0].userText.slice(0, 4096);
@@ -417,7 +436,13 @@ function buildRows(
     entrypoint: summary.agent_name ?? null,
     is_automated: false,
     indexed_at: Date.now(),
-    last_assistant_text_at: endedAt,
+    // Only stamp last_assistant_text_at when the session ACTUALLY had
+    // an assistant reply. The day-bucket filter (last_response_epoch
+    // > 0) relies on this to hide sessions where the agent didn't
+    // emit anything — previously we naively wrote `endedAt` (the
+    // summary's last_active_at), so even stillborn sessions with no
+    // assistant turn looked like they had a "response" timestamp.
+    last_assistant_text_at: hasAssistant ? endedAt : null,
     // Whole signals blob — the tooltip / future Insights views can pick
     // out individual fields without re-reading the JSON sidecar on every
     // hover. Stored as a compact JSON string.
@@ -529,9 +554,13 @@ export function syncGrokToStore(
     try {
       const rows = buildRows(info);
       if (!rows) {
-        // null return = legitimate skip (e.g. claude_import). Distinguish
-        // from a parse error so the diagnostic counter stays meaningful.
+        // null return = legitimate skip (claude_import duplicate OR
+        // stillborn <system-reminder>-only session). Also delete any
+        // pre-existing DB row by chatPath so a session that was
+        // previously indexed (before this filter) but then identified
+        // as stillborn on re-parse gets cleaned out of the sidebar.
         skipped += 1;
+        store.deleteByPaths([info.chatPath]);
         continue;
       }
       store.upsertSession(rows.session);

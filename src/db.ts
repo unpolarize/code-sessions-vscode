@@ -197,6 +197,29 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE turn ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0;
   `,
+
+  // v13 — purge stillborn grok <system-reminder> sessions. Grok writes
+  // its discovered skill catalog as a single user-role
+  // <system-reminder> line at session/new ACP time. When the client
+  // never sends a real session/prompt (panel closed before typing,
+  // backend swapped, probe-only spawn) the session file persists with
+  // exactly those 2 lines. They were indexed pre-v13 and showed up as
+  // tiny "<system-reminder>↵↵- refre…" rows. grokIndexer now skips
+  // them at parse time; this migration drops the ones already in the
+  // DB. Safe filter: grok-source, first_user_msg starts with
+  // <system-reminder>, tool_count = 0, and no assistant excerpt on
+  // any turn (i.e. session had no agent output).
+  // See knowledge/tech/projects/code-build/grok-stillborn-sessions.md.
+  `
+  DELETE FROM session
+  WHERE source = 'grok'
+    AND tool_count = 0
+    AND substr(first_user_msg, 1, 17) = '<system-reminder>'
+    AND session_id NOT IN (
+      SELECT DISTINCT session_id FROM turn
+      WHERE assistant_excerpt IS NOT NULL AND length(trim(assistant_excerpt)) > 0
+    );
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok";
