@@ -220,6 +220,26 @@ const MIGRATIONS: string[] = [
       WHERE assistant_excerpt IS NOT NULL AND length(trim(assistant_excerpt)) > 0
     );
   `,
+
+  // v14 — re-classify `sdk-cli` claude sessions as interactive.
+  // Pre-v14 the entrypoint heuristic only treated cli/claude-code/
+  // claude-vscode/claude-jetbrains as interactive; everything else
+  // (including `sdk-cli`, which is what claude records when spawned
+  // with `-p`) was flagged automated and hidden behind the
+  // showAutomated toggle. Code Build drives claude in `-p` mode from
+  // a webview, so its sessions silently disappeared from the sidebar
+  // ("CS does not show today's sessions started in CB"). The new
+  // indexer treats sdk-cli as interactive going forward; this
+  // migration retroactively flips existing rows so the user sees
+  // their CB session history without reindexing the jsonl files
+  // (the cache wouldn't re-parse them anyway — mtime hasn't moved).
+  `
+  UPDATE session
+  SET is_automated = 0
+  WHERE source = 'claude'
+    AND entrypoint = 'sdk-cli'
+    AND is_automated = 1;
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok";
@@ -330,8 +350,22 @@ export class SessionStore {
     // the intent is documented and behaviour matches a native build elsewhere.
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
+    // mmap_size was set to 256 MB for the original better-sqlite3 native
+    // build, where SQLite's `xMmap` is real virtual memory mapping (cheap).
+    // node-sqlite3-wasm's VFS has no xMmap and Emscripten linear memory is
+    // bounded; the pragma was at best a no-op and at worst contributed to
+    // SQLITE_NOMEM "out of memory" failures on read. Explicit zero so the
+    // intent is unmistakable and any future WASM build keeps the bound. */
+    this.db.pragma("mmap_size = 0");
+    // Pin the page cache to a conservative ~4 MB (cache_size negative = KB).
+    // The previous build inherited better-sqlite3's 2000-page default which
+    // can balloon under temp_store=MEMORY. Bounding it here keeps the WASM
+    // heap predictable across long-running indexer passes.
+    this.db.pragma("cache_size = -4096");
+    // temp_store: keep small temp tables in memory for speed, but the WASM
+    // engine has a tighter heap than a native build — if we ever see OOM
+    // during DELETE/JOIN-heavy migrations, flip this to FILE.
     this.db.pragma("temp_store = MEMORY");
-    this.db.pragma("mmap_size = 268435456");
     this.db.pragma("foreign_keys = ON");
   }
 

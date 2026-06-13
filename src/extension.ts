@@ -595,7 +595,15 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         this.lastError = null;
         return;
       } catch (e: any) {
-        this.lastError = `SQLite read failed, falling back to script: ${e.message}`;
+        // Surface the original sqlite error class + message so a future
+        // "out of memory" / "database disk image is malformed" report
+        // gives us something to act on instead of an opaque generic
+        // string. `code` and `errno` come from node-sqlite3-wasm when
+        // SQLite returns SQLITE_NOMEM / SQLITE_CORRUPT / etc.
+        const code = e?.code ? ` [${e.code}]` : "";
+        const errno = e?.errno != null ? ` errno=${e.errno}` : "";
+        this.lastError = `SQLite read failed, falling back to script:${code}${errno} ${e?.message ?? e}`;
+        try { console.error("[code-sessions] db read failed:", e?.stack || e); } catch {}
         // fall through to script path
       }
     }

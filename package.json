@@ -2,12 +2,22 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.0.0",
+  "version": "1.1.2",
   "publisher": "zhirafovod",
+  "author": {
+    "name": "Sergey Sergeev",
+    "email": "zhirafovod@gmail.com",
+    "url": "https://github.com/unpolarize"
+  },
   "license": "MIT",
+  "icon": "media/icon.png",
+  "homepage": "https://github.com/unpolarize/code-sessions-vscode#readme",
   "repository": {
     "type": "git",
     "url": "https://github.com/unpolarize/code-sessions-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/unpolarize/code-sessions-vscode/issues"
   },
   "engines": {
     "vscode": "^1.90.0"
@@ -219,6 +229,41 @@
         "command": "codeTasks.openSession",
         "title": "Open parent session",
         "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.hideSession",
+        "title": "Hide session",
+        "icon": "$(eye-closed)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.unhideSession",
+        "title": "Unhide session",
+        "icon": "$(eye)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.renameSession",
+        "title": "Rename session…",
+        "icon": "$(edit)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.toggleActivityView",
+        "title": "Toggle Code Sessions sidebar",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.resumeInCodeBuild",
+        "title": "Open in Code Build",
+        "icon": "$(rocket)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.resumeInNative",
+        "title": "Open in native CLI",
+        "icon": "$(terminal)",
+        "category": "Code Sessions"
       }
     ],
     "menus": {
@@ -291,6 +336,21 @@
           "group": "navigation@1"
         },
         {
+          "command": "codeSessions.renameSession",
+          "when": "view == codeSessions && (viewItem == session || viewItem == sessionAutomated || viewItem == session-starred || viewItem == sessionAutomated-starred || viewItem == session-hidden || viewItem == sessionAutomated-hidden || viewItem == session-starred-hidden || viewItem == sessionAutomated-starred-hidden)",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codeSessions.hideSession",
+          "when": "view == codeSessions && (viewItem == session || viewItem == sessionAutomated || viewItem == session-starred || viewItem == sessionAutomated-starred)",
+          "group": "navigation@3"
+        },
+        {
+          "command": "codeSessions.unhideSession",
+          "when": "view == codeSessions && (viewItem == session-hidden || viewItem == sessionAutomated-hidden || viewItem == session-starred-hidden || viewItem == sessionAutomated-starred-hidden)",
+          "group": "navigation@3"
+        },
+        {
           "command": "codeKbChanges.diff",
           "when": "view == codeKbChanges && viewItem == fileChange",
           "group": "inline"
@@ -307,6 +367,11 @@
         "command": "codeSessions.focusActivityView",
         "key": "ctrl+alt+c",
         "mac": "cmd+alt+c"
+      },
+      {
+        "command": "codeSessions.toggleActivityView",
+        "key": "ctrl+alt+shift+c",
+        "mac": "ctrl+shift+cmd+c"
       },
       {
         "command": "codeSessions.openLiveMonitor",
@@ -357,6 +422,11 @@
           "default": false,
           "description": "Show automated / cron-triggered sessions (entrypoint = sdk-cli, sdk, routine, etc.). Hidden by default since they're usually scheduled jobs (Google Doc digests, KB ingest, daily reports) rather than interactive work."
         },
+        "codeSessions.showHidden": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reveal sessions that have been soft-hidden via 'Hide session'. Hidden rows reappear in their normal bucket position with a closed-eye icon. Right-click a hidden row to 'Unhide'."
+        },
         "codeSessions.filterByCurrentWorkspace": {
           "type": "boolean",
           "default": true,
@@ -402,11 +472,8 @@
         },
         "codeProjectsActivity.repoPaths": {
           "type": "array",
-          "default": [
-            "~/projects/unpolarize",
-            "~/projects/ai/otelo"
-          ],
-          "description": "Explicit list of project repos to watch. Auto-discovery is also applied (any ~/projects/* with commits in the lookback)."
+          "default": [],
+          "description": "Explicit list of project repos to watch (e.g. ['~/projects/foo', '~/work/bar']). Empty by default — auto-discovery (see below) walks ~/projects/* automatically, so most users don't need to set this."
         },
         "codeProjectsActivity.autoDiscover": {
           "type": "boolean",
@@ -435,7 +502,7 @@
         "codeSessions.liveStatusBar.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show a compact 'Coder · N active' indicator in the status bar. Polls every 5 s while sessions are active, 30 s when idle. Hover for a per-session breakdown; click to open the Live monitor."
+          "description": "Show a compact 'AI Agents · N active' indicator in the status bar. Polls every 5 s while sessions are active, 30 s when idle. Hover for a per-session breakdown; click to open the Live monitor."
         },
         "codeSessions.awaitingUser.notify": {
           "type": "boolean",
@@ -532,19 +599,16 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "rebuild-native": "rm -rf node_modules/better-sqlite3/build && cd node_modules/better-sqlite3 && ../.bin/node-gyp rebuild --target=39.8.8 --runtime=electron --dist-url=https://electronjs.org/headers --release --arch=arm64",
-    "package": "npm run compile && npm run rebuild-native && vsce package --allow-missing-repository",
+    "package": "npm run compile && vsce package --allow-missing-repository",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.4",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
     "typescript": "^5.4.0"
   },
   "dependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "better-sqlite3": "^12.10.0",
+    "node-sqlite3-wasm": "^0.8.57",
     "umap-js": "^1.4.0"
   }
 }

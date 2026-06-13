@@ -87,7 +87,7 @@ export function listAllJsonls(): JsonlInfo[] {
 function projectIdFromPath(projectPath: string): string {
   // Example: /Users/you/.claude/projects/-Users-you-projects-myrepo
   // → unpolarize
-  // For ai/X: -Users-zhirafovod-projects-ai-otelo → ai/otelo
+  // For ai/X: -Users-you-projects-ai-foo → ai/foo
   const base = path.basename(projectPath);
   // Strip the leading dash and replace dashes with slashes to get a path-like.
   const decoded = base.replace(/^-/, "").replace(/-/g, "/");
@@ -143,7 +143,27 @@ function entrypointFromTurns(parsed: ParsedConversation): { entrypoint: string |
         const obj = JSON.parse(ln);
         if (obj?.type === "user") {
           const ep: string | undefined = obj.entrypoint;
-          const automated = ep != null && !["cli", "claude-code", "claude-vscode", "claude-jetbrains", ""].includes(ep);
+          // Interactive entrypoints — anything else is treated as
+          // automation (cron-fired skills, headless scripts, etc.)
+          // and hidden by default behind `showAutomated`.
+          //
+          // `sdk-cli` is what claude records when spawned with `-p`
+          // (the headless / SDK CLI mode). Two callers use this in
+          // practice:
+          //   1. Code Build, which runs `claude -p --input-format
+          //      stream-json` to drive the chat from a webview —
+          //      a genuinely interactive UX where the user is
+          //      typing turn-by-turn.
+          //   2. One-shot skill invocations (`claude -p "summarise
+          //      this..."`) — automation.
+          // Pre-1.1.2 the bucket was lumped under "automated" so
+          // Code Build sessions vanished from the sidebar. Treating
+          // sdk-cli as interactive surfaces both — the one-shot
+          // skill invocations are still useful breadcrumbs (you
+          // can see what skills ran today) and the user can flip
+          // `showAutomated = false` along a different axis if
+          // they want to drop them.
+          const automated = ep != null && !["cli", "claude-code", "claude-vscode", "claude-jetbrains", "sdk-cli", ""].includes(ep);
           return { entrypoint: ep ?? null, isAutomated: automated };
         }
       } catch {

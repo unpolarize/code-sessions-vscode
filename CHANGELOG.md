@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.2 — 2026-06-13
+
+- **Fix: Code Build sessions invisible in the sidebar.** Code Build spawns `claude -p ...` (the SDK CLI mode), which records `entrypoint=sdk-cli` on the first user line of the jsonl. The pre-v14 heuristic in `jsonlIndexer.entrypointFromTurns` only treated `cli` / `claude-code` / `claude-vscode` / `claude-jetbrains` as interactive — `sdk-cli` slipped into the "automated" bucket and got hidden by `showAutomated = false`. CB sessions silently disappeared from the today/yesterday/older buckets. Allow-list now includes `sdk-cli` for both fresh indexing and a retroactive **migration v14** that flips `is_automated = 0` on already-indexed claude rows with `entrypoint = sdk-cli`. One-shot skill invocations (`claude -p "summarise..."`) also become visible — they're useful breadcrumbs of what skills ran.
+- **Pre-publish hygiene.** Default for `codeProjectsActivity.repoPaths` changed from a hardcoded personal path list (`["~/projects/unpolarize", "~/projects/ai/otelo"]`) to `[]` — auto-discovery handles the typical case and the explicit list was leaking the publisher's directory layout into every install. Genericised one comment in `src/jsonlIndexer.ts` that had a literal local username in its path-encoding example.
+- `AGENTS.md` (new) — strict version-bump-and-changelog policy on every commit that ships code, plus a publish checklist for the marketplace.
+
+## 1.1.1 — 2026-06-13
+
+Stability + correctness fixes; first Marketplace-publish-ready build of the 1.1.x line.
+
+- **Fix: SQLite "out of memory" on read.** node-sqlite3-wasm runs on a bounded Emscripten linear-memory heap; the legacy `mmap_size = 256 MB` pragma inherited from the native better-sqlite3 build was at best a no-op (WASM VFS has no xMmap) and at worst tickled SQLITE_NOMEM under temp-store pressure. Now: `mmap_size = 0`, explicit `cache_size = -4096` (4 MB cap), `temp_store = MEMORY` kept (will flip to FILE if OOM recurs during migrations). Error path also gained SQLite `code` / `errno` surfacing + a stack-trace console log so future occurrences point at the offending query.
+- **Filter stillborn grok `<system-reminder>` sessions.** Grok writes its discovered skill catalog as a single user-role line on every ACP `session/new`; when the client never sends a real `session/prompt` (panel closed early, backend swapped, probe-only spawn), the session file persists with just those 2 lines. ~20 such rows had accumulated in 2 days. `grokIndexer.buildRows` now returns null for them (with `deleteByPaths` to clean stale DB rows), and `last_assistant_text_at` is only stamped when the session actually had an assistant reply so `last_response_epoch > 0` filtering works.
+- **Migration v13** — one-time `DELETE FROM session WHERE source='grok' AND tool_count=0 AND substr(first_user_msg,1,17)='<system-reminder>' AND session_id NOT IN (turns-with-assistant)`. Safe filter — won't touch sessions that happened to start with a system-reminder but had real assistant responses. Drops the pre-existing 20-or-so stillborn rows that can't auto-re-parse (their `mtime_ns` is stable).
+- **Better `SessionsProvider.load` error reporting.** Catch block now includes the SQLite error class + message + stack trace logged to console (View → Output → Window) so any future read failure pinpoints the failing query.
+
 ## 1.0.0 — 2026-05-28
 
 Rebrand to **Coder Sessions** + first-class Grok Build support.
