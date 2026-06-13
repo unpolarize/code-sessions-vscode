@@ -538,7 +538,30 @@ export class SessionStore {
           FROM old.session
         `);
 
-        this.db.exec(`INSERT OR IGNORE INTO turn SELECT * FROM old.turn`);
+        // Explicit column list — `SELECT *` blew up on the rebrand
+        // migration because the old (`zhirafovod.claude-sessions`)
+        // turn table is the v1 schema with 11 columns, and the new
+        // schema has 16 after migrations v11 (per-turn token columns)
+        // and v12 (per-turn cost_usd) appended. The new five columns
+        // default to 0 in the table definition; they get backfilled
+        // on the next jsonl re-parse. Symptom pre-fix:
+        //   SQLite cache failed to open: table turn has 16 columns
+        //   but 11 values were supplied. Falling back to shell-script
+        //   mode.
+        // Keep this list aligned with the v1 turn schema (above) so
+        // future column additions don't reopen the bug.
+        this.db.exec(`
+          INSERT OR IGNORE INTO turn (
+            turn_uuid, session_id, turn_index, started_at, ended_at,
+            duration_ms, user_text, assistant_excerpt, tool_names_csv,
+            tool_count, has_subagent
+          )
+          SELECT
+            turn_uuid, session_id, turn_index, started_at, ended_at,
+            duration_ms, user_text, assistant_excerpt, tool_names_csv,
+            tool_count, has_subagent
+          FROM old.turn
+        `);
         this.db.exec(`INSERT OR IGNORE INTO turn_topic SELECT * FROM old.turn_topic`);
         this.db.exec(`INSERT OR IGNORE INTO classification_batch SELECT * FROM old.classification_batch`);
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.3 — 2026-06-13
+
+- **Fix: rebrand migration crashed on first activation with "table turn has 16 columns but 11 values were supplied".** The old (`zhirafovod.claude-sessions`) `turn` table is the v1 schema (11 columns); the new `code-sessions` `turn` table has 16 after migrations v11/v12 appended the per-turn `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `cost_usd` columns. The merge step did `INSERT OR IGNORE INTO turn SELECT * FROM old.turn` — fine pre-v11, broken since. The whole transaction rolled back, the migration ledger never recorded success, and the extension fell back to shell-script mode for the rest of the session. Now uses an explicit column list (the 11 v1 columns); the five new columns default to 0 and get backfilled on the next jsonl re-parse.
+
 ## 1.1.2 — 2026-06-13
 
 - **Fix: Code Build sessions invisible in the sidebar.** Code Build spawns `claude -p ...` (the SDK CLI mode), which records `entrypoint=sdk-cli` on the first user line of the jsonl. The pre-v14 heuristic in `jsonlIndexer.entrypointFromTurns` only treated `cli` / `claude-code` / `claude-vscode` / `claude-jetbrains` as interactive — `sdk-cli` slipped into the "automated" bucket and got hidden by `showAutomated = false`. CB sessions silently disappeared from the today/yesterday/older buckets. Allow-list now includes `sdk-cli` for both fresh indexing and a retroactive **migration v14** that flips `is_automated = 0` on already-indexed claude rows with `entrypoint = sdk-cli`. One-shot skill invocations (`claude -p "summarise..."`) also become visible — they're useful breadcrumbs of what skills ran.
