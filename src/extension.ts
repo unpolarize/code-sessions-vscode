@@ -14,6 +14,7 @@ import { openTrajectoryView } from "./trajectoryView";
 import { openLiveMonitor, buildUpdate, UpdatePayload } from "./liveMonitor";
 import { openSearchView } from "./searchView";
 import { BackgroundClassifier } from "./backgroundClassifier";
+import { MemoryProvider, scanMemorySources, summariseSources } from "./memoryView";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -1827,6 +1828,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   const kb = new KbChangesProvider();
   const projects = new ProjectsActivityProvider();
   const tasks = new TasksProvider(store);
+  const memory = new MemoryProvider();
 
   // Keep track of open conversation viewers so the classifyTopics command can
   // refresh them after upserting new topics.
@@ -1836,6 +1838,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   kb.refresh();
   projects.refresh();
   tasks.refresh();
+  memory.refresh();
 
   // Initial background sync (incremental: mtime+size diff). First paint may
   // come from yesterday's cache while a fresh sync runs in parallel.
@@ -1905,6 +1908,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     sessionsTreeView,
     vscode.window.registerTreeDataProvider("codeProjectsActivity", projects),
     vscode.window.registerTreeDataProvider("codeTasks", tasks),
+    vscode.window.registerTreeDataProvider("codeMemory", memory),
 
     vscode.commands.registerCommand("codeSessions.classifyTogglePause", () => {
       if (!bgClassifier) return;
@@ -1978,6 +1982,15 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("codeTasks.refresh", () => tasks.refresh()),
+    vscode.commands.registerCommand("codeMemory.refresh", () => memory.refresh()),
+    vscode.commands.registerCommand("codeMemory.openFile", async (absPath: string) => {
+      if (!absPath) return;
+      try {
+        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(absPath));
+      } catch (e: any) {
+        vscode.window.showWarningMessage(`Cannot open ${absPath}: ${e.message}`);
+      }
+    }),
     vscode.commands.registerCommand("codeTasks.editCrontab", () =>
       openCrontabEditor(ctx, () => tasks.refresh()),
     ),
@@ -2410,6 +2423,12 @@ export function activate(ctx: vscode.ExtensionContext) {
   // section reflects the current live-monitor state without user action.
   const tasksTimer = setInterval(() => tasks.refresh(), 30_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(tasksTimer) });
+  // Memory inventory refresh: same 60s cadence as kb/projects. The
+  // scan is cheap (a handful of fs.statSync + readFileSync); the
+  // user can still hit the title-bar refresh button for instant
+  // re-scan after editing CLAUDE.md.
+  const memoryTimer = setInterval(() => memory.refresh(), 60_000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(memoryTimer) });
 
   // KB-changes + Projects views are git-log driven, so they don't move unless
   // we re-read git or the local-day rolls past midnight. Re-poll every 2 min

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0 — 2026-06-13
+
+### Memory inventory — new sidebar tab + insights tile + live-monitor row
+
+User-driven feature from notes.md: surface "how many memories the agent has" everywhere CS already shows session/cost/token telemetry, and give the user a clickable inventory of every memory source on the machine.
+
+- **New `codeMemory` tree view** in the activity-bar container (`Memory` next to Sessions / KB / Projects / Tasks). Renders a totals header (`N entries · M files · provider:count …`) plus one collapsible group per scope (Workspace / Project / User). Each leaf row is a memory source file with its entry count, click-to-open command, and tooltip carrying the absolute path + provider + scope. Refresh button in the title bar; auto-refresh every 60s.
+- **Memory KPI tile in the Insights dashboard** alongside Cost / Tokens / Messages / Subagents / Thinking time / Burst rate. Shows total entries + source-file count for the current workspace.
+- **Memory row in the AI Agent live monitor** — fifth tile next to Active sessions / Tools/min / Tokens today / Subagents today / Cost today. Refreshed on every poll tick so CLAUDE.md edits show up live.
+- **`UpdatePayload`** in liveMonitor.ts extended with `memoryEntries: number` + `memoryFiles: number`.
+- **Memory source discovery** (`src/memoryView.ts` — 230 LOC): scans CLAUDE.md / CLAUDE.local.md / AGENTS.md / MEMORY.md at workspace root + `.claude/CLAUDE.md` + `.claude/{rules,commands}/` + `~/.claude/{CLAUDE.md,MEMORY.md}` + `~/.claude/projects/<encoded-cwd>/memory/MEMORY.md` + `~/.codex/AGENTS.md` + `~/.codex/memories/*` + `~/.grok/AGENTS.md`. Entry count = H2 sections (markdown) or file count (codex memories dir). Fenced-code-aware so `## ` inside a triple-backtick fence doesn't count.
+- New commands: `codeMemory.refresh`, `codeMemory.openFile`.
+
+Per-session memory usage attribution (e.g. "session X read N memory entries") is NOT in this release — that needs the memory-map work in `@unpolarize/agent-memory-core` to land first. v1.2.0 ships the inventory + global counters; per-session attribution follows.
+
 ## 1.1.4 — 2026-06-13
 
 - **Fix: Code Build sessions STILL invisible after 1.1.2** — the `sdk-cli` allow-list landed in one of two indexing code paths in `jsonlIndexer.ts` but not the other. The miss path is the in-loop `isAutomated` heuristic around the per-turn JSONL scan (~line 263); it kept flagging new CB-spawned sessions as `is_automated=1` even though the canonical `entrypointFromTurns()` helper had been fixed. Net effect: 1.1.2/1.1.3 users saw existing CB sessions surface (thanks to migration v14's one-shot UPDATE) but every NEW CB session re-vanished into the automated bucket. Both heuristics now share the same allow-list (cli / claude-code / claude-vscode / claude-jetbrains / **sdk-cli** / ""). New **migration v15** re-runs the same UPDATE to catch the rows that were re-mis-marked between v14 and 1.1.4.

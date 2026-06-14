@@ -676,6 +676,26 @@ function renderDashboard(opts: {
     </table>`;
 
   // ---------- Deep metrics ---------- //
+  // Memory inventory snapshot — counts entries across all CLAUDE.md /
+  // AGENTS.md / MEMORY.md / ~/.claude / ~/.codex sources visible from
+  // the current workspace. Surfaced as a KPI tile alongside cost /
+  // tokens / messages so the user can spot "I have 0 memories" or
+  // "this project has 200 entries — time to consolidate" at a glance.
+  // The Memory tree in the sidebar (codeMemory view) carries the
+  // per-source breakdown.
+  let memoryEntries = 0;
+  let memoryFiles = 0;
+  try {
+    const vscodeMod = require("vscode") as typeof import("vscode");
+    const roots = (vscodeMod.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+    const { scanMemorySources, summariseSources } = require("./memoryView") as typeof import("./memoryView");
+    const sources = scanMemorySources(roots);
+    const totals = summariseSources(sources);
+    memoryEntries = totals.totalEntries;
+    memoryFiles = totals.totalFiles;
+  } catch {
+    /* keep zeros */
+  }
   const thinkMed = median(deep.thinkingTimeMsList) / 1000;
   const thinkP95 = p95(deep.thinkingTimeMsList) / 1000;
   const burstPct =
@@ -714,6 +734,7 @@ ${focusSession
   <div class="kpi"><div class="label">Subagents</div><div class="value">${totalSubagents.toLocaleString()}</div><div class="sub">across all sessions</div></div>
   <div class="kpi"><div class="label">Thinking time</div><div class="value">${thinkMed.toFixed(1)}s</div><div class="sub">median, p95 ${thinkP95.toFixed(0)}s</div></div>
   <div class="kpi"><div class="label">Burst rate</div><div class="value">${burstPct.toFixed(0)}%</div><div class="sub">replies in &lt;5s</div></div>
+  <div class="kpi" title="Total memory entries discovered across CLAUDE.md / AGENTS.md / MEMORY.md / ~/.claude / ~/.codex sources. Open the Memory tab in the sidebar for per-source breakdown."><div class="label">Memory</div><div class="value">${escapeHtml(String(memoryEntries))}</div><div class="sub">${memoryFiles} source file${memoryFiles === 1 ? "" : "s"}</div></div>
 </section>
 
 <h2>Daily cost (last ${lookbackDays} days)</h2>

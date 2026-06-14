@@ -46,6 +46,14 @@ export interface UpdatePayload {
   costToday: number;
   tokensToday: number;
   subagentsToday: number;
+  /** Total memory entries discovered across CLAUDE.md / AGENTS.md /
+   * MEMORY.md / ~/.claude / ~/.codex sources visible to the user.
+   * Populated by buildUpdate via summariseSources from
+   * memoryView.ts. Refreshed every poll tick alongside session
+   * cards so the live monitor reflects edits in real time. */
+  memoryEntries: number;
+  /** Number of source files with at least one entry. */
+  memoryFiles: number;
 }
 
 export type LiveCardForExport = LiveCard;
@@ -180,13 +188,42 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
   );
   const subagentsToday = todays.reduce((sum, r) => sum + (r.subagent_count || 0), 0);
   const toolsPerMin = cards.reduce((sum, c) => sum + c.toolsLast60s, 0);
-  return { cards, activeCount: cards.length, toolsPerMin, costToday, tokensToday, subagentsToday };
+  // Memory inventory snapshot — count entries across all configured
+  // workspace folders + global ~/.claude / ~/.codex / ~/.grok files.
+  // Cheap (≤ ~15 stat+read calls); refreshed every live-monitor
+  // poll tick so the user sees CLAUDE.md edits in real-time.
+  let memoryEntries = 0;
+  let memoryFiles = 0;
+  try {
+    // Lazy-require so liveMonitor stays usable in test harnesses that
+    // don't have the vscode module wired up; the catch handles the
+    // import error too.
+    const vscodeMod = require("vscode") as typeof import("vscode");
+    const roots = (vscodeMod.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+    const { scanMemorySources, summariseSources } = require("./memoryView") as typeof import("./memoryView");
+    const sources = scanMemorySources(roots);
+    const totals = summariseSources(sources);
+    memoryEntries = totals.totalEntries;
+    memoryFiles = totals.totalFiles;
+  } catch {
+    /* memory module / vscode not available in this context — leave zeros */
+  }
+  return {
+    cards,
+    activeCount: cards.length,
+    toolsPerMin,
+    costToday,
+    tokensToday,
+    subagentsToday,
+    memoryEntries,
+    memoryFiles,
+  };
 }
 
 export function openLiveMonitor(ctx: vscode.ExtensionContext, store: SessionStore): vscode.WebviewPanel {
   const panel = vscode.window.createWebviewPanel(
     "codeLiveMonitor",
-    "AI Coders · Live",
+    "AI Agents · Live",
     vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: false },
   );
@@ -280,6 +317,7 @@ function liveHtml(webview: vscode.Webview): string {
   <div class="stat"><span class="label">Tokens today</span><span class="value" id="vTokens">0</span></div>
   <div class="stat"><span class="label">Subagents today</span><span class="value" id="vAgents">0</span></div>
   <div class="stat"><span class="label">Cost today</span><span class="value" id="vCost">$0</span></div>
+  <div class="stat" title="Total memory entries discovered across CLAUDE.md / AGENTS.md / MEMORY.md / ~/.claude / ~/.codex sources. Open the Memory tab in the sidebar for per-source breakdown."><span class="label">Memory</span><span class="value" id="vMem">0</span></div>
   <div class="stat"><span class="label">Last update</span><span class="value" id="vClock">—</span></div>
 </div>
 <div id="alert" class="alert-banner"></div>
@@ -296,6 +334,7 @@ function liveHtml(webview: vscode.Webview): string {
   const vTokens = document.getElementById('vTokens');
   const vAgents = document.getElementById('vAgents');
   const vCost = document.getElementById('vCost');
+  const vMem = document.getElementById('vMem');
   const vClock = document.getElementById('vClock');
 
   function fmtTok(n) {
@@ -330,6 +369,12 @@ function liveHtml(webview: vscode.Webview): string {
     vTokens.textContent = fmtTok(payload.tokensToday);
     vAgents.textContent = String(payload.subagentsToday);
     vCost.textContent = '$' + payload.costToday.toFixed(2);
+    if (vMem) {
+      const entries = payload.memoryEntries || 0;
+      const files = payload.memoryFiles || 0;
+      vMem.textContent = String(entries);
+      vMem.title = entries + ' entries across ' + files + ' file(s)';
+    }
     vClock.textContent = new Date().toLocaleTimeString();
 
     // Alert banner: list sessions currently parked on user input.
