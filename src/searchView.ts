@@ -3,6 +3,7 @@
 // excerpt is rendered with the matched span highlighted.
 
 import * as vscode from "vscode";
+import { preferredEditorColumn } from "./editorColumn";
 import { SessionStore } from "./db";
 
 function nonceStr(): string {
@@ -21,7 +22,7 @@ export function openSearchView(
   const panel = vscode.window.createWebviewPanel(
     "claudeSearch",
     "Claude · Search",
-    vscode.ViewColumn.Active,
+    preferredEditorColumn(),
     { enableScripts: true, retainContextWhenHidden: true },
   );
   panel.webview.html = renderHtml(panel.webview, initialQuery);

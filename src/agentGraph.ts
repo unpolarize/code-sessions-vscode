@@ -7,6 +7,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { preferredEditorColumn } from "./editorColumn";
 import { UMAP } from "umap-js";
 import { SessionStore, SessionRow } from "./db";
 import { embedMany, EmbedConfig } from "./embedding";
@@ -424,7 +425,7 @@ export async function openAgentGraph(
   const panel = vscode.window.createWebviewPanel(
     "claudeAgentGraph",
     "Claude · Agent graph",
-    vscode.ViewColumn.Active,
+    preferredEditorColumn(),
     {
       enableScripts: true,
       retainContextWhenHidden: true,

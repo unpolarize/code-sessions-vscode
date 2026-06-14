@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.1 — 2026-06-13
+
+### Fix: no more annoying tab-splits when opening views from the sidebar
+
+Every webview-panel creation site (`Resume session`, `Open Insights`, `View conversation`, `Agent graph`, `Search`, `Trajectory`, `Live monitor`, `Memory atlas`) used `vscode.ViewColumn.Active`. That's unreliable when the user invokes the command from the sidebar tree — `vscode.window.activeTextEditor` is undefined while focus sits in the sidebar, so `ViewColumn.Active` falls through to "create a new split column". Result: every click opened a fresh editor group beside the user's carefully-arranged editors. Reported in notes.md as "very annoying."
+
+Fix: new `src/editorColumn.ts` exports `preferredEditorColumn()` that first asks `vscode.window.tabGroups.activeTabGroup` (always defined, returns the focused editor group regardless of where keyboard focus is), then falls back to the active editor's column, then `ViewColumn.One`. Reuses the existing editor area instead of splitting.
+
+Applied to all 7 panel-creation sites in CS: liveMonitor.ts, conversationView.ts, agentGraph.ts, searchView.ts, insightsView.ts, trajectoryView.ts, extension.ts.
+
 ## 1.2.0 — 2026-06-13
 
 ### Memory inventory — new sidebar tab + insights tile + live-monitor row

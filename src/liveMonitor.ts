@@ -3,6 +3,7 @@
 
 import * as fs from "fs";
 import * as vscode from "vscode";
+import { preferredEditorColumn } from "./editorColumn";
 import { SessionStore, SessionRow } from "./db";
 
 const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
@@ -224,7 +225,7 @@ export function openLiveMonitor(ctx: vscode.ExtensionContext, store: SessionStor
   const panel = vscode.window.createWebviewPanel(
     "codeLiveMonitor",
     "AI Agents · Live",
-    vscode.ViewColumn.Active,
+    preferredEditorColumn(),
     { enableScripts: true, retainContextWhenHidden: false },
   );
 

@@ -3,6 +3,7 @@
 // > p90 of session) drawn dashed-red.
 
 import * as vscode from "vscode";
+import { preferredEditorColumn } from "./editorColumn";
 import { UMAP } from "umap-js";
 import { SessionStore, TurnRow } from "./db";
 import { embedMany, EmbedConfig } from "./embedding";
@@ -172,7 +173,7 @@ export async function openTrajectoryView(
   const panel = vscode.window.createWebviewPanel(
     "claudeTrajectory",
     `Trajectory · ${title || sessionId.slice(0, 8)}`,
-    vscode.ViewColumn.Active,
+    preferredEditorColumn(),
     { enableScripts: true, retainContextWhenHidden: true },
   );
   panel.webview.html = placeholderHtml();

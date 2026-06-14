@@ -6,6 +6,7 @@
 
 import * as path from "path";
 import * as vscode from "vscode";
+import { preferredEditorColumn } from "./editorColumn";
 import { ParsedConversation, parseConversation, ToolCall, Turn } from "./conversationParser";
 import { SessionStore } from "./db";
 import { classifySession } from "./topicClassifier";
@@ -305,7 +306,7 @@ export function openConversationViewer(
   const panel = vscode.window.createWebviewPanel(
     "claudeConversationViewer",
     panelTitle,
-    vscode.ViewColumn.Active,
+    preferredEditorColumn(),
     {
       enableScripts: false,
       enableCommandUris: true,

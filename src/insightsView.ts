@@ -9,6 +9,7 @@
 //      (default 20) because each JSONL is megabytes.
 
 import * as vscode from "vscode";
+import { preferredEditorColumn } from "./editorColumn";
 import * as path from "path";
 import * as os from "os";
 import { execFile } from "child_process";
@@ -828,7 +829,7 @@ export async function openInsightsView(
   const panel = vscode.window.createWebviewPanel(
     "codeInsights",
     opts.focusSessionId ? `Insights · ${opts.focusSessionId.slice(0, 8)}` : "Code Sessions · Insights",
-    vscode.ViewColumn.Active,
+    preferredEditorColumn(),
     { enableScripts: false, retainContextWhenHidden: true },
   );
   panel.webview.html = `<body style="padding:24px;font-family:var(--vscode-font-family);color:var(--vscode-editor-foreground);background:var(--vscode-editor-background);">Loading…</body>`;

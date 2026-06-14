@@ -15,6 +15,7 @@ import { openLiveMonitor, buildUpdate, UpdatePayload } from "./liveMonitor";
 import { openSearchView } from "./searchView";
 import { BackgroundClassifier } from "./backgroundClassifier";
 import { MemoryProvider, scanMemorySources, summariseSources } from "./memoryView";
+import { preferredEditorColumn } from "./editorColumn";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -2623,7 +2624,7 @@ async function resumeInNative(row: SessionRow): Promise<void> {
         cmd,
         row.session,
         undefined,
-        vscode.ViewColumn.Active,
+        preferredEditorColumn(),
       );
       return;
     } catch {
