@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.4 — 2026-06-13
+
+- **Fix: Code Build sessions STILL invisible after 1.1.2** — the `sdk-cli` allow-list landed in one of two indexing code paths in `jsonlIndexer.ts` but not the other. The miss path is the in-loop `isAutomated` heuristic around the per-turn JSONL scan (~line 263); it kept flagging new CB-spawned sessions as `is_automated=1` even though the canonical `entrypointFromTurns()` helper had been fixed. Net effect: 1.1.2/1.1.3 users saw existing CB sessions surface (thanks to migration v14's one-shot UPDATE) but every NEW CB session re-vanished into the automated bucket. Both heuristics now share the same allow-list (cli / claude-code / claude-vscode / claude-jetbrains / **sdk-cli** / ""). New **migration v15** re-runs the same UPDATE to catch the rows that were re-mis-marked between v14 and 1.1.4.
+
 ## 1.1.3 — 2026-06-13
 
 - **Fix: rebrand migration crashed on first activation with "table turn has 16 columns but 11 values were supplied".** The old (`zhirafovod.claude-sessions`) `turn` table is the v1 schema (11 columns); the new `code-sessions` `turn` table has 16 after migrations v11/v12 appended the per-turn `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` / `cost_usd` columns. The merge step did `INSERT OR IGNORE INTO turn SELECT * FROM old.turn` — fine pre-v11, broken since. The whole transaction rolled back, the migration ledger never recorded success, and the extension fell back to shell-script mode for the rest of the session. Now uses an explicit column list (the 11 v1 columns); the five new columns default to 0 and get backfilled on the next jsonl re-parse.

@@ -240,6 +240,22 @@ const MIGRATIONS: string[] = [
     AND entrypoint = 'sdk-cli'
     AND is_automated = 1;
   `,
+
+  // v15 — same UPDATE again. v14 fired once on the 1.1.2 upgrade
+  // and flipped existing sdk-cli rows. But 1.1.2 / 1.1.3 had a
+  // second sdk-cli-untouched code path in jsonlIndexer.ts
+  // (the "indexFromRecentTurns" fallback path, around line 263),
+  // which kept marking newly-indexed sdk-cli sessions as
+  // is_automated=1. Those rows accumulated between v14 firing and
+  // 1.1.4 shipping. Re-running the same UPDATE catches them. The
+  // canonical jsonlIndexer fix in 1.1.4 stops the bleed.
+  `
+  UPDATE session
+  SET is_automated = 0
+  WHERE source = 'claude'
+    AND entrypoint = 'sdk-cli'
+    AND is_automated = 1;
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok";

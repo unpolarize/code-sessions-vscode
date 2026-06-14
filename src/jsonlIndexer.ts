@@ -260,7 +260,13 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
         else if (Array.isArray(content) && content[0]?.type === "text") firstUserMsg = String(content[0].text || "");
         if (obj.entrypoint != null) {
           entrypoint = obj.entrypoint;
-          isAutomated = !["cli", "claude-code", "claude-vscode", "claude-jetbrains", ""].includes(obj.entrypoint);
+          // Allow-list must match the canonical one in
+          // entrypointFromTurns(): `sdk-cli` is interactive (Code
+          // Build drives claude with `-p`). Without sdk-cli here,
+          // CB-spawned sessions still got is_automated=1 even after
+          // the 1.1.2 fix, because THIS second indexing path was
+          // missed in that change.
+          isAutomated = !["cli", "claude-code", "claude-vscode", "claude-jetbrains", "sdk-cli", ""].includes(obj.entrypoint);
         }
       }
     }
