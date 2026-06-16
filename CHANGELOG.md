@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.2.3 — 2026-06-13
+
+### Auto-recover from "database disk image is malformed"
+
+Reported in the wild after 1.2.2 shipped:
+
+```
+code-sessions: SQLite cache failed to open: database disk image is
+malformed. The Sessions tree will be empty until this is resolved —
+see the log for stack and try the Refresh command after fixing.
+```
+
+SQLite reported genuine on-disk corruption (`SQLITE_CORRUPT` /
+`SQLITE_NOTADB`). Pre-1.2.3 the user had to manually delete the
+cache file from `~/Library/Application Support/Code/User/
+globalStorage/zhirafovod.code-sessions/sessions-cache.db` before
+the extension would work again — a non-obvious recovery for a
+cache that's fully rebuildable from upstream `~/.claude/projects`
+and `~/.grok/sessions`.
+
+Fix: `SessionStore.open()` now catches the corruption-class error
+classes (`SQLITE_CORRUPT` / `SQLITE_NOTADB` / "database disk image
+is malformed" / "file is not a database"), quarantines the bad
+file to `sessions-cache.db.corrupt-<ISO-timestamp>` (alongside
+`-wal` / `-shm` / `-journal` sidecars in case the corruption
+originated there), and recreates the cache fresh. The indexer
+repopulates on its normal sync pass; the user sees a one-shot
+info toast naming the backup file with a "Show log" action for
+forensics.
+
+If rename across volumes fails (rare; FUSE / mounted-volume
+setups), falls back to copy + unlink. If even that fails, the
+error re-fires unchanged — no silent data loss.
+
+Per AGENTS.md: 1.2.2 → 1.2.3 (PATCH — bug fix, no new surface).
+
 ## 1.2.2 — 2026-06-13
 
 ### Fix: shell-script fallback removed (was breaking every fresh install)

@@ -439,15 +439,84 @@ export class SessionStore {
     classifiedTurns: number;
   } | null = null;
 
+  /** True when the most recent `open()` had to quarantine a corrupt DB
+   * file and start fresh. Surfaced via a one-shot info toast in the
+   * activate handler so the user knows what happened + sees the
+   * backup path for forensics. Cleared on the next clean open. */
+  static lastRecoveredCorruption: { backupPath: string; reason: string } | null = null;
+
   static open(globalStorageDir: string): SessionStore {
     fs.mkdirSync(globalStorageDir, { recursive: true });
     const dbPath = path.join(globalStorageDir, "sessions-cache.db");
 
-    // Open (or create) our own DB and run schema migrations up through v8
-    // — this ensures the `migration` ledger table exists before we look for
-    // a prior import marker.
-    const store = new SessionStore(dbPath);
-    store.migrate();
+    // Open (or create) our own DB and run schema migrations. If the
+    // file on disk is corrupt (SQLITE_CORRUPT / "database disk image
+    // is malformed"), the constructor or migrate() call throws.
+    // Auto-recover: quarantine the bad file + its sidecars, then
+    // recreate from scratch. The cache is rebuildable from the
+    // upstream jsonls in ~/.claude/projects + ~/.grok/sessions, so
+    // a wipe is cheap (the next sync pass repopulates) — far better
+    // than leaving the user with a permanently broken sidebar.
+    //
+    // Quarantine path includes a timestamp so multiple corruption
+    // events don't clobber each other. Sidecars (-wal, -shm,
+    // .agent-memory.json, .agent-memory-audit.jsonl) move alongside
+    // the main file in case the corruption originated there.
+    SessionStore.lastRecoveredCorruption = null;
+    let store: SessionStore;
+    try {
+      store = new SessionStore(dbPath);
+      store.migrate();
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      // Match every corruption-class SQLite error message we've
+      // seen in the wild. The user-reported case was "database disk
+      // image is malformed"; "unable to open database file" fires
+      // when the file is so garbage SQLite can't even read its
+      // header (some FUSE/iCloud sync races produce this). All
+      // recover the same way — quarantine + recreate from upstream
+      // jsonls.
+      const isCorrupt =
+        /database disk image is malformed|file is not a database|file is encrypted or is not a database|database is corrupt|unable to open database file|SQLITE_CORRUPT|SQLITE_NOTADB/i.test(msg);
+      if (!isCorrupt || !fs.existsSync(dbPath)) {
+        throw e;
+      }
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const backupPath = `${dbPath}.corrupt-${ts}`;
+      try {
+        fs.renameSync(dbPath, backupPath);
+      } catch {
+        // If rename fails (e.g. cross-volume in some FUSE setups),
+        // copy + unlink as a fallback.
+        try {
+          fs.copyFileSync(dbPath, backupPath);
+          fs.unlinkSync(dbPath);
+        } catch {
+          /* nothing else to do; throw will re-fire on next attempt */
+        }
+      }
+      // Move the sidecars too so a fresh open doesn't reattach to a
+      // half-corrupt journal.
+      for (const sfx of ["-wal", "-shm", "-journal"]) {
+        const side = dbPath + sfx;
+        if (fs.existsSync(side)) {
+          try {
+            fs.renameSync(side, backupPath + sfx);
+          } catch {
+            try {
+              fs.unlinkSync(side);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+      SessionStore.lastRecoveredCorruption = { backupPath, reason: msg };
+      // Retry the open against the now-absent path; constructor
+      // will create a fresh file.
+      store = new SessionStore(dbPath);
+      store.migrate();
+    }
 
     // One-shot import from the pre-v1.0 sibling extension directory. Unlike
     // earlier versions that just copied the file when the new DB didn't

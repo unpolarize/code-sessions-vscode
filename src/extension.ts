@@ -1800,6 +1800,23 @@ export function activate(ctx: vscode.ExtensionContext) {
       store = SessionStore.open(ctx.globalStorageUri.fsPath);
       log.appendLine(`[activate] SQLite cache opened at ${ctx.globalStorageUri.fsPath}`);
 
+      // Auto-recovery from disk corruption — the cache file is
+      // rebuildable from upstream jsonls so a wipe is cheap.
+      // Surface the event so the user knows what happened and
+      // where the original (corrupt) file went, in case they want
+      // it for forensics.
+      const recovery = SessionStore.lastRecoveredCorruption;
+      if (recovery) {
+        const msg = `code-sessions: SQLite cache was corrupt (${recovery.reason.slice(0, 80)}…) — quarantined to ${recovery.backupPath} and started fresh. The sidebar will repopulate as the indexer rescans ~/.claude/projects and ~/.grok/sessions.`;
+        log.appendLine(`[activate] ${msg}`);
+        vscode.window.showInformationMessage(
+          `code-sessions: cache was corrupt — reset and reindexing now. Old file moved to ${recovery.backupPath.split("/").pop()}.`,
+          "Show log",
+        ).then((sel) => {
+          if (sel === "Show log") log.show(true);
+        });
+      }
+
       // Migration toast — fires once, the first time we open a DB copied
       // from the pre-v1.0 `zhirafovod.claude-sessions` extension dir. We
       // don't gate on globalState because the file-existence check inside
