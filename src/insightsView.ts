@@ -820,9 +820,6 @@ export async function openInsightsView(
   const limit = cfg.get<number>("limit", 100);
   const showAutomated = cfg.get<boolean>("showAutomated", false);
   const cacheEnabled = cfg.get<boolean>("cacheEnabled", true);
-  const scriptPath = expandHome(
-    cfg.get<string>("scriptPath", "~/.claude/skills/sessions/session-center.sh"),
-  );
   const lookbackDays = cfg.get<number>("insightsLookbackDays", 14);
   const deepParseMax = cfg.get<number>("insightsDeepParse", 20);
 
@@ -869,18 +866,13 @@ export async function openInsightsView(
       return;
     }
   } else {
-    // Fallback: shell script (v0.6.x behavior).
-    const { stdout, code, stderr } = await exec("bash", [scriptPath, "recent", String(limit), "json"]);
-    if (code !== 0) {
-      panel.webview.html = `<pre style="padding:24px;">session-center.sh failed (exit ${code})\n\n${escapeHtml(stderr)}</pre>`;
-      return;
-    }
-    try {
-      allRows = JSON.parse(stdout) as SessionRow[];
-    } catch (e: any) {
-      panel.webview.html = `<pre style="padding:24px;">JSON parse failed: ${escapeHtml(e?.message || String(e))}</pre>`;
-      return;
-    }
+    // SQLite cache unavailable (cacheEnabled=false OR SessionStore.open
+    // threw at activate). Pre-1.2.2 we fell back to running
+    // ~/.claude/skills/sessions/session-center.sh — a personal pre-v1
+    // tool that doesn't exist on any user's machine other than the
+    // developer's. Show a clear setup hint instead.
+    panel.webview.html = `<pre style="padding:24px;">Insights need the SQLite cache. Enable <code>codeSessions.cacheEnabled = true</code> (default) and reload the window.\n\nIf the cache is already enabled, it failed to open — check Output → "Code Sessions" for the error.</pre>`;
+    return;
   }
 
   // Focus filter: when the dashboard was opened from a specific session row,

@@ -597,36 +597,35 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         this.lastError = null;
         return;
       } catch (e: any) {
-        // Surface the original sqlite error class + message so a future
-        // "out of memory" / "database disk image is malformed" report
-        // gives us something to act on instead of an opaque generic
-        // string. `code` and `errno` come from node-sqlite3-wasm when
-        // SQLite returns SQLITE_NOMEM / SQLITE_CORRUPT / etc.
+        // Surface the original sqlite error class + message so a
+        // "out of memory" / "database disk image is malformed"
+        // report gives us something to act on. `code` and `errno`
+        // come from node-sqlite3-wasm when SQLite returns
+        // SQLITE_NOMEM / SQLITE_CORRUPT / etc.
         const code = e?.code ? ` [${e.code}]` : "";
         const errno = e?.errno != null ? ` errno=${e.errno}` : "";
-        this.lastError = `SQLite read failed, falling back to script:${code}${errno} ${e?.message ?? e}`;
+        this.lastError = `SQLite read failed:${code}${errno} ${e?.message ?? e}. Check Output → "Code Sessions" for the stack trace, then click the refresh icon in the Sessions title bar.`;
         try { console.error("[code-sessions] db read failed:", e?.stack || e); } catch {}
-        // fall through to script path
+        this.rows = [];
+        return;
       }
     }
 
-    // Fallback: run session-center.sh (v0.6.x behavior).
-    const scriptPath = expandHome(
-      cfg.get<string>("scriptPath", "~/.claude/skills/sessions/session-center.sh"),
-    );
-    const { stdout, stderr, code } = await exec("bash", [scriptPath, "recent", String(limit), "json"]);
-    if (code !== 0) {
-      this.lastError = `session-center.sh exit ${code}: ${stderr.trim()}`;
-      this.rows = [];
-      return;
-    }
-    try {
-      this.rows = JSON.parse(stdout) as SessionRow[];
-      this.lastError = null;
-    } catch (e: any) {
-      this.lastError = `JSON parse failed: ${e.message}`;
-      this.rows = [];
-    }
+    // No SQLite cache available (cacheEnabled=false OR
+    // SessionStore.open threw during activate). Pre-1.2.2 we fell
+    // back to running ~/.claude/skills/sessions/session-center.sh —
+    // the developer's personal pre-v1 tool that doesn't exist on
+    // any other user's machine. Symptom on a fresh install:
+    //
+    //   Error: session-center.sh exit 127: bash: /Users/<you>/.claude/
+    //   skills/sessions/session-center.sh: No such file or directory
+    //
+    // The cache is the real product surface; the script was never
+    // meant to ship. Replace the fallback with a clear actionable
+    // empty-state instead of trying to invoke an external script.
+    this.lastError =
+      "Code Sessions: SQLite cache unavailable. Re-enable with `codeSessions.cacheEnabled = true` (default) and reload the window. If it was on, the cache failed to open — check Output → \"Code Sessions\" for details.";
+    this.rows = [];
   }
 
   getTreeItem(el: vscode.TreeItem): vscode.TreeItem {
@@ -1786,8 +1785,12 @@ export function activate(ctx: vscode.ExtensionContext) {
   // on globalState so it runs once per profile. Safe no-op when nothing is set.
   void migrateSettingsToCodeNamespace(ctx, log);
 
-  // Open the SQLite cache. If the user has disabled it, leave store null
-  // and the providers will fall back to running session-center.sh.
+  // Open the SQLite cache. If `cacheEnabled = false` OR the open fails,
+  // `store` stays null and the providers show an empty-state error
+  // instead of trying to fall back to a personal bash script (which
+  // is what they used to do, and broke on every user's machine
+  // other than the developer's — see notes in SessionsProvider.load
+  // / openInsightsView).
   let store: SessionStore | null = null;
   try {
     const cacheEnabled = vscode.workspace
@@ -1816,7 +1819,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     log.appendLine(String(e?.stack || ""));
     vscode.window
       .showWarningMessage(
-        `code-sessions: ${msg}. Falling back to shell-script mode.`,
+        `code-sessions: ${msg}. The Sessions tree will be empty until this is resolved — see the log for stack and try the Refresh command after fixing.`,
         "Show log",
       )
       .then((sel) => {

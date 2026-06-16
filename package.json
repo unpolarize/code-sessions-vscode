@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -431,13 +431,14 @@
         },
         "codeSessions.scriptPath": {
           "type": "string",
-          "default": "~/.claude/skills/sessions/session-center.sh",
-          "description": "Path to session-center.sh (fallback when cacheEnabled is false). Claude only."
+          "default": "",
+          "deprecationMessage": "Deprecated since 1.2.2 — the session-center.sh fallback was removed because it pointed at a developer-personal script that doesn't exist on any other user's machine (caused 'exit 127: No such file or directory' on fresh installs). Sessions are read from the SQLite cache exclusively.",
+          "description": "Deprecated — no longer used. The SQLite cache is the only data source."
         },
         "codeSessions.cacheEnabled": {
           "type": "boolean",
           "default": true,
-          "description": "Use the SQLite cache. When true (default), the sidebar reads from a local DB and only re-parses JSONLs whose (mtime,size) changed. When false, falls back to spawning session-center.sh on every refresh (legacy claude-only path)."
+          "description": "Use the SQLite cache. Default true — this is now the ONLY data source for the Sessions tree and the Insights view. Setting this to false will show an empty-state error in the tree (the legacy session-center.sh fallback was removed in 1.2.2 because it pointed at a developer-personal script)."
         },
         "codeSessions.showAutomated": {
           "type": "boolean",

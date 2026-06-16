@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.2.2 — 2026-06-13
+
+### Fix: shell-script fallback removed (was breaking every fresh install)
+
+Reported on a fresh laptop install (different macOS user `sesergee`):
+
+```
+Error: session-center.sh exit 127: bash: /Users/sesergee/.claude/skills/
+sessions/session-center.sh: No such file or directory
+```
+
+Root cause: `SessionsProvider.load()` and `openInsightsView()` had a legacy v0.6.x fallback path that, when `cacheEnabled = false` OR `SessionStore.open()` threw at activate time, would spawn `~/.claude/skills/sessions/session-center.sh` — the developer's personal pre-v1 tool that **doesn't exist on any other user's machine**. Exit 127 (command not found) every time.
+
+Fix: removed the shell-script fallback entirely. Both views now show a clear actionable empty-state when the SQLite cache is unavailable:
+- Sessions tree: *"Code Sessions: SQLite cache unavailable. Re-enable with `codeSessions.cacheEnabled = true` (default) and reload the window. If it was on, the cache failed to open — check Output → 'Code Sessions' for details."*
+- Insights view: *"Insights need the SQLite cache. Enable `codeSessions.cacheEnabled = true` (default) and reload the window."*
+
+`codeSessions.scriptPath` setting marked `deprecationMessage` so future configs that reference it surface a clear migration note. The setting still loads (no schema breaking change) but the value is ignored.
+
+The activate-time SQLite open-failure warning toast was reworded to drop the now-untrue "Falling back to shell-script mode" promise.
+
+Per AGENTS.md: 1.2.1 → 1.2.2 (PATCH — bug fix, no new surface).
+
 ## 1.2.1 — 2026-06-13
 
 ### Fix: no more annoying tab-splits when opening views from the sidebar
