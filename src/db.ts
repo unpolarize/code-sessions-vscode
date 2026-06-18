@@ -398,11 +398,16 @@ function rowToSession(r: any): SessionRow {
 
 export class SessionStore {
   readonly db: Database;
+  /** Retries for transient SQLITE_BUSY / "database is locked" on open. The WASM
+   * VFS uses a sibling `<db>.lock` directory; stale locks after an unclean
+   * extension-host exit — or a brief multi-window race — are the usual cause. */
+  private static readonly OPEN_LOCK_ATTEMPTS = 8;
+  private static readonly OPEN_LOCK_BASE_MS = 75;
+
   private constructor(private readonly dbPath: string) {
-    // DBs written by the previous (better-sqlite3) build are in WAL mode, which
-    // the WASM engine cannot open — convert in place first. See the helper.
-    SessionStore.coerceRollbackJournal(dbPath);
     this.db = new Database(dbPath);
+    // Wait up to 5 s when another extension host briefly holds the DB.
+    this.db.pragma("busy_timeout = 5000");
     // Requesting WAL is a no-op under the WASM VFS (it has no shared-memory
     // support and silently stays on a rollback journal), but we keep the call so
     // the intent is documented and behaviour matches a native build elsewhere.
@@ -438,6 +443,72 @@ export class SessionStore {
    * shutdown, where the main file holds all committed data. Any uncheckpointed
    * `-wal` frames are dropped, which is acceptable here: this DB is a cache the
    * indexer rebuilds from the source JSONLs. */
+  /** node-sqlite3-wasm's VFS locks files via a sibling `<file>.lock` directory
+   * and can leave a stale one behind after an unclean close. Safe to remove when
+   * no live holder exists — paired with open() retries for the multi-window race. */
+  private static clearWasmVfsLock(dbPath: string): void {
+    try {
+      fs.rmSync(dbPath + ".lock", { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  private static isLockError(e: unknown): boolean {
+    const msg = String((e as any)?.message ?? e);
+    return /database is locked|SQLITE_BUSY/i.test(msg);
+  }
+
+  private static isCorruptError(e: unknown): boolean {
+    const msg = String((e as any)?.message ?? e);
+    return /database disk image is malformed|file is not a database|file is encrypted or is not a database|database is corrupt|unable to open database file|SQLITE_CORRUPT|SQLITE_NOTADB/i.test(msg);
+  }
+
+  /** Short synchronous wait — `open()` runs during sync activate(). */
+  private static sleepSync(ms: number): void {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      /* spin */
+    }
+  }
+
+  private static tryCreateAndMigrate(dbPath: string): SessionStore {
+    const store = new SessionStore(dbPath);
+    store.migrate();
+    return store;
+  }
+
+  private static quarantineCorruptDb(dbPath: string, reason: string): string {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupPath = `${dbPath}.corrupt-${ts}`;
+    try {
+      fs.renameSync(dbPath, backupPath);
+    } catch {
+      try {
+        fs.copyFileSync(dbPath, backupPath);
+        fs.unlinkSync(dbPath);
+      } catch {
+        /* throw will re-fire on next attempt */
+      }
+    }
+    for (const sfx of ["-wal", "-shm", "-journal", ".lock"]) {
+      const side = dbPath + sfx;
+      if (fs.existsSync(side)) {
+        try {
+          fs.renameSync(side, backupPath + sfx);
+        } catch {
+          try {
+            fs.unlinkSync(side);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
+    SessionStore.lastRecoveredCorruption = { backupPath, reason };
+    return backupPath;
+  }
+
   private static coerceRollbackJournal(dbPath: string): void {
     try {
       if (!fs.existsSync(dbPath)) return;
@@ -505,59 +576,32 @@ export class SessionStore {
     // .agent-memory.json, .agent-memory-audit.jsonl) move alongside
     // the main file in case the corruption originated there.
     SessionStore.lastRecoveredCorruption = null;
-    let store: SessionStore;
-    try {
-      store = new SessionStore(dbPath);
-      store.migrate();
-    } catch (e: any) {
-      const msg = String(e?.message ?? e);
-      // Match every corruption-class SQLite error message we've
-      // seen in the wild. The user-reported case was "database disk
-      // image is malformed"; "unable to open database file" fires
-      // when the file is so garbage SQLite can't even read its
-      // header (some FUSE/iCloud sync races produce this). All
-      // recover the same way — quarantine + recreate from upstream
-      // jsonls.
-      const isCorrupt =
-        /database disk image is malformed|file is not a database|file is encrypted or is not a database|database is corrupt|unable to open database file|SQLITE_CORRUPT|SQLITE_NOTADB/i.test(msg);
-      if (!isCorrupt || !fs.existsSync(dbPath)) {
+    let store: SessionStore | undefined;
+
+    for (let attempt = 1; attempt <= SessionStore.OPEN_LOCK_ATTEMPTS; attempt++) {
+      SessionStore.clearWasmVfsLock(dbPath);
+      SessionStore.coerceRollbackJournal(dbPath);
+      try {
+        store = SessionStore.tryCreateAndMigrate(dbPath);
+        break;
+      } catch (e: any) {
+        if (SessionStore.isLockError(e) && attempt < SessionStore.OPEN_LOCK_ATTEMPTS) {
+          SessionStore.sleepSync(
+            SessionStore.OPEN_LOCK_BASE_MS * Math.pow(2, attempt - 1),
+          );
+          continue;
+        }
+        if (SessionStore.isCorruptError(e) && fs.existsSync(dbPath)) {
+          SessionStore.quarantineCorruptDb(dbPath, String(e?.message ?? e));
+          SessionStore.clearWasmVfsLock(dbPath);
+          store = SessionStore.tryCreateAndMigrate(dbPath);
+          break;
+        }
         throw e;
       }
-      const ts = new Date().toISOString().replace(/[:.]/g, "-");
-      const backupPath = `${dbPath}.corrupt-${ts}`;
-      try {
-        fs.renameSync(dbPath, backupPath);
-      } catch {
-        // If rename fails (e.g. cross-volume in some FUSE setups),
-        // copy + unlink as a fallback.
-        try {
-          fs.copyFileSync(dbPath, backupPath);
-          fs.unlinkSync(dbPath);
-        } catch {
-          /* nothing else to do; throw will re-fire on next attempt */
-        }
-      }
-      // Move the sidecars too so a fresh open doesn't reattach to a
-      // half-corrupt journal.
-      for (const sfx of ["-wal", "-shm", "-journal"]) {
-        const side = dbPath + sfx;
-        if (fs.existsSync(side)) {
-          try {
-            fs.renameSync(side, backupPath + sfx);
-          } catch {
-            try {
-              fs.unlinkSync(side);
-            } catch {
-              /* ignore */
-            }
-          }
-        }
-      }
-      SessionStore.lastRecoveredCorruption = { backupPath, reason: msg };
-      // Retry the open against the now-absent path; constructor
-      // will create a fresh file.
-      store = new SessionStore(dbPath);
-      store.migrate();
+    }
+    if (!store) {
+      throw new Error("SQLite cache failed to open after lock retries");
     }
 
     // One-shot import from the pre-v1.0 sibling extension directory. Unlike
@@ -610,11 +654,7 @@ export class SessionStore {
     // as "database is locked" and aborts the merge. Old DBs written by the
     // pre-WASM (better-sqlite3) extension never have one, so this is a no-op in
     // the common case — it just guards against a lock left by a prior WASM run.
-    try {
-      fs.rmSync(oldDbPath + ".lock", { recursive: true, force: true });
-    } catch {
-      /* best-effort */
-    }
+    SessionStore.clearWasmVfsLock(oldDbPath);
     // The old DB is also a better-sqlite3 (WAL-mode) file; ATTACH would fail to
     // open it under the WASM VFS unless we convert it to a rollback journal too.
     SessionStore.coerceRollbackJournal(oldDbPath);

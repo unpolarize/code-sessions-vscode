@@ -1962,7 +1962,12 @@ export function activate(ctx: vscode.ExtensionContext) {
       log.appendLine(`[activate] cacheEnabled = false; using shell-script fallback`);
     }
   } catch (e: any) {
-    const msg = `SQLite cache failed to open: ${e?.message || e}`;
+    const raw = String(e?.message || e);
+    const isLock = /database is locked|SQLITE_BUSY/i.test(raw);
+    const hint = isLock
+      ? " Close other VS Code windows using Code Sessions, then Developer: Reload Window. If it persists, delete the stale lock at globalStorage/zhirafovod.code-sessions/sessions-cache.db.lock"
+      : "";
+    const msg = `SQLite cache failed to open: ${raw}${hint}`;
     log.appendLine(`[activate] ERROR ${msg}`);
     log.appendLine(String(e?.stack || ""));
     vscode.window

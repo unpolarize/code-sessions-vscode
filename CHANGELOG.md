@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.6 — 2026-06-18
+
+### Fix: "database is locked" on activate (stale WASM VFS lock)
+
+Reported on the work laptop after upgrading: `SessionStore.open()` threw
+`SQLite3Error: database is locked` at the first `PRAGMA journal_mode`, so
+`activate()` never registered tree providers.
+
+Root cause: `node-sqlite3-wasm` uses a sibling `sessions-cache.db.lock`
+directory for exclusive access. An unclean extension-host shutdown (reload,
+crash, force-quit) can leave a stale lock behind. A brief multi-window race
+(two VS Code windows activating CS at once) produces the same symptom.
+
+- Clear stale `<db>.lock` before every open attempt (was only done for the
+  legacy import ATTACH path).
+- Retry open with exponential backoff (8 attempts, up to ~9.5 s total).
+- Set `busy_timeout = 5000` on connect.
+- Lock-class failures surface a hint to close other windows / reload.
+
 ## 1.2.5 — 2026-06-18
 
 ### Fix: broken 1.2.4 install (extension failed to activate)
