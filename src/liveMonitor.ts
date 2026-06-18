@@ -181,7 +181,15 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
   const active = recent.filter((r) => now - r.mtime_ns / 1e6 < ACTIVE_WINDOW_MS);
   const cards = active.map((s) => cardFromSession(s, now));
   const startToday = startOfTodayMs();
-  const todays = recent.filter((r) => r.started_at && r.started_at >= startToday);
+  const endToday = startToday + 86400_000;
+  // Include any transcript (main session + subagent/workflow children) that
+  // had activity today. Use ended_at when present, else mtime. This ensures
+  // overnight sessions that did heavy work today + all child workflow runs
+  // are counted toward "cost today" (the main user pain).
+  const todays = recent.filter((r) => {
+    const act = r.ended_at || Math.floor(r.mtime_ns / 1e6);
+    return act >= startToday && act < endToday;
+  });
   const costToday = todays.reduce((sum, r) => sum + (r.cost_usd || 0), 0);
   const tokensToday = todays.reduce(
     (sum, r) => sum + r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens,

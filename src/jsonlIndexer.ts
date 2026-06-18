@@ -49,38 +49,96 @@ interface JsonlInfo {
   size_bytes: number;
 }
 
-/** Walk the projects root and collect (path, mtime, size) for every JSONL. */
-export function listAllJsonls(): JsonlInfo[] {
-  if (!fs.existsSync(PROJECTS_ROOT)) return [];
-  const out: JsonlInfo[] = [];
-  for (const projectDir of fs.readdirSync(PROJECTS_ROOT, { withFileTypes: true })) {
-    if (!projectDir.isDirectory()) continue;
-    const projectPath = path.join(PROJECTS_ROOT, projectDir.name);
-    let files: fs.Dirent[];
-    try {
-      files = fs.readdirSync(projectPath, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const f of files) {
-      if (!f.isFile() || !f.name.endsWith(".jsonl")) continue;
-      if (f.name.startsWith(".")) continue; // skip .sessions-index etc.
-      if (f.name.includes("sessions-index") || f.name.includes("history")) continue;
-      const p = path.join(projectPath, f.name);
+export type TranscriptKind = 'session' | 'subagent' | 'workflow';
+
+export interface TranscriptInfo extends JsonlInfo {
+  kind: TranscriptKind;
+  parentSessionId: string | null;   // logical session that spawned this child (from path or content)
+  workflowId: string | null;        // e.g. "wf_e4978d9c-33d"
+}
+
+/** Recursively walk under a dir and collect qualifying *.jsonl with classification. */
+function collectJsonlsUnder(dir: string, out: TranscriptInfo[], projectRootForParent: string): void {
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      // Skip some noisy plugin cache dirs if they ever leak in, but normal subagents/workflows are wanted.
+      if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+      collectJsonlsUnder(full, out, projectRootForParent);
+    } else if (e.isFile() && e.name.endsWith('.jsonl')) {
+      if (e.name.startsWith('.')) continue;
+      if (e.name.includes('sessions-index') || e.name.includes('history')) continue;
+      if (e.name === 'journal.jsonl') continue; // workflow metadata, not a billable transcript
+      // journal.jsonl under workflows is metadata; we still want to parse it? For now treat as workflow transcript (it has started/result lines, limited usage).
+      // Main agent transcripts are the agent-*.jsonl and top level <uuid>.jsonl.
       let st: fs.Stats;
-      try {
-        st = fs.statSync(p);
-      } catch {
-        continue;
+      try { st = fs.statSync(full); } catch { continue; }
+
+      // Classify by path
+      const rel = path.relative(projectRootForParent, full);
+      const segs = rel.split(path.sep);
+      let kind: TranscriptKind = 'session';
+      let parentSessionId: string | null = null;
+      let workflowId: string | null = null;
+
+      // Expect something like: <parentUuid>/subagents/agent-xxx.jsonl
+      // or <parentUuid>/subagents/workflows/wf_xxx/agent-yyy.jsonl
+      // or top level <parentUuid>.jsonl
+      const idxSub = segs.indexOf('subagents');
+      if (idxSub >= 0) {
+        // parent dir name before /subagents is the parent session dir name (the encoded uuid dir's basename is the session uuid for claude)
+        // The immediate parent of "subagents" dir is the session's project subdir? No:
+        // full structure under projectsRoot:  <encoded-cwd>/<sessionUuid>.jsonl
+        //                                 or  <encoded-cwd>/<sessionUuid>/subagents/...
+        // So when we are under <encoded>/<sessionUuid>/subagents/..., segs before subagents has the session dir name as last before subagents.
+        const before = segs.slice(0, idxSub);
+        if (before.length > 0) {
+          // The last segment before /subagents/ is the parent session's dir name, which for claude is often the session uuid itself.
+          parentSessionId = before[before.length - 1];
+        }
+        if (segs.includes('workflows')) {
+          kind = 'workflow';
+          const wfIdx = segs.indexOf('workflows');
+          if (wfIdx + 1 < segs.length) {
+            workflowId = segs[wfIdx + 1]; // wf_e4...
+          }
+        } else {
+          kind = 'subagent';
+        }
+      } else {
+        kind = 'session';
       }
+
       out.push({
-        jsonl_path: p,
+        jsonl_path: full,
         mtime_ns: st.mtimeMs * 1e6,
         size_bytes: st.size,
+        kind,
+        parentSessionId,
+        workflowId,
       });
     }
   }
+}
+
+/** Walk the projects root and collect (path, mtime, size, kind, parent) for every JSONL
+ * including nested subagent and workflow child transcripts. */
+export function listAllTranscripts(): TranscriptInfo[] {
+  if (!fs.existsSync(PROJECTS_ROOT)) return [];
+  const out: TranscriptInfo[] = [];
+  for (const projectDir of fs.readdirSync(PROJECTS_ROOT, { withFileTypes: true })) {
+    if (!projectDir.isDirectory()) continue;
+    const projectPath = path.join(PROJECTS_ROOT, projectDir.name);
+    collectJsonlsUnder(projectPath, out, projectPath);
+  }
   return out;
+}
+
+/** Legacy name kept for callers that only cared about flat list (tests, etc). Delegates. */
+export function listAllJsonls(): JsonlInfo[] {
+  return listAllTranscripts().filter(t => t.kind === 'session').map(t => ({ jsonl_path: t.jsonl_path, mtime_ns: t.mtime_ns, size_bytes: t.size_bytes }));
 }
 
 /** Decode the urlencoded-ish project dir name back to a usable label. */
@@ -186,7 +244,12 @@ function findJsonlPathById(sessionId: string): string | null {
   return null;
 }
 
-function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projectPath: string): { session: SessionRow; turns: TurnRow[] } {
+function aggregateFromParsed(
+  parsed: ParsedConversation,
+  info: JsonlInfo,
+  projectPath: string,
+  txInfo?: TranscriptInfo,
+): { session: SessionRow; turns: TurnRow[] } {
   // Token + cost aggregation: walk the JSONL once more so we can attribute
   // each assistant.message.usage block to its enclosing turn. Per-turn
   // tokens land in `turn.input_tokens`/etc. (migration v11) and drive the
@@ -289,8 +352,20 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
   const projectsTouched = projectsTouchedFromTurns(parsed.turns);
   const projectId = projectIdFromPath(projectPath);
 
+  // For child transcripts (subagent/workflow) we must not collide on session_id PK
+  // with the parent. Use a stable synthetic id derived from the transcript file.
+  // Keep the logical inner sessionId for title/resume hints, but store the
+  // parent linkage in the new columns.
+  let sid = parsed.sessionId || path.basename(info.jsonl_path, ".jsonl");
+  if (txInfo && (txInfo.kind === 'subagent' || txInfo.kind === 'workflow')) {
+    const short = path.basename(info.jsonl_path, '.jsonl');
+    sid = `${sid}__${txInfo.kind}__${short}`;
+  }
+
+  const kind: 'session' | 'subagent' | 'workflow' = txInfo?.kind || 'session';
+
   const session: SessionRow = {
-    session_id: parsed.sessionId || path.basename(info.jsonl_path, ".jsonl"),
+    session_id: sid,
     source: "claude",
     project_path: projectPath,
     project_id: projectId,
@@ -309,14 +384,17 @@ function aggregateFromParsed(parsed: ParsedConversation, info: JsonlInfo, projec
     cache_write_tokens: cacheWriteTok,
     cost_usd: Number(cost.toFixed(4)),
     model: sessionModel,
-    title: parsed.title || firstUserMsg.slice(0, 70),
+    title: (parsed.title || firstUserMsg.slice(0, 70)) + (kind !== 'session' ? ` [${kind}]` : ''),
     first_user_msg: firstUserMsg.slice(0, 4096),
     entrypoint,
-    is_automated: isAutomated,
+    is_automated: isAutomated || kind !== 'session',
     indexed_at: Date.now(),
     last_assistant_text_at: parsed.lastAssistantTextMs,
     // Claude-side extras are still tabular fields; no JSON blob needed yet.
     extras_json: null,
+    kind,
+    parent_session_id: txInfo?.parentSessionId || null,
+    workflow_id: txInfo?.workflowId || null,
   };
 
   const turns: TurnRow[] = parsed.turns.map((t, i) => {
@@ -363,7 +441,11 @@ export interface SyncStats {
   elapsed_ms: number;
 }
 
-/** Full sync: parse every new/changed JSONL into SQLite. Returns stats. */
+/** Full sync: parse every new/changed JSONL into SQLite. Returns stats.
+ * Now discovers nested subagent and workflow transcripts in addition to
+ * top-level session jsonls. Child transcripts get synthetic distinct session_ids
+ * (to avoid PK collision with parent) while preserving parent linkage via the
+ * new kind/parent/workflow columns. */
 export function syncToStore(
   store: SessionStore,
   opts: {
@@ -377,7 +459,7 @@ export function syncToStore(
   } = {},
 ): SyncStats {
   const t0 = Date.now();
-  const disk = listAllJsonls();
+  const disk = listAllTranscripts();
   const known = store.knownPaths();
 
   // Build the "forced" set: top-N most-recent JSONLs if forceRecentN is set.
@@ -387,9 +469,8 @@ export function syncToStore(
     forcedSet = new Set(sorted.map((d) => d.jsonl_path));
   }
 
-  // Diff: which files are new or changed? `force` re-parses everything;
-  // `forceRecentN` re-parses just the N newest entries plus the usual delta.
-  const toParse: JsonlInfo[] = [];
+  // Diff: which files are new or changed?
+  const toParse: TranscriptInfo[] = [];
   for (const info of disk) {
     if (opts.force || (forcedSet && forcedSet.has(info.jsonl_path))) { toParse.push(info); continue; }
     const cached = known.get(info.jsonl_path);
@@ -407,10 +488,16 @@ export function syncToStore(
   let errors = 0;
   for (let i = 0; i < toParse.length; i++) {
     const info = toParse[i];
-    const projectPath = path.dirname(info.jsonl_path);
+    // Find the encoded-cwd project bucket directly under PROJECTS_ROOT.
+    // Works for both top-level <encoded>/<uuid>.jsonl and deep children.
+    let p = path.dirname(info.jsonl_path);
+    while (p && p !== PROJECTS_ROOT && path.dirname(p) !== PROJECTS_ROOT) {
+      p = path.dirname(p);
+    }
+    const projectPath = (path.dirname(p) === PROJECTS_ROOT) ? p : path.dirname(info.jsonl_path);
     try {
       const conv = parseConversation(info.jsonl_path);
-      const { session, turns } = aggregateFromParsed(conv, info, projectPath);
+      const { session, turns } = aggregateFromParsed(conv, info, projectPath, info);
       store.upsertSession(session);
       store.deleteTurnsForSession(session.session_id);
       store.upsertTurns(turns);

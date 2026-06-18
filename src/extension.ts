@@ -333,6 +333,15 @@ interface SessionRow {
   last_response_epoch?: number;
   is_starred?: boolean;
   is_hidden?: boolean;
+  /** Top-level orchestrator vs child transcript. Children are hidden from the
+   * Sessions tree but their cost rolls into the parent row. */
+  kind?: "session" | "subagent" | "workflow";
+  /** Direct session cost before child rollup (display only). */
+  own_cost_usd?: number;
+  /** Sum of workflow + subagent child transcript costs attributed to this parent. */
+  children_cost_usd?: number;
+  children_workflow_count?: number;
+  children_subagent_count?: number;
 }
 
 /**
@@ -408,6 +417,7 @@ function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
     tokens_cache_write: r.cache_write_tokens,
     tokens_total: r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens,
     cost_usd: r.cost_usd,
+    own_cost_usd: r.cost_usd,
     title: r.title || (r.first_user_msg ?? "").slice(0, 70),
     subagents: r.subagent_count,
     projects_touched: r.projects_touched,
@@ -415,7 +425,33 @@ function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
     entrypoint: r.entrypoint ?? "",
     is_automated: r.is_automated,
     last_response_epoch: r.last_assistant_text_at ? Math.floor(r.last_assistant_text_at / 1000) : 0,
+    kind: r.kind || "session",
   };
+}
+
+/** Roll child workflow/subagent spend into a parent session row for display. */
+function applyChildRollup(row: SessionRow, child: import("./db").ChildRollup): void {
+  row.own_cost_usd = row.cost_usd;
+  row.children_cost_usd = child.cost_usd;
+  row.children_workflow_count = child.workflow_count;
+  row.children_subagent_count = child.subagent_count;
+  row.cost_usd = Number((row.own_cost_usd + child.cost_usd).toFixed(4));
+  row.tokens_input += child.input_tokens;
+  row.tokens_output += child.output_tokens;
+  row.tokens_cache_read += child.cache_read_tokens;
+  row.tokens_cache_write += child.cache_write_tokens;
+  row.tokens_total =
+    row.tokens_input + row.tokens_output + row.tokens_cache_read + row.tokens_cache_write;
+  // Keep parent in the correct day bucket when only children ran recently.
+  if (child.max_activity_ms > 0) {
+    const childEpoch = Math.floor(child.max_activity_ms / 1000);
+    if (childEpoch > (row.last_response_epoch ?? 0)) {
+      row.last_response_epoch = childEpoch;
+    }
+    if (childEpoch > row.mtime_epoch) {
+      row.mtime_epoch = childEpoch;
+    }
+  }
 }
 
 // Cost rates per 1M tokens — mirrors the table in jsonlIndexer.ts so the
@@ -531,6 +567,8 @@ function buildCostBreakdown(row: SessionRow): string[] {
   const cacheRCost = (cacheR * rates.cacheRead) / 1_000_000;
   const cacheWCost = (cacheW * rates.cacheWrite) / 1_000_000;
   const total = row.cost_usd;
+  const own = row.own_cost_usd ?? total;
+  const children = row.children_cost_usd ?? 0;
   // Pad token figures to a fixed width so the columns line up in the tooltip.
   const lines = [
     "",
@@ -541,11 +579,25 @@ function buildCostBreakdown(row: SessionRow): string[] {
     `| Output | ${fmtNum(output)} | $${rates.output} | $${outputCost.toFixed(2)} |`,
     `| Cache **read** (hits) | ${fmtNum(cacheR)} | $${rates.cacheRead} | $${cacheRCost.toFixed(2)} |`,
     `| Cache **write** (seeds) | ${fmtNum(cacheW)} | $${rates.cacheWrite} | $${cacheWCost.toFixed(2)} |`,
-    `| **Total** | ${fmtNum(input + output + cacheR + cacheW)} | | **$${total.toFixed(2)}** |`,
+    `| **Total (incl. children)** | ${fmtNum(input + output + cacheR + cacheW)} | | **$${total.toFixed(2)}** |`,
+  ];
+  if (children > 0) {
+    const wf = row.children_workflow_count ?? 0;
+    const sa = row.children_subagent_count ?? 0;
+    lines.push(
+      "",
+      `**Attributed child spend** — workflows + sub-agents spawned by this session`,
+      `| | | | |`,
+      `| Session direct | | | $${own.toFixed(2)} |`,
+      `| Workflows/sub-agents (${wf} wf · ${sa} agent) | | | $${children.toFixed(2)} |`,
+      `| **Total** | | | **$${total.toFixed(2)}** |`,
+    );
+  }
+  lines.push(
     "",
     "_Cache **read** = the prompt already lived in Anthropic's prompt cache and was billed at **10% of input** (90% discount). Cache hits are the single biggest cost lever for long-running sessions._",
-    "_Cache **write** = the first time a prefix is seeded into the cache; billed at **125% of input**. Paid once per cache entry; subsequent reads of that prefix are cheap._"
-  ];
+    "_Cache **write** = the first time a prefix is seeded into the cache; billed at **125% of input**. Paid once per cache entry; subsequent reads of that prefix are cheap._",
+  );
   return lines;
 }
 
@@ -570,7 +622,15 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     if (cacheEnabled && this.store) {
       try {
         const dbRows = this.store.listRecent(limit, true);
-        this.rows = dbRows.map(dbRowToSessionRow);
+        const childRollup = this.store.childRollupByParent();
+        this.rows = dbRows
+          .filter((r) => r.kind === "session" || !r.kind)
+          .map((r) => {
+            const row = dbRowToSessionRow(r);
+            const child = childRollup.get(row.session);
+            if (child) applyChildRollup(row, child);
+            return row;
+          });
         // Decorate with top_topics in one batched query.
         try {
           const topics = this.store.topTopicsBySession(this.rows.map((r) => r.session), 3);
@@ -728,7 +788,9 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const startOfYesterday = startOfToday - 86_400_000;
     const startOfLast7 = startOfToday - 7 * 86_400_000;
-    const ids = visible.map((r) => r.session);
+    const parentIds = visible.map((r) => r.session);
+    const childIds = this.store.childSessionIdsForParents(parentIds);
+    const ids = [...parentIds, ...childIds];
     const placeholders = ids.map(() => "?").join(",");
     const sql = `
       SELECT
@@ -1017,6 +1079,9 @@ class SessionItem extends vscode.TreeItem {
     // Description: msgs · cost · duration · topics. The leading "ago" lives in
     // the label (so it lines up); we drop it from the description here.
     const parts = [`💬${row.messages.toLocaleString()}`, `$${cost}`];
+    if ((row.children_cost_usd ?? 0) > 0) {
+      parts.push(`🔀$${(row.children_cost_usd ?? 0).toFixed(2)}`);
+    }
     if (durStr) parts.push(`⏱${durStr}`);
     if (row.top_topics && row.top_topics.length > 0) {
       parts.push(`🏷 ${row.top_topics.join(", ")}`);
@@ -1492,6 +1557,15 @@ interface ActiveSubagentRow {
   detail: string;
 }
 
+interface WorkflowRow {
+  key: string;
+  title: string;
+  workflowId: string;
+  parent: string;
+  cost: number;
+  count: number;
+}
+
 /** Best-effort parse of a single crontab line. Returns null for blank/comment lines. */
 function parseCrontabLine(raw: string): CrontabRow | null {
   const line = raw.trim();
@@ -1515,6 +1589,7 @@ class TasksProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private crontabAvailable = true;
   private crontabError = "";
   private subagents: ActiveSubagentRow[] = [];
+  private workflows: WorkflowRow[] = [];
   private showCrontab = true;
 
   constructor(private readonly store: SessionStore | null) {}
@@ -1569,6 +1644,42 @@ class TasksProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       this.subagents = [];
     }
 
+    // --- Recent workflows (child transcripts under subagents/workflows) ---
+    // These are separate agent runs with their own usage/cost that Claude Code
+    // bills to your Max plan. We surface them here with cost so you can see
+    // where the quota went.
+    this.workflows = [];
+    if (this.store) {
+      try {
+        const recent = this.store.listRecent(300, true);
+        const wfRows = recent.filter((r: any) => r.kind === 'workflow' || (r.workflow_id && r.workflow_id.length > 0));
+        // Group by workflow_id + parent for nicer display; show most recent + aggregate cost per wf bucket when possible.
+        const byWf = new Map<string, { parent: string; cost: number; count: number; last: number; sampleTitle: string }>();
+        for (const r of wfRows) {
+          const wfid = (r as any).workflow_id || (r.session_id.includes('__workflow__') ? r.session_id.split('__workflow__')[1]?.split('__')[0] : 'unknown');
+          const key = `${r.parent_session_id || 'p'}:${wfid}`;
+          const cur = byWf.get(key) || { parent: r.parent_session_id || r.project_id || '', cost: 0, count: 0, last: 0, sampleTitle: r.title || '' };
+          cur.cost += (r.cost_usd || 0);
+          cur.count += 1;
+          if ((r.ended_at || r.mtime_ns / 1e6) > cur.last) {
+            cur.last = (r.ended_at || Math.floor(r.mtime_ns / 1e6));
+            cur.sampleTitle = r.title || '';
+          }
+          byWf.set(key, cur);
+        }
+        this.workflows = Array.from(byWf.entries()).map(([k, v]) => ({
+          key: k,
+          title: v.sampleTitle.replace(/ \[workflow\]$/, ''),
+          workflowId: k.split(':')[1] || '',
+          parent: v.parent,
+          cost: v.cost,
+          count: v.count,
+        })).sort((a, b) => b.cost - a.cost).slice(0, 20);
+      } catch {
+        this.workflows = [];
+      }
+    }
+
     this._onDidChange.fire();
   }
 
@@ -1580,6 +1691,7 @@ class TasksProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     if (!el) {
       const out: vscode.TreeItem[] = [];
       out.push(new TaskSectionItem("subagents", `Active sub-agents (${this.subagents.length})`));
+      out.push(new TaskSectionItem("workflows", `Workflow runs (${this.workflows.length})`));
       out.push(new TaskSectionItem("routines", "Scheduled routines"));
       if (this.showCrontab) {
         out.push(new TaskSectionItem("crontab", `Crontab (${this.crontab.length})`));
@@ -1592,6 +1704,12 @@ class TasksProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
           return [makeInfoItem("No sessions with active sub-agents right now.")];
         }
         return this.subagents.map((s) => new ActiveSubagentItem(s));
+      }
+      if (el.section === "workflows") {
+        if (this.workflows.length === 0) {
+          return [makeInfoItem("No workflow transcripts found yet. Run a workflow via Claude Code (Agent tool or /workflow) and refresh.")];
+        }
+        return this.workflows.map((w) => new WorkflowItem(w));
       }
       if (el.section === "routines") {
         return [
@@ -1613,10 +1731,10 @@ class TasksProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 }
 
 class TaskSectionItem extends vscode.TreeItem {
-  constructor(public readonly section: "subagents" | "routines" | "crontab", label: string) {
+  constructor(public readonly section: "subagents" | "routines" | "crontab" | "workflows", label: string) {
     super(label, vscode.TreeItemCollapsibleState.Expanded);
     this.iconPath = new vscode.ThemeIcon(
-      section === "subagents" ? "rocket" : section === "routines" ? "clock" : "calendar",
+      section === "subagents" ? "rocket" : section === "workflows" ? "git-branch" : section === "routines" ? "clock" : "calendar",
     );
     this.contextValue = `taskSection:${section}`;
   }
@@ -1651,6 +1769,19 @@ class CrontabItem extends vscode.TreeItem {
       title: "Edit crontab",
       arguments: [],
     };
+  }
+}
+
+class WorkflowItem extends vscode.TreeItem {
+  constructor(public readonly row: WorkflowRow) {
+    const costStr = row.cost > 0 ? `$${row.cost.toFixed(2)}` : '';
+    super(row.title || row.workflowId.slice(0, 12), vscode.TreeItemCollapsibleState.None);
+    this.description = `${row.count} run${row.count === 1 ? '' : 's'} · ${costStr}${row.parent ? ' · ' + row.parent : ''}`;
+    this.tooltip = new vscode.MarkdownString(
+      `**Workflow** \`${row.workflowId}\`\n\n${row.count} child agent run(s)\n\nCost: **${costStr || '$0'}**\nParent: \`${row.parent || '—'}\``,
+    );
+    this.iconPath = new vscode.ThemeIcon("git-branch");
+    this.contextValue = "workflowRun";
   }
 }
 

@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.2.5 — 2026-06-18
+
+### Fix: broken 1.2.4 install (extension failed to activate)
+
+The 1.2.4 `.vsix` was accidentally packaged **without** `node_modules`
+(~234 KB instead of ~980 KB). At runtime `require('node-sqlite3-wasm')`
+threw during module load, so `activate()` never ran — every sidebar view
+showed *"There is no data provider registered"* and commands like
+`codeSessions.refresh` / `codeSessions.toggleActivityView` were not found.
+
+- Rebuilt with `scripts/build-install.sh` (packages **with** dependencies).
+- Added a post-package guard in `build-install.sh` that fails if
+  `node_modules/node-sqlite3-wasm` is missing from the `.vsix`.
+
+## 1.2.4 — 2026-06-18
+
+### Workflow/subagent cost attribution
+
+- Recursive discovery of child transcripts under `subagents/` and
+  `subagents/workflows/`.
+- Child costs roll up into parent session rows (`🔀$X.XX` suffix).
+- **Workflow runs** section in Tasks view.
+- DB migration v16 (`kind`, `parent_session_id`, `workflow_id`).
+
+*(Note: the initial 1.2.4 `.vsix` build was broken — use 1.2.5.)*
+
 ## 1.2.3 — 2026-06-13
 
 ### Auto-recover from "database disk image is malformed"

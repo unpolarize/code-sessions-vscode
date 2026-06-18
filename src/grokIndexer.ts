@@ -435,6 +435,9 @@ function buildRows(
     first_user_msg: firstUserMsg,
     entrypoint: summary.agent_name ?? null,
     is_automated: false,
+    kind: 'session',
+    parent_session_id: null,
+    workflow_id: null,
     indexed_at: Date.now(),
     // Only stamp last_assistant_text_at when the session ACTUALLY had
     // an assistant reply. The day-bucket filter (last_response_epoch
@@ -482,6 +485,9 @@ function buildRows(
       cache_read_tokens: 0,
       cache_write_tokens: 0,
       cost_usd: 0,
+      kind: 'session',
+      parent_session_id: null,
+      workflow_id: null,
     };
   });
 

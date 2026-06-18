@@ -256,6 +256,23 @@ const MIGRATIONS: string[] = [
     AND entrypoint = 'sdk-cli'
     AND is_automated = 1;
   `,
+
+  // v16 — workflow / subagent transcript support.
+  // Child transcripts (Agent/Task tool spawns, /workflow runs) live under
+  // <parent-session-dir>/subagents/*.jsonl and /subagents/workflows/*/*.jsonl.
+  // They have their own usage blocks and real costs that were previously
+  // invisible to CS "cost today" and the main UI. We store them as rows
+  // too so their costs participate in aggregates and so we can list them.
+  // `kind` distinguishes 'session' | 'subagent' | 'workflow'.
+  // `parent_session_id` links a child back to its orchestrator session.
+  // `workflow_id` captures the wf_<uuid> bucket when present.
+  `
+  ALTER TABLE session ADD COLUMN kind TEXT NOT NULL DEFAULT 'session';
+  ALTER TABLE session ADD COLUMN parent_session_id TEXT;
+  ALTER TABLE session ADD COLUMN workflow_id TEXT;
+  CREATE INDEX idx_session_kind ON session(kind);
+  CREATE INDEX idx_session_parent ON session(parent_session_id);
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok";
@@ -294,6 +311,28 @@ export interface SessionRow {
   /** Source-specific telemetry blob (e.g. grok signals.json contents).
    * NULL for sources that don't emit it. See migration v9. */
   extras_json: string | null;
+  /** 'session' (top-level orchestrator transcript), 'subagent' (direct
+   * Agent/Task spawn under subagents/), or 'workflow' (under
+   * subagents/workflows/<wf>/). New in v16. */
+  kind: 'session' | 'subagent' | 'workflow';
+  /** For child transcripts, the session_id of the parent that spawned it. */
+  parent_session_id: string | null;
+  /** When kind==='workflow', the wf_<id> bucket name. */
+  workflow_id: string | null;
+}
+
+/** Per-parent aggregate of child subagent/workflow transcripts. */
+export interface ChildRollup {
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  child_count: number;
+  workflow_count: number;
+  subagent_count: number;
+  /** Latest child activity (ms epoch) — used to keep parent in the right day bucket. */
+  max_activity_ms: number;
 }
 
 export interface TurnRow {
@@ -351,6 +390,9 @@ function rowToSession(r: any): SessionRow {
     indexed_at: r.indexed_at,
     last_assistant_text_at: r.last_assistant_text_at ?? null,
     extras_json: r.extras_json ?? null,
+    kind: (r.kind as any) || 'session',
+    parent_session_id: r.parent_session_id ?? null,
+    workflow_id: r.workflow_id ?? null,
   };
 }
 
@@ -603,6 +645,7 @@ export class SessionStore {
 
         // session: explicit column list so the new `source` column is
         // populated even though it doesn't exist in the old schema.
+        // v16 columns (kind/parent/workflow) get defaults in the target table.
         this.db.exec(`
           INSERT OR IGNORE INTO session (
             session_id, source, project_path, project_id, projects_touched,
@@ -747,6 +790,57 @@ export class SessionStore {
     );
   }
 
+  /** Aggregate billable child transcripts (subagent + workflow) per parent
+   * session. Used to roll child spend into the parent row in the Sessions
+   * tree without listing children as separate sessions. */
+  childRollupByParent(): Map<string, ChildRollup> {
+    const sql = `
+      SELECT
+        parent_session_id,
+        COALESCE(SUM(cost_usd), 0) AS cost_usd,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+        COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+        COUNT(*) AS child_count,
+        COALESCE(SUM(CASE WHEN kind = 'workflow' THEN 1 ELSE 0 END), 0) AS workflow_count,
+        COALESCE(SUM(CASE WHEN kind = 'subagent' THEN 1 ELSE 0 END), 0) AS subagent_count,
+        MAX(COALESCE(last_assistant_text_at, ended_at, CAST(mtime_ns / 1000000 AS INTEGER))) AS max_activity_ms
+      FROM session
+      WHERE kind IN ('subagent', 'workflow')
+        AND parent_session_id IS NOT NULL
+      GROUP BY parent_session_id
+    `;
+    const out = new Map<string, ChildRollup>();
+    for (const r of this.db.prepare(sql).all() as any[]) {
+      if (!r.parent_session_id) continue;
+      out.set(r.parent_session_id, {
+        cost_usd: Number(r.cost_usd ?? 0),
+        input_tokens: Number(r.input_tokens ?? 0),
+        output_tokens: Number(r.output_tokens ?? 0),
+        cache_read_tokens: Number(r.cache_read_tokens ?? 0),
+        cache_write_tokens: Number(r.cache_write_tokens ?? 0),
+        child_count: Number(r.child_count ?? 0),
+        workflow_count: Number(r.workflow_count ?? 0),
+        subagent_count: Number(r.subagent_count ?? 0),
+        max_activity_ms: Number(r.max_activity_ms ?? 0),
+      });
+    }
+    return out;
+  }
+
+  /** Return session_ids of child transcripts whose parent is in `parentIds`. */
+  childSessionIdsForParents(parentIds: string[]): string[] {
+    if (parentIds.length === 0) return [];
+    const placeholders = parentIds.map(() => "?").join(",");
+    const sql = `
+      SELECT session_id FROM session
+      WHERE parent_session_id IN (${placeholders})
+        AND kind IN ('subagent', 'workflow')
+    `;
+    return (this.db.prepare(sql).all(...parentIds) as any[]).map((r) => String(r.session_id));
+  }
+
   upsertSession(s: SessionRow): void {
     this.db.prepare(`
       INSERT INTO session (
@@ -756,7 +850,7 @@ export class SessionStore {
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
         cost_usd, model, title, first_user_msg,
         entrypoint, is_automated, indexed_at, last_assistant_text_at,
-        extras_json
+        extras_json, kind, parent_session_id, workflow_id
       ) VALUES (
         @session_id, @source, @project_path, @project_id, @projects_touched, @jsonl_path,
         @mtime_ns, @size_bytes, @started_at, @ended_at,
@@ -764,7 +858,7 @@ export class SessionStore {
         @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens,
         @cost_usd, @model, @title, @first_user_msg,
         @entrypoint, @is_automated, @indexed_at, @last_assistant_text_at,
-        @extras_json
+        @extras_json, @kind, @parent_session_id, @workflow_id
       )
       ON CONFLICT(session_id) DO UPDATE SET
         source              = excluded.source,
@@ -791,13 +885,19 @@ export class SessionStore {
         is_automated        = excluded.is_automated,
         indexed_at          = excluded.indexed_at,
         last_assistant_text_at = excluded.last_assistant_text_at,
-        extras_json         = excluded.extras_json
+        extras_json         = excluded.extras_json,
+        kind                = excluded.kind,
+        parent_session_id   = excluded.parent_session_id,
+        workflow_id         = excluded.workflow_id
     `).run({
       ...s,
       projects_touched: s.projects_touched.join(","),
       is_automated: s.is_automated ? 1 : 0,
       last_assistant_text_at: s.last_assistant_text_at ?? null,
       extras_json: s.extras_json ?? null,
+      kind: s.kind || 'session',
+      parent_session_id: s.parent_session_id ?? null,
+      workflow_id: s.workflow_id ?? null,
     });
   }
 

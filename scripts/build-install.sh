@@ -54,6 +54,18 @@ if [ -z "${VSIX}" ]; then
   echo "No .vsix produced — did vsce package fail?" >&2
   exit 1
 fi
+
+# Guard: a slim .vsix (~200 KB) means vsce omitted node_modules — the
+# extension then fails at activate() with "Cannot find module
+# 'node-sqlite3-wasm'" and every view shows "no data provider registered".
+# (Don't pipe unzip → grep -q under pipefail: SIGPIPE makes the pipeline fail
+# even when grep finds a match.)
+VSIX_BYTES=$(wc -c < "${VSIX}" | tr -d ' ')
+if [ "${VSIX_BYTES}" -lt 500000 ]; then
+  echo "ERROR: ${VSIX} is only ${VSIX_BYTES} bytes — node_modules likely missing." >&2
+  echo "Re-run from a tree with 'npm install' and vsce WITHOUT --no-dependencies." >&2
+  exit 1
+fi
 echo "==> built ${VSIX}"
 
 if [ "${INSTALL}" -eq 1 ]; then
