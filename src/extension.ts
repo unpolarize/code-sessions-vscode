@@ -8,6 +8,7 @@ import { openInsightsView } from "./insightsView";
 import { SessionStore } from "./db";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
+import { syncGitToStore } from "./gitIndexer";
 import { classifySession } from "./topicClassifier";
 import { openAgentGraph } from "./agentGraph";
 import { openTrajectoryView } from "./trajectoryView";
@@ -301,7 +302,7 @@ function escapeMd(s: string): string {
 // --------------------------------------------------------------------------- //
 
 interface SessionRow {
-  source: "claude" | "grok";
+  source: "claude" | "grok" | "git";
   /** Dominant / last-seen model id from the JSONL (`claude-opus-4-7`,
    * `grok-build`, etc.). Null if the indexer hasn't pinned one yet. */
   model: string | null;
@@ -1024,7 +1025,7 @@ class BucketItem extends vscode.TreeItem {
     /** Optional source filter — set when the bucket sits under a
      * SourceBucketItem so child expansion restricts to that source. Undefined
      * for kb/project buckets which are claude-only today. */
-    public readonly source?: "claude" | "grok",
+    public readonly source?: "claude" | "grok" | "git",
   ) {
     let label = BUCKET_LABEL[bucket];
     if (kind === "session" && totals) {
@@ -1063,7 +1064,7 @@ class SessionItem extends vscode.TreeItem {
     const titleText = row.title || row.session;
     // Source marker — always visible regardless of state. Prefix the label
     // so it lines up with the ago column. [C] = Claude, [G] = Grok.
-    const sourceMarker = row.source === "grok" ? "[G]" : "[C]";
+    const sourceMarker = row.source === "grok" ? "[G]" : row.source === "git" ? "[S]" : "[C]";
     super(
       `${sourceMarker} ${ago}  ·  ${titleText}`,
       // Always collapse by default — the user opens children on demand instead
@@ -2016,7 +2017,19 @@ export function activate(ctx: vscode.ExtensionContext) {
           console.error("[code-sessions] grok sync failed:", e);
         }
       }
-      // Refresh providers when both syncs finish so they see new rows.
+      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("git.enabled", true)) {
+        try {
+          const gitStats = syncGitToStore(s, {
+            includeLocalHost: vscode.workspace
+              .getConfiguration("codeSessions")
+              .get<boolean>("git.includeLocalHost", false),
+          });
+          console.log(`[code-sessions] git store sync: ${JSON.stringify(gitStats)}`);
+        } catch (e: any) {
+          console.error("[code-sessions] git store sync failed:", e);
+        }
+      }
+      // Refresh providers when all syncs finish so they see new rows.
       sessions.refresh();
     }, 200);
   }
@@ -2185,8 +2198,36 @@ export function activate(ctx: vscode.ExtensionContext) {
             console.error("[code-sessions] refresh grok sync failed", e);
           }
         }
+        if (cfg.get<boolean>("git.enabled", true)) {
+          try {
+            syncGitToStore(store, {
+              includeLocalHost: cfg.get<boolean>("git.includeLocalHost", false),
+              ...(recent > 0 ? { forceRecentN: recent } : {}),
+            });
+          } catch (e) {
+            console.error("[code-sessions] refresh git store sync failed", e);
+          }
+        }
       }
       await sessions.refresh();
+    }),
+    vscode.commands.registerCommand("codeSessions.enableCapture", async () => {
+      // Enable CS (code-sessions library) instrumentation: install hooks +
+      // labeling skills for all coding CLIs and start the headless capture
+      // daemon, which persists every session into the git-backed ~/.sessions
+      // store that this extension reads. Requires the CS CLI on PATH
+      // (`npm i -g @unpolarize/code-sessions`).
+      const term = vscode.window.createTerminal({ name: "Code Sessions: capture" });
+      term.show(true);
+      term.sendText(
+        "command -v code-sessions >/dev/null 2>&1 || npm i -g @unpolarize/code-sessions; " +
+          "code-sessions init; code-sessions install-hooks; code-sessions install-skills --agent all; " +
+          "code-sessions backfill --agent all; code-sessions index; " +
+          "echo '[code-sessions] capture enabled — starting daemon (Ctrl-C to stop)'; code-sessions start",
+      );
+      vscode.window.showInformationMessage(
+        "Code Sessions: enabling capture (hooks + skills + daemon) in a terminal. New agent sessions will be persisted to ~/.sessions.",
+      );
     }),
     vscode.commands.registerCommand("codeSessions.refreshFull", async () => {
       // Force a full re-parse of every JSONL on disk. Use this if the

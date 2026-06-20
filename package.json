@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.2.6",
+  "version": "1.3.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -77,6 +77,12 @@
       ]
     },
     "commands": [
+      {
+        "command": "codeSessions.enableCapture",
+        "title": "Enable capture (install hooks + skills + start daemon)",
+        "icon": "$(plug)",
+        "category": "Code Sessions"
+      },
       {
         "command": "codeSessions.refresh",
         "title": "Refresh sessions",
@@ -469,6 +475,16 @@
           "type": "boolean",
           "default": true,
           "description": "Discover and index Grok Build sessions from ~/.grok/sessions/ alongside Claude Code sessions."
+        },
+        "codeSessions.git.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Import sessions from the portable git-backed store (~/.sessions) written by the code-sessions (CS) library/agent, so sessions captured on other machines and via the CS daemon appear here."
+        },
+        "codeSessions.git.includeLocalHost": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also import CS git-store sessions captured on THIS machine. Off by default because they are already indexed from their native JSONL (higher fidelity); enabling can create duplicates."
         },
         "codeSessions.resumeBackend": {
           "type": "string",

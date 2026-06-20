@@ -18,7 +18,7 @@ import { parseConversation, ParsedConversation } from "./conversationParser";
 interface SessionRow {
   /** Source CLI that produced the session. Defaults to 'claude' when absent
    * (legacy rows from before v1.0's source-tagging migration). */
-  source?: 'claude' | 'grok';
+  source?: 'claude' | 'grok' | 'git';
   /** Detected model id (e.g. claude-opus-4-7, grok-build). May be null. */
   model?: string | null;
   mtime_epoch: number;
