@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -115,6 +115,12 @@
         "command": "codeSessions.openInsights",
         "title": "Open insights dashboard",
         "icon": "$(graph)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.openUsage",
+        "title": "Open usage dashboard (from CS library)",
+        "icon": "$(dashboard)",
         "category": "Code Sessions"
       },
       {
@@ -485,6 +491,21 @@
           "type": "boolean",
           "default": false,
           "description": "Also import CS git-store sessions captured on THIS machine. Off by default because they are already indexed from their native JSONL (higher fidelity); enabling can create duplicates."
+        },
+        "codeSessions.notifications.finished": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a popup when an agent session finishes (was active, now idle)."
+        },
+        "codeSessions.notifications.blocked": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a popup when a session looks blocked/stuck (in a tool call far longer than expected)."
+        },
+        "codeSessions.notifications.stuckSeconds": {
+          "type": "number",
+          "default": 180,
+          "description": "How long a session may stay in one tool call before it's flagged as possibly blocked."
         },
         "codeSessions.resumeBackend": {
           "type": "string",

@@ -5,6 +5,7 @@ import * as os from "os";
 import * as path from "path";
 import { openConversationViewer } from "./conversationView";
 import { openInsightsView } from "./insightsView";
+import { openUsageView } from "./usageView";
 import { SessionStore } from "./db";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
@@ -205,6 +206,10 @@ function createLiveStatusBar(
   // Track which sessions we have already notified about so we don't fire a
   // toast every poll tick; clear an id once the session is no longer awaiting.
   const notifiedAwaiting = new Set<string>();
+  // session_id -> title for sessions that were active last tick (finished detection)
+  const prevActive = new Map<string, string>();
+  // session_ids we've already warned are stuck (cleared when they leave in_tool)
+  const notifiedStuck = new Set<string>();
   const tick = () => {
     try {
       const payload = buildUpdate(store);
@@ -256,6 +261,52 @@ function createLiveStatusBar(
         }
       }
       for (const id of [...notifiedAwaiting]) if (!stillAwaitingIds.has(id)) notifiedAwaiting.delete(id);
+
+      // --- finished / blocked notifications (questions handled above) ---
+      const ncfg = vscode.workspace.getConfiguration("codeSessions");
+      const activeNow = new Map<string, (typeof payload.cards)[number]>();
+      for (const c of payload.cards) {
+        if (c.now.kind === "in_tool" || c.now.kind === "responding" || c.now.kind === "awaiting_user") {
+          activeNow.set(c.session_id, c);
+        }
+      }
+      // finished: a session that was active last tick is no longer active now
+      if (ncfg.get<boolean>("notifications.finished", true)) {
+        for (const [id, title] of prevActive) {
+          if (!activeNow.has(id)) {
+            vscode.window
+              .showInformationMessage(`Session "${title}" finished.`, "Open live monitor")
+              .then((sel) => {
+                if (sel === "Open live monitor") vscode.commands.executeCommand("codeSessions.openLiveMonitor");
+              });
+          }
+        }
+      }
+      // blocked/stuck: stuck in a tool call far longer than expected
+      if (ncfg.get<boolean>("notifications.blocked", true)) {
+        const stuckSeconds = Math.max(30, ncfg.get<number>("notifications.stuckSeconds", 180));
+        for (const c of payload.cards) {
+          if (c.now.kind === "in_tool" && c.now.ageSec >= stuckSeconds && !notifiedStuck.has(c.session_id)) {
+            notifiedStuck.add(c.session_id);
+            vscode.window
+              .showWarningMessage(
+                `Session "${c.title}" may be blocked — in tool "${c.now.detail}" for ${c.now.ageSec}s.`,
+                "Open live monitor",
+              )
+              .then((sel) => {
+                if (sel === "Open live monitor") vscode.commands.executeCommand("codeSessions.openLiveMonitor");
+              });
+          }
+        }
+        for (const id of [...notifiedStuck]) {
+          const c = activeNow.get(id);
+          if (!c || c.now.kind !== "in_tool") notifiedStuck.delete(id);
+        }
+      }
+      // remember the active set for next tick's finished detection
+      prevActive.clear();
+      for (const [id, c] of activeNow) prevActive.set(id, c.title);
+
       item.tooltip = tooltipFor(payload);
       // Schedule next poll based on activity
       if (timer) clearTimeout(timer);
@@ -2262,6 +2313,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       await sessions.refresh();
     }),
     vscode.commands.registerCommand("codeSessions.openInsights", () => openInsightsView(ctx, store)),
+    vscode.commands.registerCommand("codeSessions.openUsage", () => openUsageView(ctx)),
     // Drilldown variant: called from a session row's metrics line. Opens the
     // Insights panel but pre-filters every chart and KPI to just that session
     // so the user sees its cost/tokens/messages in context of the dashboards.
