@@ -9,6 +9,7 @@
 
 import * as vscode from "vscode";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -64,12 +65,26 @@ function planningConfig() {
 function defaultCli(): string {
   return path.join(os.homedir(), "projects/unpolarize/knowledge-planning/src/cli/index.ts");
 }
+// VS Code launched from the Dock/Finder usually has no /opt/homebrew/bin on PATH, so a
+// bare `node` (needed ≥22 for TS stripping + node:sqlite) won't resolve. Resolve an
+// absolute node binary, preferring the user's setting, then common install locations.
+function resolveNode(): string {
+  const configured = planningConfig().get<string>("nodePath");
+  if (configured && configured.includes("/") && existsSync(configured)) return configured;
+  for (const c of ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/opt/local/bin/node", "/usr/bin/node"]) {
+    if (existsSync(c)) return c;
+  }
+  return configured || "node";
+}
+
 function runKp(args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const cfg = planningConfig();
-  const node = cfg.get<string>("nodePath") || "node";
+  const node = resolveNode();
   const cli = cfg.get<string>("cliPath") || defaultCli();
   const root = cfg.get<string>("storeRoot") || "";
   const env = { ...process.env } as Record<string, string>;
+  // ensure common bin dirs are on PATH for the child too
+  env.PATH = `/opt/homebrew/bin:/usr/local/bin:${env.PATH || ""}`;
   if (root) env.KP_ROOT = root;
   const res = spawnSync(node, [cli, ...args], { encoding: "utf8", env, maxBuffer: 32 * 1024 * 1024 });
   return {
