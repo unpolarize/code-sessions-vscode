@@ -6,6 +6,7 @@ import * as path from "path";
 import { openConversationViewer } from "./conversationView";
 import { openInsightsView } from "./insightsView";
 import { openUsageView } from "./usageView";
+import { openSessionGraphView } from "./sessionGraphView";
 import { SessionStore } from "./db";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
@@ -2314,6 +2315,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("codeSessions.openInsights", () => openInsightsView(ctx, store)),
     vscode.commands.registerCommand("codeSessions.openUsage", () => openUsageView(ctx)),
+    vscode.commands.registerCommand("codeSessions.openSessionGraph", () => openSessionGraphView(ctx)),
     // Drilldown variant: called from a session row's metrics line. Opens the
     // Insights panel but pre-filters every chart and KPI to just that session
     // so the user sees its cost/tokens/messages in context of the dashboards.
