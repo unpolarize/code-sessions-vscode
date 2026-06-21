@@ -39,10 +39,35 @@
           "id": "code-activity",
           "title": "Code Sessions",
           "icon": "$(comment-discussion)"
+        },
+        {
+          "id": "code-planning",
+          "title": "Planning",
+          "icon": "$(checklist)"
         }
       ]
     },
     "views": {
+      "code-planning": [
+        {
+          "id": "codePlanningToday",
+          "name": "Today",
+          "icon": "$(calendar)",
+          "contextualTitle": "Today's plan (knowledge-planning)"
+        },
+        {
+          "id": "codePlanningInbox",
+          "name": "Inbox",
+          "icon": "$(inbox)",
+          "contextualTitle": "Capture ideas + knowledge blockers"
+        },
+        {
+          "id": "codePlanningProjects",
+          "name": "Projects",
+          "icon": "$(repo)",
+          "contextualTitle": "Projects & catalog entries with their ideas/plans"
+        }
+      ],
       "code-activity": [
         {
           "id": "codeSessions",
@@ -77,6 +102,65 @@
       ]
     },
     "commands": [
+      {
+        "command": "codePlanning.refresh",
+        "title": "Planning: Refresh",
+        "icon": "$(refresh)",
+        "category": "Planning"
+      },
+      {
+        "command": "codePlanning.capture",
+        "title": "Planning: Capture idea",
+        "icon": "$(add)",
+        "category": "Planning"
+      },
+      {
+        "command": "codePlanning.showBoard",
+        "title": "Planning: Open board",
+        "icon": "$(layout)",
+        "category": "Planning"
+      },
+      {
+        "command": "codePlanning.showGraph",
+        "title": "Planning: Open graph",
+        "icon": "$(type-hierarchy)",
+        "category": "Planning"
+      },
+      {
+        "command": "codePlanning.openObject",
+        "title": "Planning: Open object",
+        "category": "Planning"
+      },
+      {
+        "command": "codePlanning.accept",
+        "title": "Accept idea",
+        "icon": "$(check)",
+        "category": "Planning"
+      },
+      {
+        "command": "codePlanning.promote",
+        "title": "Promote idea → plan",
+        "icon": "$(arrow-up)",
+        "category": "Planning"
+      },
+      {
+        "command": "codePlanning.setStatus",
+        "title": "Set status / move lane",
+        "icon": "$(arrow-swap)",
+        "category": "Planning"
+      },
+      {
+        "command": "codePlanning.linkSession",
+        "title": "Link session",
+        "icon": "$(link)",
+        "category": "Planning"
+      },
+      {
+        "command": "codePlanning.startWork",
+        "title": "Start work (open + terminal)",
+        "icon": "$(play)",
+        "category": "Planning"
+      },
       {
         "command": "codeSessions.enableCapture",
         "title": "Enable capture (install hooks + skills + start daemon)",
@@ -304,6 +388,26 @@
     "menus": {
       "view/title": [
         {
+          "command": "codePlanning.capture",
+          "when": "view == codePlanningToday || view == codePlanningInbox || view == codePlanningProjects",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codePlanning.showBoard",
+          "when": "view == codePlanningToday || view == codePlanningProjects",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codePlanning.showGraph",
+          "when": "view == codePlanningProjects || view == codePlanningInbox",
+          "group": "navigation@3"
+        },
+        {
+          "command": "codePlanning.refresh",
+          "when": "view == codePlanningToday || view == codePlanningInbox || view == codePlanningProjects",
+          "group": "navigation@9"
+        },
+        {
           "command": "codeSessions.openLiveMonitor",
           "when": "view == codeSessions",
           "group": "navigation@1"
@@ -355,6 +459,36 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "codePlanning.accept",
+          "when": "viewItem == planning.idea",
+          "group": "inline@1"
+        },
+        {
+          "command": "codePlanning.promote",
+          "when": "viewItem == planning.idea",
+          "group": "inline@2"
+        },
+        {
+          "command": "codePlanning.startWork",
+          "when": "viewItem == planning.plan || viewItem == planning.idea",
+          "group": "inline@3"
+        },
+        {
+          "command": "codePlanning.setStatus",
+          "when": "viewItem =~ /^planning\\.(idea|plan|task)$/",
+          "group": "planning@1"
+        },
+        {
+          "command": "codePlanning.linkSession",
+          "when": "viewItem =~ /^planning\\.(idea|plan|task|daily_plan)$/",
+          "group": "planning@2"
+        },
+        {
+          "command": "codePlanning.promote",
+          "when": "viewItem == planning.idea",
+          "group": "planning@3"
+        },
         {
           "command": "codeSessions.resume",
           "when": "view == codeSessions && (viewItem == session || viewItem == sessionAutomated || viewItem == session-starred || viewItem == sessionAutomated-starred)",
@@ -437,6 +571,21 @@
     "configuration": {
       "title": "Code Sessions",
       "properties": {
+        "codeSessions.planning.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the knowledge-planning CLI entry (src/cli/index.ts). Empty → ~/projects/unpolarize/knowledge-planning/src/cli/index.ts."
+        },
+        "codeSessions.planning.nodePath": {
+          "type": "string",
+          "default": "node",
+          "description": "Node binary used to run the knowledge-planning CLI (needs Node ≥22 with TypeScript stripping)."
+        },
+        "codeSessions.planning.storeRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Planning store root (KP_ROOT). Empty → the CLI default (~/docs/planning)."
+        },
         "codeSessions.limit": {
           "type": "number",
           "default": 100,

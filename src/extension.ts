@@ -7,6 +7,7 @@ import { openConversationViewer } from "./conversationView";
 import { openInsightsView } from "./insightsView";
 import { openUsageView } from "./usageView";
 import { openSessionGraphView } from "./sessionGraphView";
+import { registerPlanning } from "./planning";
 import { SessionStore } from "./db";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
@@ -1962,6 +1963,10 @@ export function activate(ctx: vscode.ExtensionContext) {
   const log = vscode.window.createOutputChannel("Code Sessions");
   ctx.subscriptions.push(log);
   log.appendLine(`[activate] code-sessions starting (VS Code ${vscode.version})`);
+
+  // Interactive Planning mode (knowledge-planning store via the `kp` CLI):
+  // Today / Inbox / Projects trees, kanban board + graph webviews, status bar.
+  registerPlanning(ctx, log);
 
   // One-time settings migration: copy any values the user set under the old
   // `coderSessions.*` / `claudeSessions.*` (and the KbChanges/ProjectsActivity/
