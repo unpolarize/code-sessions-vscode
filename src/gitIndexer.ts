@@ -324,6 +324,17 @@ export interface GitSyncStats {
   elapsed_ms: number;
 }
 
+/** Agents CSV already indexes natively (from their own JSONL). Own-host sessions
+ * of these are skipped from the git store to avoid duplicates; everything else
+ * (codex, codebuild, …) is imported even on this host so CSV shows it from CS. */
+const NATIVELY_INDEXED = new Set(["claude-code", "claude", "grok"]);
+
+function isLocalDuplicate(info: GitSessionInfo, localHost: string): boolean {
+  if (info.host !== localHost) return false;
+  const agent = readJson<Envelope>(info.sessionJsonPath)?.agent ?? "";
+  return NATIVELY_INDEXED.has(agent);
+}
+
 /** Full sync: import every new/changed git-store session into SQLite. Mirrors
  * the `syncToStore` / `syncGrokToStore` contract. */
 export function syncGitToStore(
@@ -357,7 +368,7 @@ export function syncGitToStore(
   let skippedLocal = 0;
   const toParse: GitSessionInfo[] = [];
   for (const info of disk) {
-    if (!opts.includeLocalHost && info.host === localHost) {
+    if (!opts.includeLocalHost && isLocalDuplicate(info, localHost)) {
       skippedLocal += 1;
       continue;
     }
@@ -373,7 +384,7 @@ export function syncGitToStore(
 
   // Only consider non-local sessions for removal detection.
   const diskPaths = new Set(
-    disk.filter((d) => opts.includeLocalHost || d.host !== localHost).map((d) => d.sessionJsonPath),
+    disk.filter((d) => opts.includeLocalHost || !isLocalDuplicate(d, localHost)).map((d) => d.sessionJsonPath),
   );
   const removedPaths: string[] = [];
   for (const p of known.keys()) if (!diskPaths.has(p)) removedPaths.push(p);
