@@ -9,9 +9,10 @@
 
 import * as vscode from "vscode";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
 
 interface ObjRow {
   id: string;
@@ -462,7 +463,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   );
 
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-  status.command = "codePlanning.showBoard";
+  status.command = "codePlanning.openDashboard";
   ctx.subscriptions.push(status);
   const refreshStatus = () => {
     const snap = model.get();
@@ -495,6 +496,114 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       runKp(["set-status", msg.id, msg.status]);
       model.reload(log);
     } else if (msg.type === "refresh") model.reload(log);
+  };
+
+  // --- Agent actions: build a context-rich prompt and launch an agent (item 4) ---
+  const stateDir = path.join(os.homedir(), ".local/state/kp");
+  const detailOf = (id: string): any | null => {
+    const r = runKp(["show", id]);
+    if (!r.ok) return null;
+    try {
+      return JSON.parse(r.stdout);
+    } catch {
+      return null;
+    }
+  };
+  const agentPrompt = (action: string, d: any): string => {
+    const head =
+      `Work item: ${d.title} (id: ${d.id}, type: ${d.type})\n` +
+      `Planning store: ~/docs/planning · file: ~/docs/planning/${d.relpath}\n` +
+      `Use the kp CLI (\`node ~/projects/unpolarize/knowledge-planning/src/cli/index.ts <cmd>\`) and the /planning-* skills. Reindex when done.\n`;
+    const body = d.body ? `\nNotes:\n${d.body}\n` : "";
+    const refLines = [
+      ...((d.blocked_by || []) as any[]).map((b) => `- blocked_by ${b.path}${b.decided ? " (decided)" : " (OPEN — resolve first)"}`),
+      ...((d.cites || []) as any[]).map((c) => `- cites ${c.path}`),
+      ...((d.children || []) as any[]).map((c) => `- child ${c.id}`),
+    ].join("\n");
+    const refs = refLines ? `\nReferences:\n${refLines}\n` : "";
+    const tasks: Record<string, string> = {
+      ideate: "Task: brainstorm and expand this into 3–6 concrete sub-ideas/directions. Append shaped notes to the file and create sub-idea files (type:idea, status:capture) under ~/docs/planning/ideas/ where useful. Follow /planning-refine.",
+      spec: `Task: draft a speckit spec — Problem, Functional Requirements (FR-n), Success criteria, Non-goals — for this item. If it is an idea, first promote it (\`kp promote ${d.id}\`) then write the spec into the plan body.`,
+      decompose: `Task: break this into concrete deliverable tasks. Create task files under ~/docs/planning/tasks/ (type:task, status:inbox, plan:${d.id}) and reindex.`,
+      execute: `Task: implement this work item. Use the repos/paths referenced above. When the session is done, run: \`kp link-session ${d.id} <session-uuid>\`.`,
+    };
+    return head + body + refs + "\n" + (tasks[action] || tasks.execute);
+  };
+  const launchAgent = (action: string, id: string) => {
+    const d = detailOf(id);
+    if (!d) {
+      void vscode.window.showWarningMessage(`Planning: could not load ${id}`);
+      return;
+    }
+    const prompt = agentPrompt(action, d);
+    mkdirSync(stateDir, { recursive: true });
+    const file = path.join(stateDir, `agent-${action}-${id.replace(/\W+/g, "_")}.md`);
+    writeFileSync(file, prompt, "utf8");
+    const term = vscode.window.createTerminal({ name: `agent:${action}:${id.split("/").pop()}`, cwd: path.join(os.homedir(), "docs") });
+    term.show();
+    term.sendText(`claude "$(cat '${file}')"`, true);
+    void vscode.window.showInformationMessage(`Planning: launched ${action} agent for ${id}.`);
+  };
+  const openInCB = async (id: string) => {
+    const d = detailOf(id);
+    const ctxText = d ? agentPrompt("execute", d) : id;
+    await vscode.env.clipboard.writeText(ctxText);
+    const cmds = await vscode.commands.getCommands(true);
+    if (cmds.includes("codeBuild.newConversation")) {
+      await vscode.commands.executeCommand("codeBuild.newConversation");
+      void vscode.window.showInformationMessage(`Code Build opened — ${id} context copied to clipboard; paste to start.`);
+    } else {
+      void vscode.window.showWarningMessage("Code Build not installed. Context copied to clipboard.");
+    }
+  };
+
+  const dashAction = (msg: any) => {
+    if (!msg) return;
+    const snap = model.get();
+    if (msg.type === "open") {
+      if (msg.kbPath && snap) void vscode.window.showTextDocument(vscode.Uri.file(path.join(snap.kb_root, msg.kbPath)));
+      else if (msg.id && snap) {
+        const o = (snap.objects || []).find((x: any) => x.id === msg.id);
+        if (o) void vscode.window.showTextDocument(vscode.Uri.file(path.join(snap.root, o.path)));
+      } else if (msg.path) void vscode.window.showTextDocument(vscode.Uri.file(msg.path));
+      return;
+    }
+    if (msg.type !== "action") return;
+    const id = msg.id as string;
+    switch (msg.action) {
+      case "capture":
+        void vscode.commands.executeCommand("codePlanning.capture");
+        break;
+      case "openFile":
+        dashAction({ type: "open", id });
+        break;
+      case "promote": {
+        const r = runKp(["promote", id]);
+        void vscode.window.showInformationMessage(r.ok ? r.stdout.trim() : `promote failed: ${r.stderr}`);
+        model.reload(log);
+        break;
+      }
+      case "link":
+        void vscode.commands.executeCommand("codePlanning.linkSession", id);
+        break;
+      case "openCB":
+        void openInCB(id);
+        break;
+      case "ideate":
+      case "spec":
+      case "decompose":
+      case "execute":
+        launchAgent(msg.action, id);
+        break;
+    }
+  };
+
+  const dashDeps: DashboardDeps = {
+    getSnapshot: () => model.get(),
+    reload: () => model.reload(log),
+    onChange: model.onDidChange.event,
+    runKp: (args) => runKp(args),
+    onAction: dashAction,
   };
 
   ctx.subscriptions.push(
@@ -558,14 +667,9 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       term.show();
       if (id) term.sendText(`# Working on ${id}. After the session: kp link-session ${id} <session-uuid>`, false);
     }),
-    vscode.commands.registerCommand("codePlanning.showBoard", () => {
-      if (BoardPanel.current) BoardPanel.current.reveal();
-      else BoardPanel.current = new BoardPanel(model, onWebviewAction);
-    }),
-    vscode.commands.registerCommand("codePlanning.showGraph", () => {
-      if (GraphPanel.current) GraphPanel.current.reveal();
-      else GraphPanel.current = new GraphPanel(model, onWebviewAction);
-    }),
+    vscode.commands.registerCommand("codePlanning.openDashboard", () => DashboardPanel.show(dashDeps)),
+    vscode.commands.registerCommand("codePlanning.showBoard", () => DashboardPanel.show(dashDeps, "board")),
+    vscode.commands.registerCommand("codePlanning.showGraph", () => DashboardPanel.show(dashDeps, "graph")),
     vscode.commands.registerCommand("codePlanning.capture", async () => {
       const text = await vscode.window.showInputBox({ prompt: "Capture an idea" });
       if (text) {
