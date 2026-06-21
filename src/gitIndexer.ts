@@ -56,6 +56,7 @@ interface Envelope {
   totals?: { input_tokens?: number; output_tokens?: number; cost_usd?: number };
   title?: string;
   labels?: string[];
+  native_ref?: { format?: string; uuid?: string };
 }
 
 interface CanonicalTurn {
@@ -324,15 +325,17 @@ export interface GitSyncStats {
   elapsed_ms: number;
 }
 
-/** Agents CSV already indexes natively (from their own JSONL). Own-host sessions
- * of these are skipped from the git store to avoid duplicates; everything else
- * (codex, codebuild, …) is imported even on this host so CSV shows it from CS. */
-const NATIVELY_INDEXED = new Set(["claude-code", "claude", "grok"]);
+/** Native transcript formats CSV already indexes directly. Own-host sessions of
+ * these are skipped from the git store to avoid duplicates; everything else
+ * (codebuild-jsonl, codex-rollout, …) is imported even on this host so CSV shows
+ * it from CS. We key on native_ref.format, not agent, because a Code Build
+ * session's agent is its backend (claude) yet it is NOT a native claude session. */
+const NATIVE_FORMATS = new Set(["claude-jsonl", "grok-jsonl"]);
 
 function isLocalDuplicate(info: GitSessionInfo, localHost: string): boolean {
   if (info.host !== localHost) return false;
-  const agent = readJson<Envelope>(info.sessionJsonPath)?.agent ?? "";
-  return NATIVELY_INDEXED.has(agent);
+  const fmt = readJson<Envelope>(info.sessionJsonPath)?.native_ref?.format ?? "";
+  return NATIVE_FORMATS.has(fmt);
 }
 
 /** Full sync: import every new/changed git-store session into SQLite. Mirrors
