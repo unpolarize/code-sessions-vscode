@@ -309,7 +309,7 @@ class BoardPanel {
       const rows = snap.board.lanes[lane] || [];
       const cards = rows
         .map(
-          (o) => `<div class="card" data-id="${esc(o.id)}" data-path="${esc(path.join(snap.root, o.path))}">
+          (o) => `<div class="card" draggable="true" data-id="${esc(o.id)}" data-path="${esc(path.join(snap.root, o.path))}">
             <div class="t">${esc(o.title || o.id)}</div>
             <div class="m">${esc(o.type)}${o.domain ? " · " + esc(o.domain) : ""}</div>
             <div class="actions">
@@ -323,17 +323,19 @@ class BoardPanel {
           </div>`,
         )
         .join("");
-      return `<div class="col"><h3>${lane} <span class="count">${rows.length}</span></h3>${cards}</div>`;
+      return `<div class="col" data-lane="${lane}"><h3>${lane} <span class="count">${rows.length}</span></h3>${cards}</div>`;
     }).join("");
     return `<!DOCTYPE html><html><head><meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${n}';">
     <style>
       body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);padding:8px}
       .board{display:flex;gap:10px;align-items:flex-start;overflow-x:auto}
-      .col{min-width:200px;flex:1;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:6px;padding:6px}
+      .col{min-width:200px;flex:1;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:6px;padding:6px;min-height:60px}
+      .col.over{outline:2px dashed var(--vscode-focusBorder);outline-offset:-2px}
       h3{font-size:12px;text-transform:uppercase;margin:4px 0 8px}
       .count{opacity:.6}
-      .card{background:var(--vscode-editor-background);border:1px solid var(--vscode-widget-border);border-radius:5px;padding:6px;margin-bottom:6px}
+      .card{background:var(--vscode-editor-background);border:1px solid var(--vscode-widget-border);border-radius:5px;padding:6px;margin-bottom:6px;cursor:grab}
+      .card.dragging{opacity:.4}
       .t{font-weight:600;font-size:13px}
       .m{opacity:.7;font-size:11px;margin:2px 0 6px}
       .actions{display:flex;gap:6px}
@@ -353,6 +355,16 @@ class BoardPanel {
       document.querySelectorAll('select[data-act="move"]').forEach(s=>s.addEventListener('change',e=>{
         vscode.postMessage({type:'setStatus',id:e.target.getAttribute('data-id'),status:e.target.value});
       }));
+      // drag a card across lanes → set-status to the target lane
+      document.querySelectorAll('.card').forEach(c=>{
+        c.addEventListener('dragstart',e=>{e.dataTransfer.setData('text/plain',c.getAttribute('data-id'));e.dataTransfer.effectAllowed='move';c.classList.add('dragging');});
+        c.addEventListener('dragend',()=>c.classList.remove('dragging'));
+      });
+      document.querySelectorAll('.col').forEach(col=>{
+        col.addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='move';col.classList.add('over');});
+        col.addEventListener('dragleave',()=>col.classList.remove('over'));
+        col.addEventListener('drop',e=>{e.preventDefault();col.classList.remove('over');const id=e.dataTransfer.getData('text/plain');const lane=col.getAttribute('data-lane');if(id&&lane)vscode.postMessage({type:'setStatus',id:id,status:lane});});
+      });
     </script></body></html>`;
   }
 }
@@ -509,13 +521,27 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         model.reload(log);
       }
     }),
-    vscode.commands.registerCommand("codePlanning.startWork", (item) => {
+    vscode.commands.registerCommand("codePlanning.startWork", async (item) => {
       const id = idOf(item);
       const abs = item instanceof PlanningItem ? item.absFsPath : undefined;
+      const snap = model.get();
+      const blockers = (snap?.blocked ?? []).filter((b) => b.id === id);
+      if (blockers.length && snap) {
+        const choice = await vscode.window.showWarningMessage(
+          `${id} is blocked by ${blockers.length} unresolved knowledge ref(s): ${blockers.map((b) => b.path).join(", ")}`,
+          "Open blocker",
+          "Start anyway",
+        );
+        if (choice === "Open blocker") {
+          void vscode.window.showTextDocument(vscode.Uri.file(path.join(snap.kb_root, blockers[0].path)));
+          return;
+        }
+        if (choice !== "Start anyway") return;
+      }
       if (abs) void vscode.window.showTextDocument(vscode.Uri.file(abs), { preview: false });
       const term = vscode.window.createTerminal({ name: `plan:${id ?? "work"}` });
       term.show();
-      if (id) term.sendText(`# Working on ${id} — start Code Build with this context, then /planning-link-session ${id} <uuid>`, false);
+      if (id) term.sendText(`# Working on ${id}. After the session: kp link-session ${id} <session-uuid>`, false);
     }),
     vscode.commands.registerCommand("codePlanning.showBoard", () => {
       if (BoardPanel.current) BoardPanel.current.reveal();
