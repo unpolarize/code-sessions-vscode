@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
+import { openCanvas } from "./planningCanvas";
 
 interface ObjRow {
   id: string;
@@ -589,6 +590,11 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       case "openCB":
         void openInCB(id);
         break;
+      case "openCanvas": {
+        const root = snap?.root || path.join(os.homedir(), "docs", "planning");
+        openCanvas(ctx, root);
+        break;
+      }
       case "ideate":
       case "spec":
       case "decompose":
@@ -668,6 +674,10 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       if (id) term.sendText(`# Working on ${id}. After the session: kp link-session ${id} <session-uuid>`, false);
     }),
     vscode.commands.registerCommand("codePlanning.openDashboard", () => DashboardPanel.show(dashDeps)),
+    vscode.commands.registerCommand("codePlanning.openCanvas", () => {
+      const root = model.get()?.root || path.join(os.homedir(), "docs", "planning");
+      openCanvas(ctx, root);
+    }),
     vscode.commands.registerCommand("codePlanning.showBoard", () => DashboardPanel.show(dashDeps, "board")),
     vscode.commands.registerCommand("codePlanning.showGraph", () => DashboardPanel.show(dashDeps, "graph")),
     vscode.commands.registerCommand("codePlanning.capture", async () => {

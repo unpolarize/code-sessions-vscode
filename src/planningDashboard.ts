@@ -231,7 +231,7 @@ function syncSeg(){
 }
 function render(){ if(!S){return;} syncSeg();
   $('#counts').textContent = Object.entries(S.counts||{}).map(([k,v])=>k+':'+v).join('  ');
-  if(view==='board')renderBoard(); else if(view==='graph')renderGraph(); else renderCanvas();
+  if(view==='board')renderBoard(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
 }
 const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
 
@@ -263,8 +263,12 @@ function renderBoard(){
 // force-directed graph
 let gT={x:0,y:0,k:1};
 function renderGraph(){
-  const svg=$('#graph'); const W=svg.clientWidth||900,H=svg.clientHeight||600;
-  const nodes=(S.graph?.nodes||[]).map((n,i)=>({...n,x:W/2+Math.cos(i)*200+(i%7)*9,y:H/2+Math.sin(i*1.3)*180,vx:0,vy:0}));
+  const svg=$('#graph'); const r=svg.getBoundingClientRect();
+  const W=(r.width||window.innerWidth||900), H=(r.height||(window.innerHeight-60)||600);
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  const allNodes=(S&&S.graph&&S.graph.nodes)||[];
+  if(!allNodes.length){ svg.innerHTML='<text x="20" y="40" fill="currentColor" opacity="0.6">No graph data — capture ideas or add cites/blocked_by edges.</text>'; return; }
+  const nodes=allNodes.map((n,i)=>({...n,x:W/2+Math.cos(i)*200+(i%7)*9,y:H/2+Math.sin(i*1.3)*180,vx:0,vy:0}));
   const idx={}; nodes.forEach(n=>idx[n.id]=n);
   const edges=(S.graph?.edges||[]).filter(e=>idx[e.from]&&idx[e.to]);
   for(let it=0;it<260;it++){
@@ -292,7 +296,7 @@ function applyZoom(){const g=$('#gz');if(g)g.setAttribute('transform','translate
   window.addEventListener('mouseup',()=>drag=false);
 })();
 
-function renderCanvas(){ $('#canvas').innerHTML='<div style="font-size:40px">✎</div><div><b>Visual canvas (Excalidraw)</b></div><div>Coming in the next iteration — a per-object Excalidraw scene saved to the planning store.</div><button class="ghost" id="cbtn">Open the object instead</button>'; const b=$('#cbtn'); if(b)b.addEventListener('click',()=>{if(S.objects&&S.objects[0])openDetail(S.objects[0].id);}); }
+function renderCanvas(){ $('#canvas').innerHTML='<div style="font-size:40px">✎</div><div><b>Visual canvas — Excalidraw</b></div><div style="max-width:420px">A free-form sketch/whiteboard saved to <code>~/docs/planning/canvas/board.excalidraw</code> (versioned in git with the rest of the plan).</div><button class="ghost" id="cbtn" style="margin-top:6px">Open Excalidraw canvas →</button>'; const b=$('#cbtn'); if(b)b.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openCanvas'})); }
 
 // detail drawer
 function openDetail(id){ vscode.postMessage({type:'show',id:id}); $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden'); $('#drawerInner').innerHTML='<div style="opacity:.6">Loading '+esc(id)+'…</div>'; }
