@@ -120,6 +120,7 @@ export class DashboardPanel {
   <div id="board" class="view"></div>
   <svg id="graph" class="view hidden"></svg>
   <div id="canvas" class="view hidden"></div>
+  <div id="gfilters" class="hidden"></div>
 </div>
 <div id="drawer" class="hidden"><div id="drawerInner"></div></div>
 <div id="backdrop" class="hidden"></div>
@@ -162,6 +163,14 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .card.blocked{border-left:3px solid #e51400}
 /* graph */
 #graph{width:100%;height:100%;cursor:grab}
+#gfilters{position:absolute;top:8px;left:10px;right:10px;z-index:4;display:flex;flex-direction:column;gap:5px;pointer-events:none}
+#gfilters.hidden{display:none}
+.gf-row{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.gf-lab{font-size:10px;opacity:.55;text-transform:uppercase;width:44px;flex:0 0 44px}
+.gf-btn{pointer-events:auto;display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:11px;border:1px solid var(--vscode-widget-border);background:var(--vscode-editorWidget-background);color:var(--vscode-foreground);cursor:pointer;opacity:.95}
+.gf-btn.off{opacity:.38;text-decoration:line-through}
+.gf-dot{width:8px;height:8px;border-radius:50%}
+.gf-fit{margin-left:auto;opacity:.8}
 #graph text{fill:var(--vscode-foreground);font-size:10px;pointer-events:none}
 #graph line{stroke:var(--vscode-widget-border);stroke-opacity:.6}
 #graph line.blocked{stroke:#e51400;stroke-opacity:.9}
@@ -227,6 +236,7 @@ function syncSeg(){
   $('#laneSeg').style.display = view==='board'?'inline-flex':'none';
   $('#board').classList.toggle('hidden',view!=='board');
   $('#graph').classList.toggle('hidden',view!=='graph');
+  $('#gfilters').classList.toggle('hidden',view!=='graph');
   $('#canvas').classList.toggle('hidden',view!=='canvas');
 }
 function render(){ if(!S){return;} syncSeg();
@@ -261,30 +271,52 @@ function renderBoard(){
 }
 
 // force-directed graph
+let gFilter={nodes:new Set(),edges:new Set()};
 let gT={x:0,y:0,k:1};
+function renderFilters(){
+  const panel=$('#gfilters'); if(!panel)return;
+  const types=[...new Set(((S&&S.graph&&S.graph.nodes)||[]).map(n=>n.type))].sort();
+  const kinds=[...new Set(((S&&S.graph&&S.graph.edges)||[]).map(e=>e.kind))].sort();
+  const btn=(label,active,color,attr,val)=>'<button class="gf-btn'+(active?'':' off')+'" '+attr+'="'+esc(val)+'">'+(color?'<span class="gf-dot" style="background:'+color+'"></span>':'')+esc(label)+'</button>';
+  panel.innerHTML='<div class="gf-row"><span class="gf-lab">Nodes</span>'+types.map(t=>btn(t,!gFilter.nodes.has(t),TYPE_COLOR[t]||'#888','data-nt',t)).join('')+'</div>'+
+    '<div class="gf-row"><span class="gf-lab">Edges</span>'+kinds.map(k=>btn(k,!gFilter.edges.has(k),'','data-ek',k)).join('')+'<button class="gf-btn gf-fit" id="gfFit">⊡ fit</button></div>';
+  panel.querySelectorAll('[data-nt]').forEach(b=>b.addEventListener('click',()=>{const t=b.getAttribute('data-nt');gFilter.nodes.has(t)?gFilter.nodes.delete(t):gFilter.nodes.add(t);renderGraph();}));
+  panel.querySelectorAll('[data-ek]').forEach(b=>b.addEventListener('click',()=>{const k=b.getAttribute('data-ek');gFilter.edges.has(k)?gFilter.edges.delete(k):gFilter.edges.add(k);renderGraph();}));
+  const fit=$('#gfFit'); if(fit)fit.addEventListener('click',()=>renderGraph());
+}
 function renderGraph(){
   const svg=$('#graph'); const r=svg.getBoundingClientRect();
-  const W=(r.width||window.innerWidth||900), H=(r.height||(window.innerHeight-60)||600);
+  const W=(r.width||window.innerWidth||900), H=(r.height||(window.innerHeight-100)||600);
   svg.setAttribute('viewBox','0 0 '+W+' '+H);
-  const allNodes=(S&&S.graph&&S.graph.nodes)||[];
-  if(!allNodes.length){ svg.innerHTML='<text x="20" y="40" fill="currentColor" opacity="0.6">No graph data — capture ideas or add cites/blocked_by edges.</text>'; return; }
-  const nodes=allNodes.map((n,i)=>({...n,x:W/2+Math.cos(i)*200+(i%7)*9,y:H/2+Math.sin(i*1.3)*180,vx:0,vy:0}));
+  renderFilters();
+  const allNodes=((S&&S.graph&&S.graph.nodes)||[]).filter(n=>!gFilter.nodes.has(n.type));
+  const present=new Set(allNodes.map(n=>n.id));
+  const edges=((S&&S.graph&&S.graph.edges)||[]).filter(e=>!gFilter.edges.has(e.kind)&&present.has(e.from)&&present.has(e.to));
+  if(!allNodes.length){ svg.innerHTML='<text x="20" y="40" fill="currentColor" opacity="0.6">No nodes (all hidden, or no data).</text>'; return; }
+  // lay out around the origin, then auto-fit the bounding box to the viewport
+  const N=allNodes.length, R0=Math.max(140,Math.sqrt(N)*58);
+  const nodes=allNodes.map((n,i)=>{const a=i/N*6.283;return {...n,x:Math.cos(a)*R0*(0.55+0.45*((i*0.37)%1)),y:Math.sin(a)*R0*(0.55+0.45*((i*0.61)%1)),vx:0,vy:0};});
   const idx={}; nodes.forEach(n=>idx[n.id]=n);
-  const edges=(S.graph?.edges||[]).filter(e=>idx[e.from]&&idx[e.to]);
-  for(let it=0;it<260;it++){
+  const E=edges.filter(e=>idx[e.from]&&idx[e.to]);
+  for(let it=0;it<340;it++){
     for(let a=0;a<nodes.length;a++)for(let b=a+1;b<nodes.length;b++){
-      const p=nodes[a],q=nodes[b];let dx=p.x-q.x,dy=p.y-q.y;let d2=dx*dx+dy*dy+0.01;let f=2600/d2;p.vx+=dx*f;p.vy+=dy*f;q.vx-=dx*f;q.vy-=dy*f;}
-    edges.forEach(e=>{const p=idx[e.from],q=idx[e.to];let dx=q.x-p.x,dy=q.y-p.y;let d=Math.sqrt(dx*dx+dy*dy)||1;let f=(d-90)*0.02;p.vx+=dx/d*f;p.vy+=dy/d*f;q.vx-=dx/d*f;q.vy-=dy/d*f;});
-    nodes.forEach(n=>{n.vx+=(W/2-n.x)*0.002;n.vy+=(H/2-n.y)*0.002;n.x+=Math.max(-12,Math.min(12,n.vx));n.y+=Math.max(-12,Math.min(12,n.vy));n.vx*=0.85;n.vy*=0.85;});
+      const p=nodes[a],q=nodes[b];let dx=p.x-q.x,dy=p.y-q.y;let d=Math.sqrt(dx*dx+dy*dy)||0.5;let f=Math.min(9000/(d*d),45);p.vx+=dx/d*f;p.vy+=dy/d*f;q.vx-=dx/d*f;q.vy-=dy/d*f;}
+    E.forEach(e=>{const p=idx[e.from],q=idx[e.to];let dx=q.x-p.x,dy=q.y-p.y;let d=Math.sqrt(dx*dx+dy*dy)||1;let f=(d-72)*0.05;p.vx+=dx/d*f;p.vy+=dy/d*f;q.vx-=dx/d*f;q.vy-=dy/d*f;});
+    nodes.forEach(n=>{n.vx+=(-n.x)*0.013;n.vy+=(-n.y)*0.013;n.x+=Math.max(-18,Math.min(18,n.vx));n.y+=Math.max(-18,Math.min(18,n.vy));n.vx*=0.8;n.vy*=0.8;});
   }
+  let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;
+  nodes.forEach(n=>{mnx=Math.min(mnx,n.x);mny=Math.min(mny,n.y);mxx=Math.max(mxx,n.x);mxy=Math.max(mxy,n.y);});
+  const bw=Math.max(1,mxx-mnx),bh=Math.max(1,mxy-mny),pad=120;
+  gT.k=Math.max(0.3,Math.min((W-pad)/bw,(H-pad)/bh,2.4)); gT.x=W/2-(mnx+bw/2)*gT.k; gT.y=H/2-(mny+bh/2)*gT.k;
+  const k=gT.k, fs=(12/k).toFixed(1);
   const ns='http://www.w3.org/2000/svg';
   svg.innerHTML='';
   const g=document.createElementNS(ns,'g'); g.setAttribute('id','gz'); svg.appendChild(g);
-  edges.forEach(e=>{const p=idx[e.from],q=idx[e.to];const l=document.createElementNS(ns,'line');l.setAttribute('x1',p.x);l.setAttribute('y1',p.y);l.setAttribute('x2',q.x);l.setAttribute('y2',q.y);if(e.kind==='blocked_by'&&e.status!=='resolved')l.setAttribute('class','blocked');g.appendChild(l);});
+  E.forEach(e=>{const p=idx[e.from],q=idx[e.to];const l=document.createElementNS(ns,'line');l.setAttribute('x1',p.x);l.setAttribute('y1',p.y);l.setAttribute('x2',q.x);l.setAttribute('y2',q.y);l.setAttribute('vector-effect','non-scaling-stroke');if(e.kind==='blocked_by'&&e.status!=='resolved')l.setAttribute('class','blocked');g.appendChild(l);});
   nodes.forEach(nd=>{const grp=document.createElementNS(ns,'g');
-    const c=document.createElementNS(ns,'circle');c.setAttribute('cx',nd.x);c.setAttribute('cy',nd.y);c.setAttribute('r',nd.blocked?9:6.5);c.setAttribute('fill',nd.blocked?'#e51400':(TYPE_COLOR[nd.type]||'#888'));
-    c.addEventListener('click',()=>{ if(S.objects?.some(o=>o.id===nd.id)) openDetail(nd.id); else vscode.postMessage({type:'open',id:nd.id,nodeType:nd.type}); });
-    const t=document.createElementNS(ns,'text');t.setAttribute('x',nd.x+9);t.setAttribute('y',nd.y+3);t.textContent=(nd.label||nd.id).slice(0,26);
+    const c=document.createElementNS(ns,'circle');c.setAttribute('cx',nd.x);c.setAttribute('cy',nd.y);c.setAttribute('r',((nd.blocked?9:7)/k).toFixed(1));c.setAttribute('fill',nd.blocked?'#e51400':(TYPE_COLOR[nd.type]||'#888'));
+    c.addEventListener('click',()=>{ if(S.objects&&S.objects.some(o=>o.id===nd.id)) openDetail(nd.id); else vscode.postMessage({type:'open',id:nd.id,kbPath:nd.type==='knowledge'?nd.id:undefined}); });
+    const t=document.createElementNS(ns,'text');t.setAttribute('x',nd.x+(10/k));t.setAttribute('y',nd.y+(4/k));t.setAttribute('font-size',fs);t.textContent=(nd.label||nd.id).slice(0,30);
     grp.appendChild(c);grp.appendChild(t);g.appendChild(grp);});
   applyZoom();
 }
