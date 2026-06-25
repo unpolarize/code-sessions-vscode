@@ -102,6 +102,19 @@ class CompatStatement {
     const b = this.bind(args);
     return b === undefined ? this.stmt.run() : this.stmt.run(b);
   }
+
+  /** Release the underlying WASM statement and its allocated memory.
+   * node-sqlite3-wasm has no FinalizationRegistry, so a prepared statement that
+   * is never finalized leaks WASM linear memory for the life of the connection.
+   * Idempotent and best-effort — safe to call on an already-finalized stmt. */
+  finalize(): void {
+    try {
+      const s = this.stmt as unknown as { finalize?: () => void; isFinalized?: boolean };
+      if (typeof s.finalize === "function" && !s.isFinalized) s.finalize();
+    } catch {
+      /* already finalized / mid-statement — nothing to free */
+    }
+  }
 }
 
 export class Database {
@@ -111,12 +124,40 @@ export class Database {
   readonly raw: WasmDatabase;
   private txDepth = 0;
 
+  /** Prepared-statement cache, keyed by SQL text. node-sqlite3-wasm leaks WASM
+   * linear memory for every statement that isn't finalized (it has no
+   * FinalizationRegistry). db.ts uses the better-sqlite3 idiom
+   * `db.prepare(sql).all()` at 50+ call sites — on every tree refresh and
+   * indexer pass — so a fresh prepare per call grew the WASM heap toward its
+   * 2 GB ceiling until prepare/step threw SQLITE_NOMEM ("out of memory").
+   * Caching prepares each distinct SQL once and reuses it (also matching
+   * better-sqlite3's own statement reuse); close() finalizes them all. The SQL
+   * set is essentially static, but dynamic IN-list queries produce per-arity
+   * variants, so the cache is LRU-bounded and evicted entries are finalized. */
+  private readonly stmtCache = new Map<string, CompatStatement>();
+  private static readonly MAX_CACHED_STMTS = 256;
+
   constructor(filename: string) {
     this.raw = new WasmDatabase(filename);
   }
 
   prepare(sql: string): CompatStatement {
-    return new CompatStatement(this.raw, sql);
+    const cached = this.stmtCache.get(sql);
+    if (cached) {
+      // Refresh LRU recency (Map preserves insertion order; re-insert = newest).
+      this.stmtCache.delete(sql);
+      this.stmtCache.set(sql, cached);
+      return cached;
+    }
+    const stmt = new CompatStatement(this.raw, sql);
+    this.stmtCache.set(sql, stmt);
+    if (this.stmtCache.size > Database.MAX_CACHED_STMTS) {
+      const oldestKey = this.stmtCache.keys().next().value as string;
+      const victim = this.stmtCache.get(oldestKey);
+      this.stmtCache.delete(oldestKey);
+      victim?.finalize();
+    }
+    return stmt;
   }
 
   exec(sql: string): void {
@@ -168,6 +209,8 @@ export class Database {
   }
 
   close(): void {
+    for (const stmt of this.stmtCache.values()) stmt.finalize();
+    this.stmtCache.clear();
     this.raw.close();
   }
 }
