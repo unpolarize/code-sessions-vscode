@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.5.9",
+  "version": "1.5.10",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -670,7 +670,12 @@
         "codeSessions.notifications.finished": {
           "type": "boolean",
           "default": true,
-          "description": "Show a popup when an agent session finishes (was active, now idle)."
+          "description": "Show a popup when an agent session finishes (was active, then continuously idle for notifications.finishedSeconds)."
+        },
+        "codeSessions.notifications.finishedSeconds": {
+          "type": "number",
+          "default": 90,
+          "description": "How long a session must stay continuously inactive before it's reported as finished. Prevents false 'finished' popups during long tool calls, model thinking, or gaps between turns."
         },
         "codeSessions.notifications.blocked": {
           "type": "boolean",

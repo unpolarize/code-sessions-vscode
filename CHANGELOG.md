@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.10 — 2026-06-24
+
+### Fix: live-monitor false "finished" alerts
+
+A session was reported "finished" the moment it went from active to idle for a
+single poll tick — so long tool calls, model thinking, or the gap between turns in
+an agent loop fired a false "Session … finished" popup while it was still running.
+Now debounced: "finished" fires only after a session is continuously inactive for
+`codeSessions.notifications.finishedSeconds` (default 90s), and re-activation
+cancels the pending alert.
+
 ## 1.2.6 — 2026-06-18
 
 ### Fix: "database is locked" on activate (stale WASM VFS lock)

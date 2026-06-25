@@ -210,10 +210,16 @@ function createLiveStatusBar(
   const notifiedAwaiting = new Set<string>();
   // session_id -> title for sessions that were active last tick (finished detection)
   const prevActive = new Map<string, string>();
+  // session_id -> {title, idleSince} for sessions pending a "finished" toast.
+  // Held for a grace period so a transient idle tick (long tool call, model
+  // thinking, or the gap between turns) doesn't fire a false "finished"; cleared
+  // the instant the session is active again.
+  const pendingFinished = new Map<string, { title: string; idleSince: number }>();
   // session_ids we've already warned are stuck (cleared when they leave in_tool)
   const notifiedStuck = new Set<string>();
   const tick = () => {
     try {
+      const now = Date.now();
       const payload = buildUpdate(store);
       const awaiting = payload.cards.filter((c) => c.now.kind === "awaiting_user");
       if (payload.activeCount > 0) {
@@ -272,16 +278,26 @@ function createLiveStatusBar(
           activeNow.set(c.session_id, c);
         }
       }
-      // finished: a session that was active last tick is no longer active now
+      // finished: fire only after a session has been continuously inactive for
+      // the grace period. A single active->idle flip is usually a long tool call,
+      // model thinking, or the gap between turns — not a finished session.
+      // Re-activation cancels any pending toast.
+      for (const id of activeNow.keys()) pendingFinished.delete(id);
+      for (const [id, title] of prevActive) {
+        if (!activeNow.has(id) && !pendingFinished.has(id)) {
+          pendingFinished.set(id, { title, idleSince: now });
+        }
+      }
       if (ncfg.get<boolean>("notifications.finished", true)) {
-        for (const [id, title] of prevActive) {
-          if (!activeNow.has(id)) {
-            vscode.window
-              .showInformationMessage(`Session "${title}" finished.`, "Open live monitor")
-              .then((sel) => {
-                if (sel === "Open live monitor") vscode.commands.executeCommand("codeSessions.openLiveMonitor");
-              });
-          }
+        const graceMs = Math.max(15, ncfg.get<number>("notifications.finishedSeconds", 90)) * 1000;
+        for (const [id, p] of [...pendingFinished]) {
+          if (now - p.idleSince < graceMs) continue;
+          pendingFinished.delete(id);
+          vscode.window
+            .showInformationMessage(`Session "${p.title}" finished.`, "Open live monitor")
+            .then((sel) => {
+              if (sel === "Open live monitor") vscode.commands.executeCommand("codeSessions.openLiveMonitor");
+            });
         }
       }
       // blocked/stuck: stuck in a tool call far longer than expected
