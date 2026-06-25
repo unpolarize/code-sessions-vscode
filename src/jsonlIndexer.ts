@@ -16,6 +16,26 @@ import { parseConversation, ParsedConversation } from "./conversationParser";
 
 const PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
 
+const COMMAND_WRAPPER_RE =
+  /<(command-message|command-name|command-args|command-contents|system-reminder|local-command-stdout|local-command-stderr|command-output)>[\s\S]*?<\/\1>/gi;
+
+/**
+ * Strip Claude Code slash-command / harness wrapper tags so session titles aren't
+ * `<command-message>load</command-message>…`. For a `/command`, return a readable
+ * `"<name> <args>"`; otherwise drop the known wrapper blocks and keep the prompt.
+ */
+export function cleanCommandText(text: string): string {
+  if (!text) return text;
+  const nameTag = /<command-name>\s*([\s\S]*?)\s*<\/command-name>/i.exec(text)?.[1]?.trim();
+  const msgTag = /<command-message>\s*([\s\S]*?)\s*<\/command-message>/i.exec(text)?.[1]?.trim();
+  const name = nameTag || (msgTag ? `/${msgTag.replace(/^\//, "")}` : undefined);
+  if (name) {
+    const args = /<command-args>\s*([\s\S]*?)\s*<\/command-args>/i.exec(text)?.[1]?.trim() ?? "";
+    return (args ? `${name} ${args}` : name).trim();
+  }
+  return text.replace(COMMAND_WRAPPER_RE, "").trim();
+}
+
 // Prices in USD per 1M tokens (2026 Anthropic list). Cache read = 0.1x input,
 // cache write = 1.25x input. Selected per detected model; DEFAULT is Sonnet
 // because that is the Claude Code default and most sessions are Sonnet.
@@ -384,8 +404,8 @@ function aggregateFromParsed(
     cache_write_tokens: cacheWriteTok,
     cost_usd: Number(cost.toFixed(4)),
     model: sessionModel,
-    title: (parsed.title || firstUserMsg.slice(0, 70)) + (kind !== 'session' ? ` [${kind}]` : ''),
-    first_user_msg: firstUserMsg.slice(0, 4096),
+    title: (parsed.title || cleanCommandText(firstUserMsg).slice(0, 70)) + (kind !== 'session' ? ` [${kind}]` : ''),
+    first_user_msg: cleanCommandText(firstUserMsg).slice(0, 4096),
     entrypoint,
     is_automated: isAutomated || kind !== 'session',
     indexed_at: Date.now(),
