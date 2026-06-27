@@ -9,10 +9,37 @@
 
 import * as vscode from "vscode";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
+
+/** Scan the git session store (~/.sessions) for a searchable session list. */
+function listStoreSessions(): { uuid: string; title?: string; agent?: string; mtime: number }[] {
+  const root = path.join(os.homedir(), ".sessions", "hosts");
+  if (!existsSync(root)) return [];
+  const ls = (p: string): string[] => {
+    try {
+      return readdirSync(p);
+    } catch {
+      return [];
+    }
+  };
+  const out: { uuid: string; title?: string; agent?: string; mtime: number }[] = [];
+  for (const host of ls(root))
+    for (const month of ls(path.join(root, host)))
+      for (const sid of ls(path.join(root, host, month))) {
+        const f = path.join(root, host, month, sid, "session.json");
+        if (!existsSync(f)) continue;
+        try {
+          const s = JSON.parse(readFileSync(f, "utf8"));
+          out.push({ uuid: s.session_id || sid, title: s.title, agent: s.agent, mtime: statSync(f).mtimeMs });
+        } catch {
+          /* skip */
+        }
+      }
+  return out.sort((a, b) => b.mtime - a.mtime).slice(0, 300);
+}
 import { openCanvas } from "./planningCanvas";
 
 interface ObjRow {
@@ -196,18 +223,20 @@ class TodayProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       header.iconPath = iconFor("daily_plan");
       if (header.absFsPath) header.command = { command: "codePlanning.openObject", title: "Open", arguments: [header] };
       out.push(header);
+      const tasksByStatus = (st: string) => snap.objects.filter((o) => o.type === "task" && (o.status || "inbox") === st);
       for (const lane of LANES) {
-        const rows = snap.board.lanes[lane] || [];
+        const rows = tasksByStatus(lane);
         if (rows.length === 0) continue;
         const group = new PlanningItem(`${lane} (${rows.length})`, `lane:${lane}`, "lane", undefined, vscode.TreeItemCollapsibleState.Expanded);
         group.iconPath = iconFor("lane");
         out.push(group);
       }
+      if (out.length === 1) out.push(emptyItem("No tasks scheduled — drag tasks to 'today' on the board"));
       return out;
     }
     if (element instanceof PlanningItem && element.planningType === "lane") {
       const lane = element.planningId.slice("lane:".length);
-      return (snap.board.lanes[lane] || []).map((o) => leaf(this.model, o));
+      return snap.objects.filter((o) => o.type === "task" && (o.status || "inbox") === lane).map((o) => leaf(this.model, o));
     }
     return [];
   }
@@ -224,6 +253,7 @@ class InboxProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   getChildren(element?: vscode.TreeItem): vscode.TreeItem[] {
     const snap = this.model.get();
     if (!snap) return [emptyItem("Store not found")];
+    const byType = (t: string) => snap.objects.filter((o) => o.type === t);
     if (!element) {
       const out: vscode.TreeItem[] = [];
       if (snap.blocked.length) {
@@ -231,10 +261,25 @@ class InboxProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         g.iconPath = iconFor("blocked");
         out.push(g);
       }
-      const captures = snap.inbox;
-      if (captures.length === 0 && out.length === 0) return [emptyItem("Inbox empty — /planning-capture")];
-      out.push(...captures.map((o) => leaf(this.model, o)));
+      const grp = (label: string, key: string, exp: boolean) => {
+        const n = byType(key).length;
+        const g = new PlanningItem(
+          `${label} (${n})`,
+          `group:${key}`,
+          "lane",
+          undefined,
+          n ? (exp ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed) : vscode.TreeItemCollapsibleState.None,
+        );
+        g.iconPath = iconFor(key);
+        return g;
+      };
+      out.push(grp("Tasks", "task", true));
+      out.push(grp("Ideas", "idea", false));
+      out.push(grp("Plans", "plan", false));
       return out;
+    }
+    if (element instanceof PlanningItem && element.planningId.startsWith("group:")) {
+      return byType(element.planningId.slice("group:".length)).map((o) => leaf(this.model, o));
     }
     if (element instanceof PlanningItem && element.planningId === "blocked") {
       return snap.blocked.map((b) => {
@@ -530,32 +575,99 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     };
     return head + body + refs + "\n" + (tasks[action] || tasks.execute);
   };
-  const launchAgent = (action: string, id: string) => {
+  const linkedRefs = (d: any): string[] =>
+    [...((d?.cites || []) as any[]).map((c) => c.path || c.id), ...((d?.kb_paths || []) as string[])].filter(Boolean);
+
+  // Copy a seed prompt to the clipboard and open a real Code Build chat (no terminals).
+  const runInCB = async (seed: string, label: string) => {
+    await vscode.env.clipboard.writeText(seed);
+    const cmds = await vscode.commands.getCommands(true);
+    if (cmds.includes("codeBuild.newConversation")) {
+      await vscode.commands.executeCommand("codeBuild.newConversation");
+      void vscode.window.showInformationMessage(`Code Build opened (${label}) — prompt copied to clipboard; paste to start.`);
+    } else {
+      void vscode.window.showWarningMessage("Code Build not installed. Prompt copied to clipboard.");
+    }
+  };
+
+  // Build the prompt, open it for review/edit, then run the (possibly edited) text in Code Build.
+  const reviewAndRun = async (action: string, id: string) => {
     const d = detailOf(id);
     if (!d) {
       void vscode.window.showWarningMessage(`Planning: could not load ${id}`);
       return;
     }
-    const prompt = agentPrompt(action, d);
-    mkdirSync(stateDir, { recursive: true });
-    const file = path.join(stateDir, `agent-${action}-${id.replace(/\W+/g, "_")}.md`);
-    writeFileSync(file, prompt, "utf8");
-    const term = vscode.window.createTerminal({ name: `agent:${action}:${id.split("/").pop()}`, cwd: path.join(os.homedir(), "docs") });
-    term.show();
-    term.sendText(`claude "$(cat '${file}')"`, true);
-    void vscode.window.showInformationMessage(`Planning: launched ${action} agent for ${id}.`);
+    let prompt: string;
+    if (action === "research") {
+      const r = runKp(["research", id]);
+      prompt = r.ok && r.stdout.trim() ? r.stdout : agentPrompt(action, d);
+    } else {
+      prompt = agentPrompt(action, d);
+    }
+    const doc = await vscode.workspace.openTextDocument({ content: prompt, language: "markdown" });
+    await vscode.window.showTextDocument(doc, { preview: false });
+    const pick = await vscode.window.showInformationMessage(
+      `Review the ${action} prompt, edit if needed, then run it in Code Build.`,
+      "Run in Code Build",
+      "Cancel",
+    );
+    if (pick === "Run in Code Build") await runInCB(doc.getText(), action);
   };
+
   const openInCB = async (id: string) => {
     const d = detailOf(id);
-    const ctxText = d ? agentPrompt("execute", d) : id;
-    await vscode.env.clipboard.writeText(ctxText);
-    const cmds = await vscode.commands.getCommands(true);
-    if (cmds.includes("codeBuild.newConversation")) {
-      await vscode.commands.executeCommand("codeBuild.newConversation");
-      void vscode.window.showInformationMessage(`Code Build opened — ${id} context copied to clipboard; paste to start.`);
-    } else {
-      void vscode.window.showWarningMessage("Code Build not installed. Context copied to clipboard.");
+    const refs = linkedRefs(d);
+    let seed = d ? agentPrompt("execute", d) : id;
+    if (refs.length) {
+      const pick = await vscode.window.showQuickPick(["Yes — attach as @-references", "No"], {
+        placeHolder: `Include ${refs.length} linked knowledge doc(s) as references?`,
+      });
+      if (pick && pick.startsWith("Yes")) {
+        seed = refs.map((r) => "@" + (r.startsWith("/") ? r : "~/docs/" + r)).join(" ") + "\n\n" + seed;
+      }
     }
+    await runInCB(seed, "open");
+  };
+
+  const editItem = async (id: string) => {
+    const d = detailOf(id);
+    if (!d) return;
+    const title = await vscode.window.showInputBox({ prompt: "Title", value: d.title });
+    if (title === undefined) return;
+    const r = runKp(["edit", id, "--title", title]);
+    if (!r.ok) void vscode.window.showWarningMessage(`edit failed: ${r.stderr}`);
+    model.reload(log);
+  };
+
+  const recategorizeItem = async (id: string) => {
+    const d = detailOf(id);
+    if (!d) return;
+    const choice = await vscode.window.showQuickPick(
+      ["Move to task", "Move to idea", "Move to plan", "Change domain…", "Set lane…"],
+      { placeHolder: `Recategorize ${id}` },
+    );
+    if (!choice) return;
+    let r;
+    if (choice.startsWith("Move to ")) r = runKp(["recategorize", id, "--to-type", choice.replace("Move to ", "")]);
+    else if (choice.startsWith("Change domain")) {
+      const dom = await vscode.window.showInputBox({ prompt: "Domain", value: d.domain });
+      if (dom === undefined) return;
+      r = runKp(["recategorize", id, "--domain", dom]);
+    } else {
+      const lane = await vscode.window.showInputBox({ prompt: "Lane", value: d.lane });
+      if (lane === undefined) return;
+      r = runKp(["edit", id, "--lane", lane]);
+    }
+    if (r && !r.ok) void vscode.window.showWarningMessage(`recategorize failed: ${r.stderr}`);
+    model.reload(log);
+  };
+
+  const deleteItem = async (id: string) => {
+    const yes = await vscode.window.showWarningMessage(`Delete ${id}? This removes its markdown file.`, { modal: true }, "Delete");
+    if (yes !== "Delete") return;
+    const r = runKp(["delete", id]);
+    if (!r.ok) void vscode.window.showWarningMessage(`delete failed: ${r.stderr}`);
+    model.reload(log);
   };
 
   const dashAction = (msg: any) => {
@@ -584,22 +696,57 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         model.reload(log);
         break;
       }
+      case "moveToTask": {
+        const r = runKp(["recategorize", id, "--to-type", "task"]);
+        void vscode.window.showInformationMessage(r.ok ? r.stdout.trim() : `move failed: ${r.stderr}`);
+        model.reload(log);
+        break;
+      }
       case "link":
         void vscode.commands.executeCommand("codePlanning.linkSession", id);
         break;
       case "openCB":
         void openInCB(id);
         break;
+      case "openSession":
+        void vscode.commands.executeCommand("codeSessions.showTrajectory", String(msg.uuid), id || String(msg.uuid));
+        break;
       case "openCanvas": {
         const root = snap?.root || path.join(os.homedir(), "docs", "planning");
         openCanvas(ctx, root);
         break;
       }
+      case "editItem":
+        void editItem(id);
+        break;
+      case "recategorize":
+        void recategorizeItem(id);
+        break;
+      case "deleteItem":
+        void deleteItem(id);
+        break;
+      case "setField": {
+        runKp(["edit", id, msg.field === "domain" ? "--domain" : "--lane", String(msg.value ?? "")]);
+        model.reload(log);
+        break;
+      }
+      case "setType": {
+        runKp(["recategorize", id, "--to-type", String(msg.toType)]);
+        model.reload(log);
+        break;
+      }
+      case "addLane":
+        void (async () => {
+          const name = await vscode.window.showInputBox({ prompt: "New lane name" });
+          if (name) DashboardPanel.current?.post({ type: "laneAdded", name });
+        })();
+        break;
       case "ideate":
       case "spec":
       case "decompose":
+      case "research":
       case "execute":
-        launchAgent(msg.action, id);
+        void reviewAndRun(msg.action, id);
         break;
     }
   };
@@ -644,11 +791,36 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     vscode.commands.registerCommand("codePlanning.linkSession", async (item) => {
       const id = idOf(item);
       if (!id) return;
-      const uuid = await vscode.window.showInputBox({ prompt: `Session uuid to link to ${id}` });
-      if (uuid) {
-        const res = runKp(["link-session", id, uuid]);
-        vscode.window.showInformationMessage(res.ok ? res.stdout.trim() : `link failed: ${res.stderr}`);
-        model.reload(log);
+      const sessions = listStoreSessions();
+      let uuid: string | undefined;
+      if (sessions.length) {
+        type Pick = vscode.QuickPickItem & { uuid: string };
+        const picks: Pick[] = [
+          ...sessions.map((s) => ({
+            label: s.title || s.uuid.slice(0, 8),
+            description: `${s.agent ?? "?"} · ${s.uuid.slice(0, 8)}`,
+            detail: new Date(s.mtime).toLocaleString(),
+            uuid: s.uuid,
+          })),
+          { label: "$(edit) Enter a uuid manually…", uuid: "" },
+        ];
+        const pick = await vscode.window.showQuickPick<Pick>(picks, {
+          placeHolder: `Link a session to ${id} (type to search)`,
+          matchOnDescription: true,
+          matchOnDetail: true,
+        });
+        if (!pick) return;
+        uuid = pick.uuid || (await vscode.window.showInputBox({ prompt: `Session uuid to link to ${id}` }));
+      } else {
+        uuid = await vscode.window.showInputBox({ prompt: `Session uuid to link to ${id}` });
+      }
+      if (!uuid) return;
+      const res = runKp(["link-session", id, uuid]);
+      vscode.window.showInformationMessage(res.ok ? res.stdout.trim() : `link failed: ${res.stderr}`);
+      model.reload(log);
+      if (res.ok) {
+        const p = await vscode.window.showInformationMessage(`Linked session to ${id}.`, "Preview session");
+        if (p === "Preview session") void vscode.commands.executeCommand("codeSessions.showTrajectory", uuid);
       }
     }),
     vscode.commands.registerCommand("codePlanning.startWork", async (item) => {

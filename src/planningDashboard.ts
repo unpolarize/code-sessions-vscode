@@ -87,6 +87,10 @@ export class DashboardPanel {
     }
   }
 
+  post(msg: unknown): void {
+    this.panel.webview.postMessage(msg);
+  }
+
   private dispose(): void {
     DashboardPanel.current = undefined;
     while (this.disposables.length) this.disposables.pop()?.dispose();
@@ -111,6 +115,13 @@ export class DashboardPanel {
     <button data-lane="idea">Ideas</button>
     <button data-lane="plan">Plans</button>
   </div>
+  <select id="groupBy" title="Group lanes by">
+    <option value="status">▦ status</option>
+    <option value="domain">▦ domain</option>
+    <option value="type">▦ type</option>
+    <option value="lane">▦ lane</option>
+  </select>
+  <button id="addLaneBtn" class="ghost" title="Add a custom lane">＋ lane</button>
   <span class="spacer"></span>
   <span id="counts" class="counts"></span>
   <button id="captureBtn" class="ghost">＋ Capture</button>
@@ -201,7 +212,13 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .act.primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
 .act .k{font-weight:600}.act .d{opacity:.7;font-size:10.5px;display:block}
 .statusrow{display:flex;gap:6px;align-items:center;margin-top:6px}
-select{background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border);border-radius:5px;padding:3px 6px}
+select{background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border);border-radius:5px;padding:3px 6px;font-size:12px}
+.card{position:relative}
+.cact{position:absolute;top:4px;right:5px;display:none;gap:2px;z-index:2}
+.card:hover .cact{display:flex}
+.cact button{background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:4px;color:var(--vscode-descriptionForeground);cursor:pointer;font-size:11px;line-height:1;padding:2px 4px}
+.cact button:hover{color:var(--vscode-foreground)}
+.col.over{outline:2px dashed var(--vscode-focusBorder);outline-offset:-2px}
 `;
 
 // ---------------------------------------------------------------- script -----
@@ -215,6 +232,11 @@ const LANES = {
 const TYPE_COLOR = {idea:'#d7ba7d',plan:'#4ec9b0',task:'#569cd6',project:'#c586c0',catalog_entry:'#c586c0',domain:'#808080',daily_plan:'#dcdcaa',insight:'#4fc1ff',reflection:'#9cdcfe',knowledge:'#ce9178',session:'#608b4e'};
 const LANE_COLOR = {inbox:'#888',today:'#569cd6',in_progress:'#dcdcaa',done:'#4ec9b0',deferred:'#a08',capture:'#d7ba7d',refine:'#dcdcaa',accepted:'#4ec9b0',parked:'#888',plan:'#569cd6',prototype:'#c586c0',implement:'#dcdcaa',validate:'#4fc1ff'};
 let S = null, view='board', laneSet='task';
+const _st=(vscode.getState&&vscode.getState())||{};
+let groupBy = _st.groupBy || 'status';
+let customLanes = _st.customLanes || [];
+function saveState(){ try{ vscode.setState({groupBy, customLanes}); }catch(e){} }
+const BOARD_TYPES=['task','idea','plan'];
 const $=s=>document.querySelector(s), el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
 const esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
@@ -222,6 +244,7 @@ window.addEventListener('message',e=>{const m=e.data;
   if(m.type==='snapshot'){S=m.data;render();}
   else if(m.type==='detail'){renderDrawer(m.data);}
   else if(m.type==='setView'){view=m.view;syncSeg();render();}
+  else if(m.type==='laneAdded'){ if(groupBy!=='lane'){groupBy='lane';const gb=$('#groupBy');if(gb)gb.value='lane';} if(m.name&&!customLanes.includes(m.name))customLanes.push(m.name); saveState(); renderBoard(); }
 });
 
 // top bar
@@ -229,6 +252,8 @@ $('#viewSeg').addEventListener('click',e=>{const b=e.target.closest('button');if
 $('#laneSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;laneSet=b.dataset.lane;syncSeg();renderBoard();});
 $('#refreshBtn').addEventListener('click',()=>vscode.postMessage({type:'refresh'}));
 $('#captureBtn').addEventListener('click',()=>vscode.postMessage({type:'action',action:'capture'}));
+(function(){const gb=$('#groupBy'); if(gb){gb.value=groupBy; gb.addEventListener('change',()=>{groupBy=gb.value;saveState();renderBoard();});}
+  const al=$('#addLaneBtn'); if(al)al.addEventListener('click',()=>vscode.postMessage({type:'action',action:'addLane'}));})();
 $('#backdrop').addEventListener('click',closeDrawer);
 function syncSeg(){
   document.querySelectorAll('#viewSeg button').forEach(b=>b.classList.toggle('on',b.dataset.view===view));
@@ -245,19 +270,28 @@ function render(){ if(!S){return;} syncSeg();
 }
 const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
 
+function laneFieldAndList(objs){
+  if(groupBy==='status') return {field:'status', lanes:(LANES[laneSet]||[...new Set(objs.map(o=>o.status||'inbox'))])};
+  if(groupBy==='type') return {field:'type', lanes:BOARD_TYPES.slice()};
+  const vals=new Set(objs.map(o=>o[groupBy]||'(none)')); customLanes.forEach(l=>vals.add(l)); const lanes=[...vals]; if(!lanes.includes('(none)'))lanes.push('(none)');
+  return {field:groupBy, lanes};
+}
 function renderBoard(){
-  const lanes=LANES[laneSet], bl=blockedSet();
-  const objs=(S.objects||[]).filter(o=>o.type===laneSet);
+  const bl=blockedSet();
+  const objs = groupBy==='type' ? (S.objects||[]).filter(o=>BOARD_TYPES.indexOf(o.type)>=0) : (S.objects||[]).filter(o=>o.type===laneSet);
+  const {field, lanes} = laneFieldAndList(objs);
   const board=$('#board'); board.innerHTML='';
   lanes.forEach(lane=>{
-    const rows=objs.filter(o=>(o.status||'')===lane);
+    const rows=objs.filter(o=>String(o[field]||'(none)')===String(lane));
     const col=el('div','col'); col.dataset.lane=lane;
-    col.appendChild(el('h3',null,'<span class="dot" style="background:'+(LANE_COLOR[lane]||'#888')+'"></span>'+lane+'<span class="cnt">'+rows.length+'</span>'));
+    col.appendChild(el('h3',null,'<span class="dot" style="background:'+(LANE_COLOR[lane]||TYPE_COLOR[lane]||'#888')+'"></span>'+esc(lane)+'<span class="cnt">'+rows.length+'</span>'));
     const cards=el('div','cards');
     rows.forEach(o=>{
       const card=el('div','card'+(bl.has(o.id)?' blocked':'')); card.draggable=true; card.dataset.id=o.id;
-      card.innerHTML='<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm"><span class="badge">'+o.type+'</span>'+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.project?'<span>· '+esc(o.project.split('/').pop())+'</span>':'')+'</div>';
-      card.addEventListener('click',()=>openDetail(o.id));
+      card.innerHTML='<div class="cact"><button data-act="edit" title="Edit">✎</button><button data-act="recat" title="Recategorize / move">⇄</button><button data-act="del" title="Delete">✕</button></div>'+
+        '<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm"><span class="badge">'+o.type+'</span>'+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.lane?'<span>⋔ '+esc(o.lane)+'</span>':'')+(o.project?'<span>· '+esc(o.project.split('/').pop())+'</span>':'')+'</div>';
+      card.addEventListener('click',ev=>{ if(ev.target.closest('[data-act]'))return; openDetail(o.id); });
+      card.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();const a=b.dataset.act;vscode.postMessage({type:'action',action:a==='edit'?'editItem':a==='recat'?'recategorize':'deleteItem',id:o.id});}));
       card.addEventListener('dragstart',ev=>{ev.dataTransfer.setData('text/plain',o.id);card.classList.add('dragging');});
       card.addEventListener('dragend',()=>card.classList.remove('dragging'));
       cards.appendChild(card);
@@ -265,7 +299,10 @@ function renderBoard(){
     col.appendChild(cards);
     col.addEventListener('dragover',ev=>{ev.preventDefault();col.classList.add('over');});
     col.addEventListener('dragleave',()=>col.classList.remove('over'));
-    col.addEventListener('drop',ev=>{ev.preventDefault();col.classList.remove('over');const id=ev.dataTransfer.getData('text/plain');if(id)vscode.postMessage({type:'setStatus',id:id,status:lane});});
+    col.addEventListener('drop',ev=>{ev.preventDefault();col.classList.remove('over');const id=ev.dataTransfer.getData('text/plain');if(!id)return;
+      if(field==='status')vscode.postMessage({type:'setStatus',id:id,status:lane});
+      else if(field==='type')vscode.postMessage({type:'action',action:'setType',id:id,toType:lane});
+      else vscode.postMessage({type:'action',action:'setField',id:id,field:field,value:lane==='(none)'?'':lane});});
     board.appendChild(col);
   });
 }
@@ -294,7 +331,7 @@ function renderGraph(){
   const edges=((S&&S.graph&&S.graph.edges)||[]).filter(e=>!gFilter.edges.has(e.kind)&&present.has(e.from)&&present.has(e.to));
   if(!allNodes.length){ svg.innerHTML='<text x="20" y="40" fill="currentColor" opacity="0.6">No nodes (all hidden, or no data).</text>'; return; }
   // lay out around the origin, then auto-fit the bounding box to the viewport
-  const N=allNodes.length, R0=Math.max(140,Math.sqrt(N)*58);
+  const N=allNodes.length, R0=Math.max(160,Math.sqrt(N)*80);
   const nodes=allNodes.map((n,i)=>{const a=i/N*6.283;return {...n,x:Math.cos(a)*R0*(0.55+0.45*((i*0.37)%1)),y:Math.sin(a)*R0*(0.55+0.45*((i*0.61)%1)),vx:0,vy:0};});
   const idx={}; nodes.forEach(n=>idx[n.id]=n);
   const E=edges.filter(e=>idx[e.from]&&idx[e.to]);
@@ -316,7 +353,7 @@ function renderGraph(){
   nodes.forEach(nd=>{const grp=document.createElementNS(ns,'g');
     const c=document.createElementNS(ns,'circle');c.setAttribute('cx',nd.x);c.setAttribute('cy',nd.y);c.setAttribute('r',((nd.blocked?9:7)/k).toFixed(1));c.setAttribute('fill',nd.blocked?'#e51400':(TYPE_COLOR[nd.type]||'#888'));
     c.addEventListener('click',()=>{ if(S.objects&&S.objects.some(o=>o.id===nd.id)) openDetail(nd.id); else vscode.postMessage({type:'open',id:nd.id,kbPath:nd.type==='knowledge'?nd.id:undefined}); });
-    const t=document.createElementNS(ns,'text');t.setAttribute('x',nd.x+(10/k));t.setAttribute('y',nd.y+(4/k));t.setAttribute('font-size',fs);t.textContent=(nd.label||nd.id).slice(0,30);
+    const t=document.createElementNS(ns,'text');t.setAttribute('x',nd.x+(10/k));t.setAttribute('y',nd.y+(4/k));t.setAttribute('font-size',fs);t.setAttribute('paint-order','stroke');t.setAttribute('stroke','var(--vscode-editor-background)');t.setAttribute('stroke-width',(3.5/k).toFixed(1));t.setAttribute('stroke-linejoin','round');t.textContent=(nd.label||nd.id).slice(0,30);
     grp.appendChild(c);grp.appendChild(t);g.appendChild(grp);});
   applyZoom();
 }
@@ -348,21 +385,27 @@ function renderDrawer(o){
   grid.appendChild(mk('Ideate','expand into sub-ideas','ideate'));
   grid.appendChild(mk('Draft spec','speckit FRs + criteria','spec'));
   grid.appendChild(mk('Decompose','break into tasks','decompose'));
-  grid.appendChild(mk('Execute ▸','start a Code Build session','execute',true));
+  grid.appendChild(mk('Research KB','find + connect knowledge','research'));
   act.appendChild(grid);
   const grid2=el('div','actions'); grid2.style.marginTop='7px';
-  grid2.appendChild(mk('Open in Code Build','whole-item context','openCB'));
+  grid2.appendChild(mk('Run in Code Build ▸','review prompt, then run','execute',true));
+  grid2.appendChild(mk('Open in Code Build','whole-item context + @refs','openCB'));
   grid2.appendChild(mk('Open file','edit markdown','openFile'));
-  if(o.type==='idea'){ grid2.appendChild(mk('Promote → plan','create a plan','promote')); }
-  grid2.appendChild(mk('Link session','attach a uuid','link'));
-  act.appendChild(grid2); I.appendChild(act);
+  grid2.appendChild(mk('Link session','search + attach','link'));
+  act.appendChild(grid2);
+  const grid3=el('div','actions'); grid3.style.marginTop='7px';
+  grid3.appendChild(mk('Edit','title / fields','editItem'));
+  grid3.appendChild(mk('Recategorize','type / domain / lane','recategorize'));
+  if(o.type==='idea'){ grid3.appendChild(mk('Promote → plan','create a plan','promote')); grid3.appendChild(mk('Move → task','convert to task','moveToTask')); }
+  grid3.appendChild(mk('Delete','remove item','deleteItem'));
+  act.appendChild(grid3); I.appendChild(act);
   // body
   if(o.body&&o.body.trim()){ const s=el('div','sec'); s.appendChild(el('h4',null,'Notes')); s.appendChild(el('div','body',mdLite(o.body))); I.appendChild(s); }
   // references
   const refs=[['Blocked by knowledge',o.blocked_by,true],['Cites',o.cites,false],['Children',o.children,false],['Depends on',o.depends_on,false],['Related',o.related,false]];
   refs.forEach(([label,list,isBlock])=>{ if(!list||!list.length)return; const s=el('div','sec'); s.appendChild(el('h4',null,label+' ('+list.length+')')); const rl=el('div','reflist'); list.forEach(r=>{ const bad=isBlock?(r.status!=='resolved'):(r.exists===false||r.missing); const open = r.id&&!r.missing? ()=>openDetail(r.id) : (r.path? ()=>vscode.postMessage({type:'open',kbPath:r.path}) : null); rl.appendChild(refRow(r,bad,open)); }); s.appendChild(rl); I.appendChild(s); });
   if(o.parent){ const s=el('div','sec'); s.appendChild(el('h4',null,'Parent')); const rl=el('div','reflist'); rl.appendChild(refRow(o.parent,false,()=>openDetail(o.parent.id))); s.appendChild(rl); I.appendChild(s); }
-  if(o.linked_sessions&&o.linked_sessions.length){ const s=el('div','sec'); s.appendChild(el('h4',null,'Linked sessions ('+o.linked_sessions.length+')')); const rl=el('div','reflist'); o.linked_sessions.forEach(u=>rl.appendChild(refRow({id:u,title:u.slice(0,18)+'…'},false,null))); s.appendChild(rl); I.appendChild(s); }
+  if(o.linked_sessions&&o.linked_sessions.length){ const s=el('div','sec'); s.appendChild(el('h4',null,'Linked sessions ('+o.linked_sessions.length+')')); const rl=el('div','reflist'); o.linked_sessions.forEach(u=>rl.appendChild(refRow({id:u,title:'▸ open chat — '+u.slice(0,18)+'…'},false,()=>vscode.postMessage({type:'action',action:'openSession',uuid:u})))); s.appendChild(rl); I.appendChild(s); }
 }
 vscode.postMessage({type:'ready'});
 `;

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.6.0 — 2026-06-27
+
+### Planning Workbench
+
+Full CRUD + agent workflow for the planning board, side panel, and item view:
+
+- **Board:** per-card **Edit / Recategorize / Delete**; configurable **swimlanes** via a
+  group-by selector (status / domain / type / **custom lane**) + "＋ lane"; drag a card to
+  any lane to set that field (status/domain/lane) or recategorize the type.
+- **Item view:** **Research KB** (runs the `planning-research` skill), **Edit**,
+  **Recategorize**, **Move → task**, **Delete**. Ideate / Decompose / Draft-spec / Research
+  now open a **prepopulated, editable prompt** you review before it runs in **Code Build**
+  (the duplicate terminal "Execute" is gone). **Open in Code Build** can attach the item's
+  linked knowledge as `@`-references. **Link session** is now a searchable picker over the
+  session store (with preview), and **linked sessions are clickable to jump into the chat**.
+- **Side panel:** fixed empty **Today** (now reads live task status), added **Tasks / Ideas /
+  Plans** groups.
+- **Graph:** more node spacing + label halos for legibility.
+- Backed by new `kp` commands: `edit`, `recategorize`, `delete`, `research` (+ a `lane` field).
+
 ## 1.5.10 — 2026-06-24
 
 ### Fix: live-monitor false "finished" alerts
