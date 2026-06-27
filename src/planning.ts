@@ -106,7 +106,7 @@ function resolveNode(): string {
   return configured || "node";
 }
 
-function runKp(args: string[]): { ok: boolean; stdout: string; stderr: string } {
+function runKp(args: string[], input?: string): { ok: boolean; stdout: string; stderr: string } {
   const cfg = planningConfig();
   const node = resolveNode();
   const cli = cfg.get<string>("cliPath") || defaultCli();
@@ -115,7 +115,12 @@ function runKp(args: string[]): { ok: boolean; stdout: string; stderr: string } 
   // ensure common bin dirs are on PATH for the child too
   env.PATH = `/opt/homebrew/bin:/usr/local/bin:${env.PATH || ""}`;
   if (root) env.KP_ROOT = root;
-  const res = spawnSync(node, [cli, ...args], { encoding: "utf8", env, maxBuffer: 32 * 1024 * 1024 });
+  const res = spawnSync(node, [cli, ...args], {
+    encoding: "utf8",
+    env,
+    maxBuffer: 32 * 1024 * 1024,
+    ...(input !== undefined ? { input } : {}),
+  });
   return {
     ok: res.status === 0,
     stdout: res.stdout || "",
@@ -584,13 +589,14 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     const cmds = await vscode.commands.getCommands(true);
     if (cmds.includes("codeBuild.newConversation")) {
       await vscode.commands.executeCommand("codeBuild.newConversation");
-      void vscode.window.showInformationMessage(`Code Build opened (${label}) — prompt copied to clipboard; paste to start.`);
+      void vscode.window.showInformationMessage(`Code Build opened (${label}) — prompt copied; paste into the composer to review & send.`);
     } else {
       void vscode.window.showWarningMessage("Code Build not installed. Prompt copied to clipboard.");
     }
   };
 
-  // Build the prompt, open it for review/edit, then run the (possibly edited) text in Code Build.
+  // Build the prepopulated prompt and open it straight in Code Build (review/edit happens
+  // in the CB composer before you send — no throwaway editor file).
   const reviewAndRun = async (action: string, id: string) => {
     const d = detailOf(id);
     if (!d) {
@@ -604,14 +610,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     } else {
       prompt = agentPrompt(action, d);
     }
-    const doc = await vscode.workspace.openTextDocument({ content: prompt, language: "markdown" });
-    await vscode.window.showTextDocument(doc, { preview: false });
-    const pick = await vscode.window.showInformationMessage(
-      `Review the ${action} prompt, edit if needed, then run it in Code Build.`,
-      "Run in Code Build",
-      "Cancel",
-    );
-    if (pick === "Run in Code Build") await runInCB(doc.getText(), action);
+    await runInCB(prompt, action);
   };
 
   const openInCB = async (id: string) => {
@@ -728,6 +727,25 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       case "setField": {
         runKp(["edit", id, msg.field === "domain" ? "--domain" : "--lane", String(msg.value ?? "")]);
         model.reload(log);
+        break;
+      }
+      case "updateField": {
+        const field = String(msg.field);
+        const value = String(msg.value ?? "");
+        let r;
+        if (field === "status") r = runKp(["set-status", id, value]);
+        else if (field === "body") r = runKp(["edit", id, "--body", "-"], value);
+        else r = runKp(["edit", id, "--" + field, value]); // title / domain / lane
+        if (r && !r.ok) void vscode.window.showWarningMessage(`update failed: ${r.stderr}`);
+        model.reload(log);
+        const det = runKp(["show", id]); // refresh the open drawer with saved values
+        if (det.ok) {
+          try {
+            DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) });
+          } catch {
+            /* ignore */
+          }
+        }
         break;
       }
       case "setType": {

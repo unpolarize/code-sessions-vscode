@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.2 — 2026-06-27
+
+### Inline-editable item detail + Research opens Code Build
+
+- **Item drawer:** name (title), domain, lane, and notes/details are now **edited
+  inline** in the board's detail drawer (saved via `kp edit`, drawer refreshes).
+- **Research KB / Ideate / Decompose / Draft-spec** no longer open a throwaway editor
+  file — they open **Code Build** with the prepopulated prompt copied to the clipboard
+  (review & send in the composer).
+
 ## 1.6.1 — 2026-06-27
 
 ### Side-panel items open in the board

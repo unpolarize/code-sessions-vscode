@@ -221,6 +221,12 @@ select{background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-
 .cact button{background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:4px;color:var(--vscode-descriptionForeground);cursor:pointer;font-size:11px;line-height:1;padding:2px 4px}
 .cact button:hover{color:var(--vscode-foreground)}
 .col.over{outline:2px dashed var(--vscode-focusBorder);outline-offset:-2px}
+.titleEdit{flex:1;font-size:16px;font-weight:600;background:transparent;border:1px solid transparent;border-radius:5px;color:var(--vscode-foreground);padding:3px 5px}
+.titleEdit:hover,.titleEdit:focus{border-color:var(--vscode-input-border);background:var(--vscode-input-background);outline:none}
+.bodyhead{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.bodyEdit{width:100%;min-height:120px;resize:vertical;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:5px;padding:6px;font-family:var(--vscode-editor-font-family);font-size:12px;margin-top:4px}
+.fldEdit{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:5px;padding:2px 6px;width:120px}
+.ghost.mini{padding:2px 8px;font-size:11px}
 `;
 
 // ---------------------------------------------------------------- script -----
@@ -377,10 +383,11 @@ function mdLite(s){ return esc(s).replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(
 function refRow(r,bad,onclick){ const d=el('div','refitem'+(bad?' bad':'')); d.innerHTML=esc(r.title||r.id||r.path); if(r.status)d.innerHTML+=' <span class="badge">'+esc(r.status)+'</span>'; if(onclick)d.addEventListener('click',onclick); return d; }
 function renderDrawer(o){
   const I=$('#drawerInner'); I.innerHTML='';
-  const head=el('div','dh'); head.innerHTML='<h2>'+esc(o.title)+'</h2>'; const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
+  const head=el('div','dh'); const ti=el('input','titleEdit'); ti.value=o.title||''; ti.title='Edit name — Enter or click away to save'; ti.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:'title',value:ti.value})); head.appendChild(ti); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
   const meta=el('div','drow'); meta.innerHTML='<span class="badge">'+o.type+'</span>'+(o.status?'<span class="badge">'+esc(o.status)+'</span>':'')+(o.domain?'<span class="badge">'+esc(o.domain)+'</span>':''); I.appendChild(meta);
   // status changer
   const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>vscode.postMessage({type:'setStatus',id:o.id,status:sel.value})); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); I.appendChild(sr); }
+  { const fr=el('div','statusrow'); const mkf=(field,val)=>{ const inp=el('input','fldEdit'); inp.value=val||''; inp.placeholder=field; inp.title='Edit '+field; inp.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:field,value:inp.value})); return inp; }; fr.appendChild(el('span',null,'Domain:')); fr.appendChild(mkf('domain',o.domain)); fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); I.appendChild(fr); }
   // agent actions
   const act=el('div','sec'); act.appendChild(el('h4',null,'Agent actions'));
   const grid=el('div','actions');
@@ -403,7 +410,7 @@ function renderDrawer(o){
   grid3.appendChild(mk('Delete','remove item','deleteItem'));
   act.appendChild(grid3); I.appendChild(act);
   // body
-  if(o.body&&o.body.trim()){ const s=el('div','sec'); s.appendChild(el('h4',null,'Notes')); s.appendChild(el('div','body',mdLite(o.body))); I.appendChild(s); }
+  { const s=el('div','sec'); const h=el('div','bodyhead'); h.appendChild(el('h4',null,'Notes / details')); const sb=el('button','ghost mini','Save'); h.appendChild(sb); s.appendChild(h); const ta=el('textarea','bodyEdit'); ta.value=o.body||''; ta.placeholder='Markdown details…'; s.appendChild(ta); sb.addEventListener('click',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:'body',value:ta.value})); I.appendChild(s); }
   // references
   const refs=[['Blocked by knowledge',o.blocked_by,true],['Cites',o.cites,false],['Children',o.children,false],['Depends on',o.depends_on,false],['Related',o.related,false]];
   refs.forEach(([label,list,isBlock])=>{ if(!list||!list.length)return; const s=el('div','sec'); s.appendChild(el('h4',null,label+' ('+list.length+')')); const rl=el('div','reflist'); list.forEach(r=>{ const bad=isBlock?(r.status!=='resolved'):(r.exists===false||r.missing); const open = r.id&&!r.missing? ()=>openDetail(r.id) : (r.path? ()=>vscode.postMessage({type:'open',kbPath:r.path}) : null); rl.appendChild(refRow(r,bad,open)); }); s.appendChild(rl); I.appendChild(s); });
