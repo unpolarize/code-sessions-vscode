@@ -202,7 +202,7 @@ function leaf(model: PlanningModel, o: ObjRow): PlanningItem {
   it.tooltip = `${o.id}\n${o.type}${o.status ? " · " + o.status : ""}${o.domain ? " · " + o.domain : ""}`;
   it.contextValue = `planning.${o.type}`;
   it.iconPath = iconFor(o.type, o.status);
-  it.command = { command: "codePlanning.openObject", title: "Open", arguments: [it] };
+  it.command = { command: "codePlanning.openInBoard", title: "Open in board", arguments: [it] };
   return it;
 }
 
@@ -764,6 +764,10 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       if (!model.reload(log)) vscode.window.showWarningMessage("Planning: kp export failed — check codeSessions.planning settings.");
     }),
     vscode.commands.registerCommand("codePlanning.openObject", openObject),
+    vscode.commands.registerCommand("codePlanning.openInBoard", (item) => {
+      const id = idOf(item);
+      DashboardPanel.show(dashDeps, "board", id || undefined);
+    }),
     vscode.commands.registerCommand("codePlanning.accept", (item) => {
       const id = idOf(item);
       if (!id) return;

@@ -30,16 +30,17 @@ export class DashboardPanel {
   private panel: vscode.WebviewPanel;
   private disposables: vscode.Disposable[] = [];
 
-  static show(deps: DashboardDeps, view?: string): void {
+  static show(deps: DashboardDeps, view?: string, itemId?: string): void {
     if (DashboardPanel.current) {
       DashboardPanel.current.panel.reveal();
       if (view) DashboardPanel.current.panel.webview.postMessage({ type: "setView", view });
+      if (itemId) DashboardPanel.current.panel.webview.postMessage({ type: "openItem", id: itemId });
       return;
     }
-    DashboardPanel.current = new DashboardPanel(deps, view);
+    DashboardPanel.current = new DashboardPanel(deps, view, itemId);
   }
 
-  private constructor(private deps: DashboardDeps, private initialView?: string) {
+  private constructor(private deps: DashboardDeps, private initialView?: string, private initialItem?: string) {
     this.panel = vscode.window.createWebviewPanel("codePlanningDashboard", "Planning Dashboard", vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
@@ -59,6 +60,7 @@ export class DashboardPanel {
       case "ready":
         this.pushSnapshot();
         if (this.initialView) this.panel.webview.postMessage({ type: "setView", view: this.initialView });
+        if (this.initialItem) this.panel.webview.postMessage({ type: "openItem", id: this.initialItem });
         break;
       case "refresh":
         this.deps.reload();
@@ -245,6 +247,7 @@ window.addEventListener('message',e=>{const m=e.data;
   else if(m.type==='detail'){renderDrawer(m.data);}
   else if(m.type==='setView'){view=m.view;syncSeg();render();}
   else if(m.type==='laneAdded'){ if(groupBy!=='lane'){groupBy='lane';const gb=$('#groupBy');if(gb)gb.value='lane';} if(m.name&&!customLanes.includes(m.name))customLanes.push(m.name); saveState(); renderBoard(); }
+  else if(m.type==='openItem'){ view='board'; syncSeg(); render(); if(m.id)openDetail(m.id); }
 });
 
 // top bar

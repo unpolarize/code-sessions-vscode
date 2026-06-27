@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.1 — 2026-06-27
+
+### Side-panel items open in the board
+
+Clicking a task/idea/plan in the planning side panel now opens the **Planning Dashboard
+board** and focuses that item's detail drawer (instead of opening the markdown file). The
+markdown is still one click away via the drawer's "Open file" action.
+
 ## 1.6.0 — 2026-06-27
 
 ### Planning Workbench
