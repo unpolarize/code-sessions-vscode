@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.6.3 — 2026-06-27
+
+### Docs: generic, accurate defaults
+
+- **Corrected stale documented defaults** to match the shipped config: `codeProjectsActivity.repoPaths`
+  (`[]`, auto-discovery) and `codeKbChanges.repoPath` (`""`, auto-detect) in README + DATA-STORES.
+- **Genericized the global-storage path** in docs to `<publisher>.code-sessions` (the extension id from
+  `package.json`); the inspect command now derives it instead of hardcoding it.
+- Removed personal references and example project names from the README/docs; broadened the
+  "Why this exists" section to reflect cross-agent (Claude + Grok) coverage. No functional changes.
+
 ## 1.6.2 — 2026-06-27
 
 ### Inline-editable item detail + Research opens Code Build

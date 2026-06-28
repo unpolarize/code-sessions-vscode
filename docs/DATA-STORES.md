@@ -80,9 +80,10 @@ shell out to `git log` / `git status` on each refresh and hold results in memory
   - Opened in `SessionStore.open(globalStorageDir)` (`db.ts:270`), where
     `globalStorageDir` is `ctx.globalStorageUri.fsPath` (`extension.ts:1667`).
   - On macOS this resolves to
-    `~/Library/Application Support/Code/User/globalStorage/zhirafovod.code-sessions/sessions-cache.db`
-    (the segment is the publisher.name from `package.json`). Use `Code - Insiders`
-    in place of `Code` for Insiders builds.
+    `~/Library/Application Support/Code/User/globalStorage/<publisher>.code-sessions/sessions-cache.db`,
+    where the `<publisher>.code-sessions` segment is the extension id (the `publisher`
+    + `name` fields from `package.json`). Use `Code - Insiders` in place of `Code` for
+    Insiders builds.
 - **Engine:** `better-sqlite3` (synchronous, native). Opened with
   `journal_mode = WAL`, `synchronous = NORMAL`, `temp_store = MEMORY`,
   `mmap_size = 268435456`, `foreign_keys = ON` (`db.ts:252-257`). WAL mode means
@@ -103,7 +104,7 @@ One row per indexed CLI session. Columns (`db.ts:18-43`, plus ALTERs):
 |---|---|---|
 | `session_id` | TEXT PK | Session UUID (Claude session id, or Grok session id). |
 | `project_path` | TEXT | Source project dir. For Claude this is the dash-encoded `~/.claude/projects/-Users-...` folder; for Grok the already-decoded cwd. |
-| `project_id` | TEXT | Derived short name, e.g. `unpolarize`, `ai/otelo`, `docs`. |
+| `project_id` | TEXT | Derived short name, e.g. `web-app`, `api`, `docs`. |
 | `projects_touched` | TEXT | Comma-separated derived list of projects edited in the session (stored as CSV, exposed as `string[]`). |
 | `jsonl_path` | TEXT UNIQUE | Absolute path to the transcript file on disk; the join key for incremental sync. |
 | `mtime_ns` | INTEGER | File mtime in nanoseconds (`mtimeMs * 1e6`). Half of the incremental-sync key. |
@@ -204,7 +205,7 @@ merge described below.
 
 On open, before indexing, `SessionStore.open` (`db.ts:289-308`) checks the
 `migration` ledger for `import_from_claude_sessions_v1`. If absent and a sibling
-DB exists at `<globalStorage>/zhirafovod.claude-sessions/sessions-cache.db`, it
+DB exists at the previous extension id's dir (`<globalStorage>/<publisher>.claude-sessions/sessions-cache.db`), it
 `ATTACH`es that DB and runs `INSERT OR IGNORE` across `session`, `turn`,
 `turn_topic`, `classification_batch`, `session_embedding`, `turn_embedding`, and
 `session_star` inside one transaction (`mergeFromOldExtensionDb`, `db.ts:315`),
@@ -362,7 +363,7 @@ All configuration lives under four namespaces in `package.json`
 ### `codeProjectsActivity.*`
 | Key | Default | Description |
 |---|---|---|
-| `repoPaths` | `["~/projects/unpolarize", "~/projects/ai/otelo"]` | Explicit repos to watch. |
+| `repoPaths` | `[]` | Explicit repos to watch. Empty by default — auto-discovery handles most setups. |
 | `autoDiscover` | `true` | Walk the discovery root (depth 2) for repos with recent commits. |
 | `discoveryRoot` | `~/projects` | Root for auto-discovery. |
 | `lookbackDays` | `14` | Days of git history per project. |
@@ -389,9 +390,10 @@ never repeats.
 
 ## 8. Inspect / reset
 
-- **Open the DB directly:**
+- **Open the DB directly:** (`EXT_ID` is the extension id — `publisher`.`name` from `package.json`)
   ```sh
-  sqlite3 "$HOME/Library/Application Support/Code/User/globalStorage/zhirafovod.code-sessions/sessions-cache.db"
+  EXT_ID="$(node -p "const p=require('./package.json');p.publisher+'.'+p.name")"
+  sqlite3 "$HOME/Library/Application Support/Code/User/globalStorage/$EXT_ID/sessions-cache.db"
   ```
   Then e.g. `.tables`, `PRAGMA user_version;`, `SELECT COUNT(*) FROM session;`.
   (Read-only inspection is safe even with VS Code open; WAL mode handles it.)
@@ -407,7 +409,7 @@ never repeats.
   classification require the cache and will warn if it's off.
 - **Where everything lives (delete to fully reset):** the entire global-storage
   directory
-  `~/Library/Application Support/Code/User/globalStorage/zhirafovod.code-sessions/`
+  `~/Library/Application Support/Code/User/globalStorage/<publisher>.code-sessions/`
   — this holds `sessions-cache.db` plus its `-wal`/`-shm` sidecars and nothing
   else of consequence. Deleting it discards all cached sessions, topics, and
   embeddings; the extension re-indexes from disk on next activation (topics and

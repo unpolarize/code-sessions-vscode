@@ -57,7 +57,7 @@ Migrations live in `MIGRATIONS[]` in [`src/db.ts`](src/db.ts) and are applied in
 ## Architecture cheat-sheet
 
 - **Sources**: `~/.claude/projects/<dash-encoded-cwd>/<uuid>.jsonl` and `~/.grok/sessions/<urlencoded-cwd>/<uuid>/chat_history.jsonl`. Indexers parse these into `SessionRow` / `TurnRow` shapes (`src/jsonlIndexer.ts`, `src/grokIndexer.ts`).
-- **Cache**: SQLite at `<globalStorage>/zhirafovod.code-sessions/sessions-cache.db`. Native `better-sqlite3` is replaced by a `node-sqlite3-wasm` shim ([`src/sqlite.ts`](src/sqlite.ts)) so the native ABI tracks VS Code's bundled Electron version.
+- **Cache**: SQLite at `<globalStorage>/<publisher>.code-sessions/sessions-cache.db` (the `<publisher>.code-sessions` segment is the extension id from `package.json`). Native `better-sqlite3` is replaced by a `node-sqlite3-wasm` shim ([`src/sqlite.ts`](src/sqlite.ts)) so the native ABI tracks VS Code's bundled Electron version.
 - **Tree** (`src/extension.ts`): `SessionsProvider` builds the activity-bar tree. Day buckets aggregate per-day token + cost totals from `turn.input_tokens` / `turn.output_tokens` / `turn.cost_usd` (per-turn columns added in migrations v11 / v12).
 - **Insights / trajectory views**: separate webviews (`src/insightsView.ts`, `src/trajectoryView.ts`).
 - **Classifier**: topic classification runs lazily in the background (`src/backgroundClassifier.ts`) and feeds the search view.

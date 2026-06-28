@@ -9,7 +9,7 @@
 // Grok session layout differs from claude in three ways that we normalise
 // here:
 //   1. Per-cwd partitioning: cwd is URL-encoded as the parent folder name
-//      (e.g. `%2FUsers%2Fzhirafovod%2Fdocs`), and each session is a folder,
+//      (e.g. `%2FUsers%2Fyou%2Fproject`), and each session is a folder,
 //      not a single file.
 //   2. Two files per session: `summary.json` (metadata: title, model,
 //      cwd, dates, message counts) and `chat_history.jsonl` (event stream).
@@ -30,7 +30,7 @@ const USER_TEXT_MAX = 4096;
 const ASSISTANT_EXCERPT_MAX = 1024;
 
 interface GrokSessionInfo {
-  /** Session folder, e.g. `<root>/%2FUsers%2Fzhirafovod%2Fdocs/<uuid>/`. */
+  /** Session folder, e.g. `<root>/%2FUsers%2Fyou%2Fproject/<uuid>/`. */
   sessionDir: string;
   chatPath: string;
   summaryPath: string;

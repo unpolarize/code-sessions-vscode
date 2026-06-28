@@ -11,7 +11,7 @@ A VS Code sidebar that gives you a **central command center** for coding-agent C
 │       ▼ Today — 4 sessions · $812 · 1.2M tok · 🪄7
 │           ▼ Research cookie management in Claude search tools  💬1561 · $709 · ⏱26h · 12m ago
 │               💬 1561 msgs · $709.20 · 398M tok · 🪄7 · ⏱26h · 12m ago
-│               📁 docs, unpolarize, ai/otelo
+│               📁 docs, web-app, api
 │               🔍 View conversation       ← opens timeline webview
 │               ▶ Resume in Claude         ← opens in Claude Code extension panel
 │               📜 Open raw JSONL
@@ -25,15 +25,15 @@ A VS Code sidebar that gives you a **central command center** for coding-agent C
 │       ▶ Older — 1,384 sessions
 ├─ KB changes
 │   ▼ Today — 14 files · 3 commits
-│       knowledge/tech/security/fetcher-exposure-unpolarize.md       [M]
+│       knowledge/tech/security/auth-review.md                       [M]
 │       ...
 │   ▶ Yesterday — 6 files · 2 commits
 ├─ Projects
 │   ▼ Today — 26 files · 8 commits
-│       ▼ unpolarize (12)
-│           backend-py/app/telemetry/header_capture.py   [M]
+│       ▼ web-app (12)
+│           src/server/telemetry/header_capture.py   [M]
 │           ...
-│       ▼ ai/otelo (10)
+│       ▼ api (10)
 │           ...
 │   ▶ Yesterday — 4 files · 1 commit
 ```
@@ -58,7 +58,7 @@ A tree of every Claude Code session (read from `~/.claude/projects/*/`), grouped
 
 ### KB changes pane
 
-A list of file changes in your knowledge base (default `~/docs`), grouped by day:
+A list of file changes in your knowledge base (`codeKbChanges.repoPath`; empty by default → auto-detected from the first workspace folder), grouped by day:
 
 - Committed changes from `git log --name-status --since=<lookback>`.
 - Uncommitted working-tree changes (`(uncommitted)` subject).
@@ -69,8 +69,8 @@ A list of file changes in your knowledge base (default `~/docs`), grouped by day
 
 The same `git log` view, but two-level: **day → project → files**.
 
-- Watches an explicit list (`codeProjectsActivity.repoPaths`) by default: `~/projects/unpolarize`, `~/projects/ai/otelo`.
-- **Auto-discovers** additional repos: walks `~/projects/<depth-2>` and includes any git repo with commits in the lookback window (so `openclaw`, `inference-service`, etc. show up automatically as you touch them).
+- **Auto-discovers** repos by default: walks `codeProjectsActivity.discoveryRoot` (`~/projects`, depth 2) and includes any git repo with commits in the lookback window, so projects show up automatically as you touch them.
+- Optionally watch an explicit list via `codeProjectsActivity.repoPaths` (empty by default).
 - Same open/diff actions as KB.
 
 ### Insights dashboard (webview)
@@ -123,10 +123,11 @@ A single SQLite database (`better-sqlite3`, WAL mode) at:
 
 ```
 <globalStorage>/sessions-cache.db
-# macOS: ~/Library/Application Support/Code/User/globalStorage/zhirafovod.code-sessions/sessions-cache.db
+# macOS: ~/Library/Application Support/Code/User/globalStorage/<publisher>.code-sessions/sessions-cache.db
+#        (<publisher>.code-sessions is the extension id — publisher.name from package.json)
 ```
 
-It holds tables for sessions, turns, topic classifications, embeddings + 2D layout coordinates, starred sessions, and a migration ledger. The schema is versioned via `PRAGMA user_version`. **This DB is purely a cache** — delete the `zhirafovod.code-sessions` global-storage folder and the extension rebuilds it from disk on next launch (topics and embeddings are recomputed on demand). An incremental indexer only re-parses transcripts whose `(mtime, size)` changed, triggered by a 1.5 s-throttled file watcher.
+It holds tables for sessions, turns, topic classifications, embeddings + 2D layout coordinates, starred sessions, and a migration ledger. The schema is versioned via `PRAGMA user_version`. **This DB is purely a cache** — delete the extension's global-storage folder and the extension rebuilds it from disk on next launch (topics and embeddings are recomputed on demand). An incremental indexer only re-parses transcripts whose `(mtime, size)` changed, triggered by a 1.5 s-throttled file watcher.
 
 **Local-only compute:**
 - **Embeddings** for the agent graph use a local Ollama daemon (`127.0.0.1:11434`, `nomic-embed-text`), falling back to a built-in hashed bag-of-words vector when Ollama isn't running.
@@ -224,9 +225,9 @@ Manual classification still works via the **Classify all topics** button on the 
 | `codeSessions.embedding.preferred` | `ollama` | Preferred embedding backend (`ollama` or `transformersjs`). Falls back to a hashed bag-of-words if neither is available. |
 | `codeSessions.embedding.ollamaUrl` | `http://127.0.0.1:11434` | Ollama base URL. |
 | `codeSessions.embedding.ollamaModel` | `nomic-embed-text` | Ollama model name. |
-| `codeKbChanges.repoPath` | `~/docs` | KB repo path. |
+| `codeKbChanges.repoPath` | `""` | KB repo path; empty → auto-detect from the first workspace folder. |
 | `codeKbChanges.lookbackDays` | `14` | Days of git history. |
-| `codeProjectsActivity.repoPaths` | `["~/projects/unpolarize","~/projects/ai/otelo"]` | Explicit list of project repos. |
+| `codeProjectsActivity.repoPaths` | `[]` | Explicit list of project repos; empty → auto-discovery. |
 | `codeProjectsActivity.autoDiscover` | `true` | Walk `~/projects/` depth 2 and add any git repo with commits in window. |
 | `codeProjectsActivity.discoveryRoot` | `~/projects` | Root for auto-discovery. |
 | `codeProjectsActivity.lookbackDays` | `14` | Days of git history per project. |
@@ -235,11 +236,10 @@ Manual classification still works via the **Classify all topics** button on the 
 
 - **`sessions` shell alias** — the same data, instantly, from any terminal. `bash ~/.claude/skills/sessions/session-center.sh recent 30` (or `sessions recent 30`).
 - **`/sessions` Claude Code skill** — same script, invoked through the Claude Code slash-command system. Slower because the LLM is involved; use the shell alias or this extension when you want a "fully programmatic" view.
-- **Design + investigation notes** (in the Sergey docs workspace): `~/docs/knowledge/tech/agents/claude-code-command-center.md`.
 
 ## Why this exists
 
-The official Claude Code VS Code extension (`anthropic.claude-code`) declares a `claude-sessions-sidebar` view container, but it is gated behind context flag `claude-vscode.sessionsListEnabled` — **not user-settable** and not shipped yet. This extension fills the gap, adds analytics the official one will not (token / cost / subagents / projects-touched / per-turn trace), and integrates with the official one (resume opens the conversation in the Claude panel via `claude-vscode.primaryEditor.open`).
+The built-in coding-agent UIs don't give you a durable, cross-agent view of your own session history. This extension is that view: it indexes **Claude Code** and **Grok** sessions from disk and adds analytics they don't surface — token / cost / subagents / projects-touched / per-turn trace, topic classification, and an embeddings-based agent graph — all computed locally. It **integrates with** the official Claude Code extension rather than replacing it (resume opens the conversation in the Claude panel via `claude-vscode.primaryEditor.open`).
 
 ## License
 
