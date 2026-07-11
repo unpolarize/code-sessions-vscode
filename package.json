@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.6.3",
+  "version": "1.7.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -186,6 +186,12 @@
         "command": "codeSessions.refresh",
         "title": "Refresh sessions",
         "icon": "$(refresh)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.syncStoresNow",
+        "title": "Sync stores now (pull KB / Sessions / Planning)",
+        "icon": "$(sync)",
         "category": "Code Sessions"
       },
       {
@@ -667,6 +673,32 @@
           "default": false,
           "description": "Also import CS git-store sessions captured on THIS machine. Off by default because they are already indexed from their native JSONL (higher fidelity); enabling can create duplicates."
         },
+        "codeSessions.sync.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "While this viewer is open, keep the shared git stores fresh by pulling them — the KB (~/docs, which contains the Planning store) and the Sessions store (~/.sessions). Syncs on activation, on a poll, and when a coding turn completes. Nothing runs while the viewer is closed."
+        },
+        "codeSessions.sync.intervalMinutes": {
+          "type": "number",
+          "default": 5,
+          "description": "Minutes between background sync passes. 0 disables the periodic poll (activation + turn-completion syncs still run)."
+        },
+        "codeSessions.sync.onTurnComplete": {
+          "type": "boolean",
+          "default": true,
+          "description": "Sync when a coding turn completes (a commit lands under ~/.sessions/hosts), so a session finishing on any machine shows up here promptly."
+        },
+        "codeSessions.sync.push": {
+          "type": "boolean",
+          "default": true,
+          "description": "After rebasing onto the remote, push this machine's local commits (in ~/docs / ~/.sessions) so its sessions and planning changes flow out too. Turn off for pull-only."
+        },
+        "codeSessions.sync.extraRepos": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional absolute repo paths to include in the background sync (~ is expanded). The KB and Sessions stores are always included."
+        },
         "codeSessions.notifications.finished": {
           "type": "boolean",
           "default": true,
@@ -839,7 +871,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js",
+    "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js && node test/storeSyncGit.test.js",
     "package": "npm run compile && vsce package --allow-missing-repository",
     "vscode:prepublish": "npm run compile"
   },

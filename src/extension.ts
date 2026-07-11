@@ -11,7 +11,8 @@ import { registerPlanning } from "./planning";
 import { SessionStore } from "./db";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
-import { syncGitToStore } from "./gitIndexer";
+import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
+import { StoreSyncManager } from "./storeSync";
 import { classifySession } from "./topicClassifier";
 import { openAgentGraph } from "./agentGraph";
 import { openTrajectoryView } from "./trajectoryView";
@@ -2711,6 +2712,52 @@ export function activate(ctx: vscode.ExtensionContext) {
     projects.refresh();
   }, 2 * 60 * 1000);
   ctx.subscriptions.push({ dispose: () => clearInterval(kbProjectsTimer) });
+
+  // ── Store git sync (viewer-owned) ─────────────────────────────────────────
+  // Pull the shared stores while the viewer is open so it shows fresh
+  // cross-machine data. Repos: the KB (~/docs, which contains Planning) and
+  // the Sessions store (~/.sessions). Runs on activation, on a poll, and when
+  // a coding turn commits under ~/.sessions/hosts — and never while the viewer
+  // is closed (this disposable stops every timer/watcher). See storeSync.ts.
+  const sessionsRoot = gitSessionsRoot();
+  const storeSync = new StoreSyncManager({
+    log,
+    repos: () => {
+      const set = new Set<string>();
+      set.add(resolveKbRepoPath()); // ~/docs — covers KB + planning/
+      set.add(sessionsRoot); // ~/.sessions
+      for (const extra of vscode.workspace
+        .getConfiguration("codeSessions.sync")
+        .get<string[]>("extraRepos", [])) {
+        if (extra) set.add(expandHome(extra));
+      }
+      return [...set];
+    },
+    onChanged: (changed) => {
+      // A pull advanced HEAD somewhere — reload the affected views. Refreshes
+      // are cheap re-reads, so we refresh broadly rather than diffing repos.
+      if (changed.some((r) => r === sessionsRoot) && store) {
+        try {
+          syncGitToStore(store, {
+            includeLocalHost: vscode.workspace
+              .getConfiguration("codeSessions")
+              .get<boolean>("git.includeLocalHost", false),
+          });
+        } catch (e: any) {
+          console.error("[code-sessions] post-pull index sync failed:", e);
+        }
+      }
+      sessions.refresh();
+      kb.refresh();
+      projects.refresh();
+      // Planning reads via the kp CLI; its refresh command reloads the snapshot.
+      void vscode.commands.executeCommand("codePlanning.refresh");
+    },
+  });
+  ctx.subscriptions.push(storeSync.start(sessionsRoot));
+  ctx.subscriptions.push(
+    vscode.commands.registerCommand("codeSessions.syncStoresNow", () => storeSync.syncNow()),
+  );
 
   // Day-rollover detection. The date-bucket label is computed at render time
   // from `new Date()`, so when local midnight passes nothing moves from

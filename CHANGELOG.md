@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.7.0 — 2026-07-11
+
+### Viewer-owned background git sync (KB / Sessions / Planning)
+
+The viewer now keeps the shared git stores fresh itself, so it always shows up-to-date cross-machine data — and only while it's open (no always-on daemon or cron; every timer/watcher is a disposable, so closing the viewer stops all sync).
+
+- **What it syncs:** the KB repo `~/docs` (which contains the Planning store under `planning/`) and the Sessions store `~/.sessions`. Planning is covered by the `~/docs` pull; extra repos can be added via `codeSessions.sync.extraRepos`.
+- **When:** on activation (1.5s after the window settles), on a periodic poll (`codeSessions.sync.intervalMinutes`, default 5), and on **turn completion** — a new `~/.sessions/hosts/**` watcher fires when the CS capture daemon commits a finished turn/session, debounced 4s. After any pull that advances HEAD, the affected views reload (sessions re-index, KB/Projects git-log, Planning snapshot).
+- **Conflict handling — recover, never wedge:** uses `pull --rebase --autostash`; if a rebase is already in progress (ours from a crash, or a cron's), it's aborted back to a clean HEAD before syncing. A pull that conflicts is aborted (repo left clean) and surfaced as a one-time warning — no marker-resolution loop, no merge agent. Overlapping triggers coalesce (one serialized pass; a request mid-run schedules exactly one more).
+- **Push:** after rebasing, this machine's local commits are pushed (`codeSessions.sync.push`, default on) so its own sessions/planning changes flow out too; turn off for pull-only.
+- New command **"Code Sessions: Sync stores now"** for a manual pull. New settings under `codeSessions.sync.*`. New module `src/storeSync.ts` (raw `child_process`; ported from the CS library's `GitStore.sync()` pattern).
+
+MINOR (`1.6.3 → 1.7.0`) — new user-facing sync behavior + new settings/command. No schema/protocol change.
+
+# Changelog
+
 ## 1.6.3 — 2026-06-27
 
 ### Docs: generic, accurate defaults
