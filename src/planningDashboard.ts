@@ -109,6 +109,7 @@ export class DashboardPanel {
   <span class="brand">◧ Planning</span>
   <div class="seg" id="viewSeg">
     <button data-view="board" class="on">Board</button>
+    <button data-view="calendar">Calendar</button>
     <button data-view="graph">Graph</button>
     <button data-view="canvas">Canvas</button>
   </div>
@@ -131,6 +132,7 @@ export class DashboardPanel {
 </div>
 <div id="main">
   <div id="board" class="view"></div>
+  <div id="calendar" class="view hidden"></div>
   <svg id="graph" class="view hidden"></svg>
   <div id="canvas" class="view hidden"></div>
   <div id="gfilters" class="hidden"></div>
@@ -173,6 +175,19 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .card .ct{font-weight:600;font-size:13px;line-height:1.3}
 .card .cm{display:flex;gap:6px;align-items:center;margin-top:6px;font-size:11px;opacity:.75;flex-wrap:wrap}
 .badge{border-radius:4px;padding:1px 6px;font-size:10px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}
+.prio{border-radius:4px;padding:1px 5px;font-size:10px;font-weight:700;background:#444;color:#ddd}
+.prio.p0{background:#d16969;color:#fff}.prio.p1{background:#d7ba7d;color:#222}.prio.p2{background:#569cd6;color:#fff}
+.due{font-size:10px;opacity:.9}.due.late{color:#d16969;font-weight:700}
+.calbar{display:flex;gap:10px;align-items:center;padding:8px 4px;font-size:12px}
+.calbar input{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:4px;padding:2px 4px}
+.calday h3{margin:14px 0 4px;font-size:12px;text-transform:none;opacity:.85;border-bottom:1px solid var(--vscode-panel-border);padding-bottom:3px}
+.calrow{display:flex;gap:8px;align-items:center;padding:5px 6px;border-radius:6px;cursor:pointer;font-size:12px}
+.calrow:hover{background:var(--vscode-list-hoverBackground)}
+.calrow.done{opacity:.5;text-decoration:line-through}
+.calrow.late .ct{color:#d16969}
+.calrow .cm{opacity:.6;font-size:11px;margin-left:auto}
+.calrow .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.calempty{opacity:.6;padding:16px;font-size:12px}
 .card.blocked{border-left:3px solid #e51400}
 /* graph */
 #graph{width:100%;height:100%;cursor:grab}
@@ -233,12 +248,12 @@ select{background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-
 const SCRIPT = `
 const vscode = acquireVsCodeApi();
 const LANES = {
-  task: ['inbox','today','in_progress','done','deferred'],
+  task: ['inbox','today','in_progress','done','deferred','outdated'],
   idea: ['capture','refine','accepted','parked','done'],
   plan: ['plan','prototype','implement','validate','done','parked'],
 };
 const TYPE_COLOR = {idea:'#d7ba7d',plan:'#4ec9b0',task:'#569cd6',project:'#c586c0',catalog_entry:'#c586c0',domain:'#808080',daily_plan:'#dcdcaa',insight:'#4fc1ff',reflection:'#9cdcfe',knowledge:'#ce9178',session:'#608b4e'};
-const LANE_COLOR = {inbox:'#888',today:'#569cd6',in_progress:'#dcdcaa',done:'#4ec9b0',deferred:'#a08',capture:'#d7ba7d',refine:'#dcdcaa',accepted:'#4ec9b0',parked:'#888',plan:'#569cd6',prototype:'#c586c0',implement:'#dcdcaa',validate:'#4fc1ff'};
+const LANE_COLOR = {inbox:'#888',today:'#569cd6',in_progress:'#dcdcaa',done:'#4ec9b0',deferred:'#a08',outdated:'#d16969',capture:'#d7ba7d',refine:'#dcdcaa',accepted:'#4ec9b0',parked:'#888',plan:'#569cd6',prototype:'#c586c0',implement:'#dcdcaa',validate:'#4fc1ff'};
 let S = null, view='board', laneSet='task';
 const _st=(vscode.getState&&vscode.getState())||{};
 let groupBy = _st.groupBy || 'status';
@@ -269,13 +284,14 @@ function syncSeg(){
   document.querySelectorAll('#laneSeg button').forEach(b=>b.classList.toggle('on',b.dataset.lane===laneSet));
   $('#laneSeg').style.display = view==='board'?'inline-flex':'none';
   $('#board').classList.toggle('hidden',view!=='board');
+  $('#calendar').classList.toggle('hidden',view!=='calendar');
   $('#graph').classList.toggle('hidden',view!=='graph');
   $('#gfilters').classList.toggle('hidden',view!=='graph');
   $('#canvas').classList.toggle('hidden',view!=='canvas');
 }
 function render(){ if(!S){return;} syncSeg();
   $('#counts').textContent = Object.entries(S.counts||{}).map(([k,v])=>k+':'+v).join('  ');
-  if(view==='board')renderBoard(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
+  if(view==='board')renderBoard(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
 }
 const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
 
@@ -298,7 +314,7 @@ function renderBoard(){
     rows.forEach(o=>{
       const card=el('div','card'+(bl.has(o.id)?' blocked':'')); card.draggable=true; card.dataset.id=o.id;
       card.innerHTML='<div class="cact"><button data-act="edit" title="Edit">✎</button><button data-act="recat" title="Recategorize / move">⇄</button><button data-act="del" title="Delete">✕</button></div>'+
-        '<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm"><span class="badge">'+o.type+'</span>'+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.lane?'<span>⋔ '+esc(o.lane)+'</span>':'')+(o.project?'<span>· '+esc(o.project.split('/').pop())+'</span>':'')+'</div>';
+        '<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm"><span class="badge">'+o.type+'</span>'+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+(o.due?'<span class="due'+(o.due<todayStr()&&o.status!=='done'&&o.status!=='outdated'?' late':'')+'">⏰ '+esc(o.due)+'</span>':'')+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.lane?'<span>⋔ '+esc(o.lane)+'</span>':'')+(o.project?'<span>· '+esc(o.project.split('/').pop())+'</span>':'')+'</div>';
       card.addEventListener('click',ev=>{ if(ev.target.closest('[data-act]'))return; openDetail(o.id); });
       card.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();const a=b.dataset.act;vscode.postMessage({type:'action',action:a==='edit'?'editItem':a==='recat'?'recategorize':'deleteItem',id:o.id});}));
       card.addEventListener('dragstart',ev=>{ev.dataTransfer.setData('text/plain',o.id);card.classList.add('dragging');});
@@ -314,6 +330,36 @@ function renderBoard(){
       else vscode.postMessage({type:'action',action:'setField',id:id,field:field,value:lane==='(none)'?'':lane});});
     board.appendChild(col);
   });
+}
+
+function todayStr(){return (S&&S.board&&S.board.date)||new Date().toISOString().slice(0,10);}
+let calFrom=null, calTo=null;
+function renderCalendar(){
+  const now=todayStr();
+  if(!calFrom){calFrom=now;}
+  if(!calTo){const d=new Date(now+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+14);calTo=d.toISOString().slice(0,10);}
+  const cal=$('#calendar'); cal.innerHTML='';
+  const bar=el('div','calbar');
+  bar.innerHTML='<label>from <input type="date" id="calFrom" value="'+calFrom+'"></label> <label>to <input type="date" id="calTo" value="'+calTo+'"></label> <button id="calAll" class="ghost">All dated</button> <button id="calOverdue" class="ghost">+ Overdue</button>';
+  cal.appendChild(bar);
+  const tasks=(S.objects||[]).filter(o=>o.type==='task'&&o.due);
+  const inWin=tasks.filter(o=>o.due>=calFrom&&o.due<=calTo).sort((a,b)=>(a.due+(a.priority||'p9')).localeCompare(b.due+(b.priority||'p9')));
+  if(!inWin.length){cal.appendChild(el('div','calempty','(no tasks due between '+calFrom+' and '+calTo+' — set due dates with kp set-due)'));}
+  let day='';let dayEl=null;
+  inWin.forEach(o=>{
+    if(o.due!==day){day=o.due;dayEl=el('div','calday');
+      const mark=day<now?' ⚠':day===now?' ← today':'';
+      dayEl.appendChild(el('h3',null,esc(day)+mark));cal.appendChild(dayEl);}
+    const done=o.status==='done'||o.status==='outdated';
+    const row=el('div','calrow'+(done?' done':'')+(o.due<now&&!done?' late':''));
+    row.innerHTML='<span class="dot" style="background:'+(LANE_COLOR[o.status]||'#888')+'"></span>'+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+'<span class="ct">'+esc(o.title||o.id)+'</span><span class="cm">'+esc(o.status||'')+(o.domain?' · '+esc(o.domain):'')+'</span>';
+    row.addEventListener('click',()=>openDetail(o.id));
+    dayEl.appendChild(row);
+  });
+  bar.querySelector('#calFrom').addEventListener('change',e=>{calFrom=e.target.value;renderCalendar();});
+  bar.querySelector('#calTo').addEventListener('change',e=>{calTo=e.target.value;renderCalendar();});
+  bar.querySelector('#calAll').addEventListener('click',()=>{calFrom='0000-01-01';calTo='9999-12-31';renderCalendar();});
+  bar.querySelector('#calOverdue').addEventListener('click',()=>{calFrom='0000-01-01';calTo=todayStr();renderCalendar();});
 }
 
 // force-directed graph

@@ -43,6 +43,8 @@ function listStoreSessions(): { uuid: string; title?: string; agent?: string; mt
 import { openCanvas } from "./planningCanvas";
 
 interface ObjRow {
+  priority?: string | null;
+  due?: string | null;
   id: string;
   type: string;
   title: string | null;
@@ -86,7 +88,7 @@ interface Snapshot {
   graph: { nodes: GraphNode[]; edges: GraphEdge[] };
 }
 
-const LANES = ["today", "in_progress", "inbox", "deferred", "done"] as const;
+const LANES = ["today", "in_progress", "inbox", "deferred", "done", "outdated"] as const;
 
 function planningConfig() {
   return vscode.workspace.getConfiguration("codeSessions.planning");
@@ -382,7 +384,7 @@ class BoardPanel {
             <div class="actions">
               <button data-act="open" data-id="${esc(o.id)}">open</button>
               <select data-act="move" data-id="${esc(o.id)}">
-                ${["inbox", "today", "in_progress", "done", "deferred"]
+                ${["inbox", "today", "in_progress", "done", "deferred", "outdated"]
                   .map((s) => `<option value="${s}"${s === o.status ? " selected" : ""}>${s}</option>`)
                   .join("")}
               </select>
@@ -802,7 +804,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     vscode.commands.registerCommand("codePlanning.setStatus", async (item) => {
       const id = idOf(item);
       if (!id) return;
-      const status = await vscode.window.showQuickPick(["inbox", "today", "in_progress", "done", "deferred", "accepted", "parked"], {
+      const status = await vscode.window.showQuickPick(["inbox", "today", "in_progress", "done", "deferred", "outdated", "accepted", "parked"], {
         placeHolder: `New status for ${id}`,
       });
       if (status) {
