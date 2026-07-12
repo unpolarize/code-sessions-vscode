@@ -42,6 +42,31 @@ function listStoreSessions(): { uuid: string; title?: string; agent?: string; mt
 }
 import { openCanvas } from "./planningCanvas";
 
+/** planning_refs from a session's ~/.sessions envelope (session → planning fallback). */
+function envelopePlanningRefs(uuid: string): string[] {
+  const root = path.join(os.homedir(), ".sessions", "hosts");
+  if (!existsSync(root)) return [];
+  const ls = (p: string): string[] => {
+    try {
+      return readdirSync(p);
+    } catch {
+      return [];
+    }
+  };
+  for (const host of ls(root))
+    for (const month of ls(path.join(root, host))) {
+      const f = path.join(root, host, month, uuid, "session.json");
+      if (!existsSync(f)) continue;
+      try {
+        const s = JSON.parse(readFileSync(f, "utf8"));
+        return Array.isArray(s.planning_refs) ? s.planning_refs : [];
+      } catch {
+        return [];
+      }
+    }
+  return [];
+}
+
 interface ObjRow {
   priority?: string | null;
   due?: string | null;
@@ -845,7 +870,8 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         void deleteItem(id);
         break;
       case "setField": {
-        runKp(["edit", id, msg.field === "domain" ? "--domain" : "--lane", String(msg.value ?? "")]);
+        if (msg.field === "project") runKp(["set-project", id, String(msg.value ?? "") || "-"]);
+        else runKp(["edit", id, msg.field === "domain" ? "--domain" : "--lane", String(msg.value ?? "")]);
         model.reload(log);
         break;
       }
@@ -998,6 +1024,59 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       if (id) term.sendText(`# Working on ${id}. After the session: kp link-session ${id} <session-uuid>`, false);
     }),
     vscode.commands.registerCommand("codePlanning.openDashboard", () => DashboardPanel.show(dashDeps)),
+    // Session → planning: from a session item, jump to the planning object(s) it is
+    // linked to (object.linked_sessions ∪ envelope.planning_refs); offer to link if none.
+    vscode.commands.registerCommand("codePlanning.openFromSession", async (arg?: any) => {
+      const uuid: string | undefined =
+        typeof arg === "string" ? arg : (arg?.row?.session ?? arg?.session ?? arg?.row?.session_id ?? arg?.uuid);
+      if (!uuid) {
+        void vscode.window.showWarningMessage("Planning: no session id on this item.");
+        return;
+      }
+      if (!model.get()) model.reload(log);
+      const objs = (model.get()?.objects ?? []) as (ObjRow & { linked_sessions?: string | null })[];
+      const parseLS = (v: unknown): string[] => {
+        try {
+          const a = typeof v === "string" ? JSON.parse(v) : v;
+          return Array.isArray(a) ? (a as string[]) : [];
+        } catch {
+          return [];
+        }
+      };
+      let linked = objs.filter((o) => parseLS(o.linked_sessions).includes(uuid));
+      if (!linked.length) {
+        // fallback: the session envelope's planning_refs in ~/.sessions
+        const refs = envelopePlanningRefs(uuid);
+        linked = objs.filter((o) => refs.includes(o.id));
+      }
+      const openItem = (id: string) => DashboardPanel.show(dashDeps, "board", id);
+      if (linked.length === 1) {
+        openItem(linked[0].id);
+        return;
+      }
+      if (linked.length > 1) {
+        const pick = await vscode.window.showQuickPick(
+          linked.map((o) => ({ label: o.title || o.id, description: `${o.type} · ${o.status ?? ""}`, id: o.id })),
+          { placeHolder: "Planning items linked to this session" },
+        );
+        if (pick) openItem((pick as { id: string }).id);
+        return;
+      }
+      const choice = await vscode.window.showQuickPick(
+        objs
+          .filter((o) => ["task", "idea", "plan", "thought"].includes(o.type))
+          .map((o) => ({ label: o.title || o.id, description: `${o.type} · ${o.status ?? ""}`, id: o.id })),
+        { title: "Link session → planning", placeHolder: "No planning links yet — pick an item to link this session to (Esc = cancel)" },
+      );
+      if (!choice) return;
+      const r = runKp(["link-session", (choice as { id: string }).id, uuid]);
+      if (!r.ok) {
+        void vscode.window.showWarningMessage(`link failed: ${r.stderr}`);
+        return;
+      }
+      model.reload(log);
+      openItem((choice as { id: string }).id);
+    }),
     // Cmd+Ctrl+Shift+P — planning mode toggle: open the Planning sidebar + board
     // together; press again to hide the sidebar and close the board.
     vscode.commands.registerCommand("codePlanning.togglePlanningMode", async () => {

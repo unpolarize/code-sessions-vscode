@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.17.0 — 2026-07-12
+
+### Sorting, project-centric view, session ↔ planning navigation
+
+- **Sort cards within lanes** — new ↕ selector next to group-by: priority (default), due, updated (newest first), title, project, domain, type. Persisted.
+- **Group lanes by project** — the ▦ group-by selector gains project; dragging a card between project lanes reassigns it via `kp set-project`.
+- **Projects view** — new top-level view: one card per KP project with open items (status-ordered, click → drawer, double-click card → expand all), closed counts, and the sessions linked to the project or its items (click → open the chat).
+- **Session → Planning** — right-click a session in the Code Sessions view → "Open in Planning": jumps to the planning item(s) linked to that session (via `linked_sessions` / envelope `planning_refs`, now projected into the snapshot); if several, pick; if none, offers to link the session to an item and opens it. The reverse direction (drawer "Linked sessions" → open chat) already existed.
+
+MINOR — pairs with knowledge-planning 2dd2e80 (linked_sessions in the projection).
+
 ## 1.16.0 — 2026-07-12
 
 ### Resolution notes on closing moves

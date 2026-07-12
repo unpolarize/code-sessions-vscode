@@ -132,6 +132,7 @@ export class DashboardPanel {
   <span class="brand">◧ Planning</span>
   <div class="seg" id="viewSeg">
     <button data-view="board" class="on">Board</button>
+    <button data-view="projects">Projects</button>
     <button data-view="calendar">Calendar</button>
     <button data-view="graph">Graph</button>
     <button data-view="canvas">Canvas</button>
@@ -153,6 +154,16 @@ export class DashboardPanel {
     <option value="domain">▦ domain</option>
     <option value="type">▦ type</option>
     <option value="lane">▦ lane</option>
+    <option value="project">▦ project</option>
+  </select>
+  <select id="sortBy" title="Sort cards within lanes">
+    <option value="priority">↕ priority</option>
+    <option value="due">↕ due</option>
+    <option value="updated">↕ updated</option>
+    <option value="title">↕ title</option>
+    <option value="project">↕ project</option>
+    <option value="domain">↕ domain</option>
+    <option value="type">↕ type</option>
   </select>
   <button id="addLaneBtn" class="ghost" title="Add a custom lane">＋ lane</button>
   <span class="spacer"></span>
@@ -164,6 +175,7 @@ export class DashboardPanel {
 </div>
 <div id="main">
   <div id="board" class="view"></div>
+  <div id="projects" class="view hidden"></div>
   <div id="calendar" class="view hidden"></div>
   <svg id="graph" class="view hidden"></svg>
   <div id="canvas" class="view hidden"></div>
@@ -210,6 +222,20 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .card.compact .cm{margin-top:0;flex:none;flex-wrap:nowrap}
 .card.dropover{border-color:var(--vscode-focusBorder);box-shadow:0 -2px 0 0 var(--vscode-focusBorder)}
 .savenote{font-size:10px;opacity:.6;min-width:52px;text-align:right}
+#projects{padding:14px;overflow-y:auto}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+.pcard{background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:10px;padding:12px;min-width:0}
+.pcard h3{margin:0 0 8px;font-size:13px;display:flex;gap:8px;align-items:baseline;cursor:pointer}
+.pcard h3:hover{color:var(--vscode-focusBorder)}
+.pcard h3 .pn{margin-left:auto;font-weight:400;font-size:11px;opacity:.6;flex:none}
+.pitem{display:flex;gap:7px;align-items:baseline;font-size:12px;padding:3px 2px;cursor:pointer;border-radius:4px;min-width:0}
+.pitem:hover{background:var(--vscode-list-hoverBackground)}
+.pitem .st{font-size:10px;opacity:.65;flex:none;width:74px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pitem .pt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.pitem .dot{width:7px;height:7px;border-radius:50%;flex:none;align-self:center}
+.pmore{color:var(--vscode-textLink-foreground);cursor:pointer;font-size:11px;padding:3px 2px}
+.psess{margin-top:8px;border-top:1px dotted var(--vscode-widget-border);padding-top:6px}
+.psess .lbl{font-size:10px;text-transform:uppercase;opacity:.55;letter-spacing:.5px}
 .cards{padding:0 10px 10px;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
 .card{background:var(--vscode-editor-background);border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px;cursor:grab;transition:border-color .1s,transform .05s}
 .card:hover{border-color:var(--vscode-focusBorder)}
@@ -321,7 +347,8 @@ const _st=(vscode.getState&&vscode.getState())||{};
 let groupBy = _st.groupBy || 'status';
 let customLanes = _st.customLanes || [];
 let doneWindow = _st.doneWindow || 'week'; // hide done items older than: yesterday|week|month|all
-function saveState(){ try{ vscode.setState({groupBy, customLanes, doneWindow}); }catch(e){} }
+let sortBy = _st.sortBy || 'priority';
+function saveState(){ try{ vscode.setState({groupBy, customLanes, doneWindow, sortBy}); }catch(e){} }
 const BOARD_TYPES=['task','idea','plan','thought'];
 const $=s=>document.querySelector(s), el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
 const esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -354,6 +381,7 @@ document.addEventListener('keydown',e=>{
 });
 $('#search').addEventListener('input',e=>{searchTerm=e.target.value;applySearch();});
 (function(){const gb=$('#groupBy'); if(gb){gb.value=groupBy; gb.addEventListener('change',()=>{groupBy=gb.value;saveState();renderBoard();});}
+  const sb=$('#sortBy'); if(sb){sb.value=sortBy; sb.addEventListener('change',()=>{sortBy=sb.value;saveState();renderBoard();});}
   const al=$('#addLaneBtn'); if(al)al.addEventListener('click',()=>vscode.postMessage({type:'action',action:'addLane'}));})();
 $('#backdrop').addEventListener('click',closeDrawer);
 function syncSeg(){
@@ -363,6 +391,7 @@ function syncSeg(){
   $('#laneSeg').style.display = view==='board'?'inline-flex':'none';
   $('#calModeSeg').style.display = view==='calendar'?'inline-flex':'none';
   $('#board').classList.toggle('hidden',view!=='board');
+  $('#projects').classList.toggle('hidden',view!=='projects');
   $('#calendar').classList.toggle('hidden',view!=='calendar');
   $('#graph').classList.toggle('hidden',view!=='graph');
   $('#gfilters').classList.toggle('hidden',view!=='graph');
@@ -370,7 +399,7 @@ function syncSeg(){
 }
 function render(){ if(!S){return;} syncSeg();
   $('#counts').textContent = Object.entries(S.counts||{}).map(([k,v])=>k+':'+v).join('  ');
-  if(view==='board')renderBoard(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
+  if(view==='board')renderBoard(); else if(view==='projects')renderProjects(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
   applySearch();
 }
 const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
@@ -407,7 +436,16 @@ function renderBoard(){
   const shown=(maxLane&&lanes.includes(maxLane))?[maxLane]:lanes;
   shown.forEach(lane=>{
     let rows=objs.filter(o=>String(o[field]||'(none)')===String(lane));
-    rows.sort((a,b)=>String(a.priority||'p9').localeCompare(String(b.priority||'p9'))); // p0 first, unset last (stable)
+    const CMP={
+      priority:(a,b)=>String(a.priority||'p9').localeCompare(String(b.priority||'p9')),
+      due:(a,b)=>String(a.due||'9999').localeCompare(String(b.due||'9999')),
+      updated:(a,b)=>String(b.updated||'').localeCompare(String(a.updated||'')),
+      title:(a,b)=>String(a.title||a.id).localeCompare(String(b.title||b.id)),
+      project:(a,b)=>String(a.project||'~').localeCompare(String(b.project||'~')),
+      domain:(a,b)=>String(a.domain||'~').localeCompare(String(b.domain||'~')),
+      type:(a,b)=>String(a.type).localeCompare(String(b.type)),
+    };
+    rows.sort(CMP[sortBy]||CMP.priority); // unset values sort last (except updated: newest first)
     const isDone = field==='status' && lane==='done';
     let hidDone=0;
     if(isDone && doneWindow!=='all'){
@@ -463,6 +501,55 @@ function renderBoard(){
   });
 }
 
+// ── project-centric view: each KP project with its open work + linked sessions ──
+const expandedProjects=new Set();
+function parseLinked(o){try{const v=typeof o.linked_sessions==='string'?JSON.parse(o.linked_sessions):(o.linked_sessions||[]);return Array.isArray(v)?v:[];}catch(e){return [];}}
+function renderProjects(){
+  const el2=$('#projects'); el2.innerHTML='';
+  const wrap=el('div','pgrid'); el2.appendChild(wrap);
+  const items=(S.objects||[]).filter(o=>BOARD_TYPES.indexOf(o.type)>=0);
+  const projects=(S.objects||[]).filter(o=>o.type==='project').sort((a,b)=>String(a.title||a.id).localeCompare(String(b.title||b.id)));
+  const buckets=projects.map(p=>({p,rows:items.filter(o=>o.project===p.id)}));
+  buckets.push({p:{id:'(none)',title:'(no project)',type:'project'},rows:items.filter(o=>!o.project)});
+  buckets.forEach(({p,rows})=>{
+    if(p.id==='(none)'&&!rows.length)return;
+    const open=rows.filter(o=>!CLOSING.has(String(o.status||'')));
+    const closed=rows.length-open.length;
+    const key=p.id, expanded=expandedProjects.has(key);
+    const card=el('div','pcard');
+    const byType={}; rows.forEach(o=>{byType[o.type]=(byType[o.type]||0)+1;});
+    const counts=Object.entries(byType).map(([k,v])=>v+' '+k+(v>1?'s':'')).join(' · ');
+    const h=el('h3',null,esc(p.title||p.id.split('/').pop())+'<span class="pn">'+open.length+' open'+(closed?' · '+closed+' closed':'')+(counts?' · '+counts:'')+'</span>');
+    h.title=p.id==='(none)'?'items without a project':'open '+esc(p.id)+' — double-click card to '+(expanded?'collapse':'expand');
+    if(p.id!=='(none)')h.addEventListener('click',()=>openDetail(p.id));
+    card.appendChild(h);
+    card.addEventListener('dblclick',ev=>{if(ev.target.closest('.pitem')||ev.target.closest('.psess'))return;expanded?expandedProjects.delete(key):expandedProjects.add(key);renderProjects();});
+    const STATUS_ORDER=['in_progress','today','inbox','capture','refine','accepted','plan','prototype','implement','validate','new','kept'];
+    const sorted=open.slice().sort((a,b)=>{const ai=STATUS_ORDER.indexOf(String(a.status)),bi=STATUS_ORDER.indexOf(String(b.status));return (ai<0?99:ai)-(bi<0?99:bi)||String(a.priority||'p9').localeCompare(String(b.priority||'p9'));});
+    const show=expanded?sorted:sorted.slice(0,10);
+    show.forEach(o=>{
+      const it=el('div','pitem');
+      it.innerHTML='<span class="dot" style="background:'+(TYPE_COLOR[o.type]||'#888')+'"></span><span class="st">'+esc(o.status||'')+(o.priority?' '+esc(o.priority):'')+'</span><span class="pt">'+esc(o.title||o.id)+'</span>';
+      it.addEventListener('click',()=>openDetail(o.id));
+      card.appendChild(it);
+    });
+    if(!expanded&&sorted.length>show.length){const m=el('div','pmore','…+'+(sorted.length-show.length)+' more — click to expand');m.addEventListener('click',()=>{expandedProjects.add(key);renderProjects();});card.appendChild(m);}
+    if(expanded&&closed){const m=el('div','pmore',closed+' closed item(s) shown on the board (done lane)');card.appendChild(m);}
+    const sess=new Set(parseLinked(p)); rows.forEach(o=>parseLinked(o).forEach(u=>sess.add(u)));
+    if(sess.size){
+      const ts=el('div','psess'); ts.appendChild(el('div','lbl','linked sessions ('+sess.size+')'));
+      [...sess].slice(0,expanded?15:5).forEach(u=>{
+        const it=el('div','pitem'); it.innerHTML='<span class="st">▸ session</span><span class="pt">'+esc(String(u).slice(0,18))+'…</span>';
+        it.title='open chat — '+esc(u);
+        it.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openSession',uuid:u}));
+        ts.appendChild(it);
+      });
+      card.appendChild(ts);
+    }
+    wrap.appendChild(card);
+  });
+  if(!wrap.children.length)wrap.appendChild(el('div',null,'<span style="opacity:.6">No projects yet — create type:project objects in the store, or assign items a Project in the drawer.</span>'));
+}
 function todayStr(){return (S&&S.board&&S.board.date)||new Date().toISOString().slice(0,10);}
 let calFrom=null, calTo=null, calMode='month', calAnchor=null;
 let boardDateField='updated', boardDateVal='';
