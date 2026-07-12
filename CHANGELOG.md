@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.14.0 — 2026-07-12
+
+### Category editing, thought→task, sidebar Thoughts
+
+- **Category (domain) is a real editor** — the drawer's Domain field is now labeled Category and offers a datalist of existing domains (from domain objects + values in use); pick one or type a new one. Board group-by-domain drag already moves items between categories.
+- **Thought → task** — thoughts gain a second convert action (drawer + →☑ hover) alongside → idea.
+- **Sidebar**: the Planning Inbox tree gains a Thoughts group; "＋ New" quick-pick offers thought.
+- Pairs with knowledge-planning 85ba13b: kp serve web dashboard got the same Thoughts lane set, provenance drawer with category editor and convert buttons, double-click-to-expand Topics panels, and a Day view that no longer lists parked/archived bulk-triage as "worked on".
+
+MINOR.
+
 ## 1.13.0 — 2026-07-12
 
 ### Thoughts view — gdoc prose lands on the board, convertible to ideas

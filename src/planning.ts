@@ -192,6 +192,8 @@ function iconFor(type: string, status?: string | null): vscode.ThemeIcon {
       return new vscode.ThemeIcon("sparkle");
     case "reflection":
       return new vscode.ThemeIcon("note");
+    case "thought":
+      return new vscode.ThemeIcon("comment-discussion");
     case "knowledge":
       return new vscode.ThemeIcon("book");
     case "lane":
@@ -283,6 +285,7 @@ class InboxProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       out.push(grp("Tasks", "task", true));
       out.push(grp("Ideas", "idea", false));
       out.push(grp("Plans", "plan", false));
+      out.push(grp("Thoughts", "thought", false));
       return out;
     }
     if (element instanceof PlanningItem && element.planningId.startsWith("group:")) {
@@ -646,7 +649,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   const createItem = async (prefill: { due?: string; type?: string }) => {
     const type =
       prefill.type ??
-      (await vscode.window.showQuickPick(["task", "idea", "plan"], {
+      (await vscode.window.showQuickPick(["task", "idea", "plan", "thought"], {
         placeHolder: "New… (type)",
       }));
     if (!type) return;
@@ -760,8 +763,10 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         model.reload(log);
         break;
       }
-      case "convertToIdea": {
-        const r = runKp(["recategorize", id, "--to-type", "idea"]);
+      case "convertToIdea":
+      case "convertToTask": {
+        const toType = msg.action === "convertToTask" ? "task" : "idea";
+        const r = runKp(["recategorize", id, "--to-type", toType]);
         model.reload(log);
         const newId = /→\s+(\S+)\s*$/.exec(r.stdout.trim())?.[1];
         if (r.ok && newId) DashboardPanel.current?.post({ type: "openItem", id: newId });

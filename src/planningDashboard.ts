@@ -419,10 +419,10 @@ function renderBoard(){
     rows.forEach(o=>{
       const card=el('div','card'+(bl.has(o.id)?' blocked':'')+(isMax?' compact':'')); card.draggable=true; card.dataset.id=o.id;
       const isThought=o.type==='thought';
-      card.innerHTML='<div class="cact">'+(isThought?'<button data-act="toIdea" title="Convert → idea">→💡</button>':'')+'<button data-act="edit" title="Edit">✎</button><button data-act="clone" title="Clone">⧉</button><button data-act="recat" title="Recategorize / move">⇄</button><button data-act="del" title="Delete">✕</button></div>'+
+      card.innerHTML='<div class="cact">'+(isThought?'<button data-act="toIdea" title="Convert → idea">→💡</button><button data-act="toTask" title="Convert → task">→☑</button>':'')+'<button data-act="edit" title="Edit">✎</button><button data-act="clone" title="Clone">⧉</button><button data-act="recat" title="Recategorize / move">⇄</button><button data-act="del" title="Delete">✕</button></div>'+
         '<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm"><span class="badge">'+o.type+'</span>'+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+(o.due?'<span class="due'+(o.due<todayStr()&&o.status!=='done'&&o.status!=='outdated'?' late':'')+'">⏰ '+esc(o.due)+'</span>':'')+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.lane?'<span>⋔ '+esc(o.lane)+'</span>':'')+(o.project?'<span>· '+esc(o.project.split('/').pop())+'</span>':'')+(isThought&&o.context?'<span title="where this was captured">◔ '+esc(o.context)+'</span>':'')+(isThought&&(o.surfaced_on||o.created)?'<span>'+esc(o.surfaced_on||o.created)+'</span>':'')+'</div>';
       card.addEventListener('click',ev=>{ if(ev.target.closest('[data-act]'))return; openDetail(o.id); });
-      card.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();const a=b.dataset.act;vscode.postMessage({type:'action',action:a==='edit'?'editItem':a==='recat'?'recategorize':a==='clone'?'cloneItem':a==='toIdea'?'convertToIdea':'deleteItem',id:o.id});}));
+      card.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();const a=b.dataset.act;vscode.postMessage({type:'action',action:a==='edit'?'editItem':a==='recat'?'recategorize':a==='clone'?'cloneItem':a==='toIdea'?'convertToIdea':a==='toTask'?'convertToTask':'deleteItem',id:o.id});}));
       card.addEventListener('dragstart',ev=>{ev.dataTransfer.setData('text/plain',o.id);card.classList.add('dragging');});
       card.addEventListener('dragend',()=>card.classList.remove('dragging'));
       // drop a card ON another card => adopt its priority (drag-to-sort within a lane);
@@ -622,7 +622,13 @@ function renderDrawer(o){
   if(fm.source_url){ const sr=el('div','drow'); const a=el('span','badge','↗ '+esc(fm.source||'source')); a.style.cursor='pointer'; a.title=fm.source_url; a.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openUrl',url:fm.source_url})); sr.appendChild(a); I.appendChild(sr); }
   // status changer
   const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>vscode.postMessage({type:'setStatus',id:o.id,status:sel.value})); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); I.appendChild(sr); }
-  { const fr=el('div','statusrow'); const mkf=(field,val)=>{ const inp=el('input','fldEdit'); inp.value=val||''; inp.placeholder=field; inp.title='Edit '+field; inp.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:field,value:inp.value})); return inp; }; fr.appendChild(el('span',null,'Domain:')); fr.appendChild(mkf('domain',o.domain)); fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); I.appendChild(fr); }
+  { const fr=el('div','statusrow'); const mkf=(field,val)=>{ const inp=el('input','fldEdit'); inp.value=val||''; inp.placeholder=field; inp.title='Edit '+field; inp.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:field,value:inp.value})); return inp; };
+    const dl=el('datalist'); dl.id='domList';
+    const doms=new Set(); ((S&&S.objects)||[]).forEach(x=>{ if(x.type==='domain')doms.add(String(x.title||x.id.split('/').pop())); else if(x.domain)doms.add(String(x.domain)); });
+    [...doms].sort().forEach(d=>{const op=el('option');op.value=d;dl.appendChild(op);});
+    fr.appendChild(dl);
+    fr.appendChild(el('span',null,'Category:')); const di2=mkf('domain',o.domain); di2.setAttribute('list','domList'); di2.title='Category / domain — pick an existing one or type a new one'; fr.appendChild(di2);
+    fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); I.appendChild(fr); }
   { const dr=el('div','statusrow'); dr.appendChild(el('span',null,'Due:')); const di=el('input','fldEdit'); di.type='date'; di.style.width='150px';
     let lastDue=String(o.due||(o.frontmatter&&o.frontmatter.due)||'').slice(0,10); di.value=lastDue; di.title='Assign a due date — clear to unset';
     // chromium fires 'change' per keystroke in the year segment (year "2" => valid 0002-07-25),
@@ -659,7 +665,7 @@ function renderDrawer(o){
   grid3.appendChild(mk('Clone','duplicate this item','cloneItem'));
   grid3.appendChild(mk('Recategorize','type / domain / lane','recategorize'));
   if(o.type==='idea'){ grid3.appendChild(mk('Promote → plan','create a plan','promote')); grid3.appendChild(mk('Move → task','convert to task','moveToTask')); }
-  if(o.type==='thought'){ grid3.appendChild(mk('Convert → idea','promote this thought','convertToIdea')); }
+  if(o.type==='thought'){ grid3.appendChild(mk('Convert → idea','promote this thought','convertToIdea')); grid3.appendChild(mk('Convert → task','make it actionable','convertToTask')); }
   grid3.appendChild(mk('Delete','remove item','deleteItem'));
   act.appendChild(grid3); I.appendChild(act);
   // body
