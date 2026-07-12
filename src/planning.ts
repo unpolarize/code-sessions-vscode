@@ -698,7 +698,8 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   };
 
   // Clone — kp create with the source's fields, then copy body/lane via kp edit.
-  // A clone of a closed item restarts at the type's default open status.
+  // A clone of a closed item restarts at the type's default open status. No title
+  // prompt: the copy opens in the drawer, where the title is editable in place.
   const cloneItem = async (id: string) => {
     const d = detailOf(id);
     if (!d) {
@@ -706,8 +707,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       return;
     }
     const fm = (d.frontmatter || {}) as Record<string, unknown>;
-    const title = await vscode.window.showInputBox({ prompt: "Clone — title for the copy", value: `${d.title} (copy)` });
-    if (title === undefined || !title.trim()) return;
+    const title = `${d.title} (copy)`;
     const type = String(d.type || "task");
     const openDefault: Record<string, string> = { task: "inbox", idea: "capture", plan: "plan" };
     let status = String(d.status || "");
@@ -727,7 +727,8 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       if (fm.lane) runKp(["edit", newId, "--lane", String(fm.lane)]);
     }
     model.reload(log);
-    void vscode.window.showInformationMessage(newId ? `cloned ${id} → ${newId}` : r.stdout.trim());
+    if (newId) DashboardPanel.current?.post({ type: "openItem", id: newId });
+    else void vscode.window.showInformationMessage(r.stdout.trim());
   };
 
   const dashAction = (msg: any) => {
@@ -793,6 +794,16 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         break;
       case "setField": {
         runKp(["edit", id, msg.field === "domain" ? "--domain" : "--lane", String(msg.value ?? "")]);
+        model.reload(log);
+        break;
+      }
+      case "autosaveField": {
+        // background save from the drawer's autosave — refresh the board but leave
+        // the drawer alone so typing is never clobbered by a re-render
+        const field = String(msg.field);
+        const value = String(msg.value ?? "");
+        const r = field === "body" ? runKp(["edit", id, "--body", "-"], value) : runKp(["edit", id, "--" + field, value]);
+        if (!r.ok) void vscode.window.showWarningMessage(`autosave failed: ${r.stderr}`);
         model.reload(log);
         break;
       }

@@ -90,6 +90,12 @@ export class DashboardPanel {
         this.pushSnapshot();
         if (m.id) this.onMessage({ type: "show", id: m.id });
         break;
+      case "setPriority":
+        this.deps.runKp(["set-priority", String(m.id), String(m.priority || "-")]);
+        this.deps.reload();
+        this.pushSnapshot();
+        if (m.id) this.onMessage({ type: "show", id: m.id });
+        break;
       default:
         this.deps.onAction(m); // open / action (agent, CB, promote, link, capture)
     }
@@ -185,6 +191,12 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .dot{width:8px;height:8px;border-radius:50%}
 .col .cnt{margin-left:auto;opacity:.6;font-weight:400}
 .donewin{font-size:10px;padding:0 2px;margin-left:2px;border-radius:4px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border)}
+.col.max{flex:1 1 auto;max-width:none}
+.card.compact{padding:4px 10px;display:flex;align-items:center;gap:10px}
+.card.compact .ct{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+.card.compact .cm{margin-top:0;flex:none;flex-wrap:nowrap}
+.card.dropover{border-color:var(--vscode-focusBorder);box-shadow:0 -2px 0 0 var(--vscode-focusBorder)}
+.savenote{font-size:10px;opacity:.6;min-width:52px;text-align:right}
 .cards{padding:0 10px 10px;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
 .card{background:var(--vscode-editor-background);border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px;cursor:grab;transition:border-color .1s,transform .05s}
 .card:hover{border-color:var(--vscode-focusBorder)}
@@ -314,12 +326,16 @@ $('#laneSeg').addEventListener('click',e=>{const b=e.target.closest('button');if
 $('#calModeSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;calMode=b.dataset.cm;syncSeg();renderCalendar();});
 $('#refreshBtn').addEventListener('click',()=>vscode.postMessage({type:'refresh'}));
 $('#captureBtn').addEventListener('click',()=>vscode.postMessage({type:'action',action:'capture'}));
-let searchTerm='';
+let searchTerm='', maxLane=null;
 function applySearch(){const q=searchTerm.toLowerCase();
   document.querySelectorAll('#board .card').forEach(c=>{c.style.display=(!q||c.textContent.toLowerCase().includes(q))?'':'none';});}
 document.addEventListener('keydown',e=>{
   if((e.metaKey||e.ctrlKey)&&e.key==='f'){e.preventDefault();const s=$('#search');s.style.display='inline-block';s.focus();s.select();}
-  if(e.key==='Escape'){const s=$('#search');if(document.activeElement===s){searchTerm='';s.value='';s.style.display='none';applySearch();}}
+  if(e.key==='Escape'){const s=$('#search');
+    if(document.activeElement===s){searchTerm='';s.value='';s.style.display='none';applySearch();}
+    else if(!$('#drawer').classList.contains('hidden')){closeDrawer();}
+    else if(maxLane){maxLane=null;renderBoard();}
+    else if(searchTerm){searchTerm='';s.value='';s.style.display='none';applySearch();}}
 });
 $('#search').addEventListener('input',e=>{searchTerm=e.target.value;applySearch();});
 (function(){const gb=$('#groupBy'); if(gb){gb.value=groupBy; gb.addEventListener('change',()=>{groupBy=gb.value;saveState();renderBoard();});}
@@ -370,8 +386,10 @@ function renderBoard(){
   if(boardDateVal)objs=objs.filter(o=>String(o[boardDateField]||'').slice(0,10)===boardDateVal);
   if(fb.querySelector('#bfN'))fb.querySelector('#bfN').textContent=objs.length+' '+laneSet+'(s) '+boardDateField+' '+boardDateVal;
   const lanesWrap=el('div','lanes');board.appendChild(lanesWrap);
-  lanes.forEach(lane=>{
+  const shown=(maxLane&&lanes.includes(maxLane))?[maxLane]:lanes;
+  shown.forEach(lane=>{
     let rows=objs.filter(o=>String(o[field]||'(none)')===String(lane));
+    rows.sort((a,b)=>String(a.priority||'p9').localeCompare(String(b.priority||'p9'))); // p0 first, unset last (stable)
     const isDone = field==='status' && lane==='done';
     let hidDone=0;
     if(isDone && doneWindow!=='all'){
@@ -381,8 +399,11 @@ function renderBoard(){
       rows=rows.filter(o=>String(o.updated||'').slice(0,10)>=cut);
       hidDone=before-rows.length;
     }
-    const col=el('div','col'); col.dataset.lane=lane;
-    const h=el('h3',null,'<span class="dot" style="background:'+(LANE_COLOR[lane]||TYPE_COLOR[lane]||'#888')+'"></span>'+esc(lane)+'<span class="cnt">'+rows.length+(hidDone?' <span style="opacity:.55" title="'+hidDone+' older done hidden">+'+hidDone+' older</span>':'')+'</span>');
+    const isMax=maxLane===lane;
+    const col=el('div','col'+(isMax?' max':'')); col.dataset.lane=lane;
+    const h=el('h3',null,'<span class="dot" style="background:'+(LANE_COLOR[lane]||TYPE_COLOR[lane]||'#888')+'"></span>'+esc(lane)+(isMax?' <span style="opacity:.5;font-weight:400;text-transform:none">(double-click or Esc to restore)</span>':'')+'<span class="cnt">'+rows.length+(hidDone?' <span style="opacity:.55" title="'+hidDone+' older done hidden">+'+hidDone+' older</span>':'')+'</span>');
+    col.title='double-click to '+(isMax?'restore':'maximize as a list');
+    col.addEventListener('dblclick',ev=>{ if(ev.target.closest('.card')||ev.target.tagName==='SELECT')return; maxLane=isMax?null:lane; renderBoard(); });
     if(isDone){
       const sel=el('select','donewin');
       ['yesterday','week','month','all'].forEach(w=>{const op=el('option',null,w);op.value=w;if(w===doneWindow)op.selected=true;sel.appendChild(op);});
@@ -394,13 +415,22 @@ function renderBoard(){
     col.appendChild(h);
     const cards=el('div','cards');
     rows.forEach(o=>{
-      const card=el('div','card'+(bl.has(o.id)?' blocked':'')); card.draggable=true; card.dataset.id=o.id;
+      const card=el('div','card'+(bl.has(o.id)?' blocked':'')+(isMax?' compact':'')); card.draggable=true; card.dataset.id=o.id;
       card.innerHTML='<div class="cact"><button data-act="edit" title="Edit">✎</button><button data-act="clone" title="Clone">⧉</button><button data-act="recat" title="Recategorize / move">⇄</button><button data-act="del" title="Delete">✕</button></div>'+
         '<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm"><span class="badge">'+o.type+'</span>'+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+(o.due?'<span class="due'+(o.due<todayStr()&&o.status!=='done'&&o.status!=='outdated'?' late':'')+'">⏰ '+esc(o.due)+'</span>':'')+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.lane?'<span>⋔ '+esc(o.lane)+'</span>':'')+(o.project?'<span>· '+esc(o.project.split('/').pop())+'</span>':'')+'</div>';
       card.addEventListener('click',ev=>{ if(ev.target.closest('[data-act]'))return; openDetail(o.id); });
       card.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();const a=b.dataset.act;vscode.postMessage({type:'action',action:a==='edit'?'editItem':a==='recat'?'recategorize':a==='clone'?'cloneItem':'deleteItem',id:o.id});}));
       card.addEventListener('dragstart',ev=>{ev.dataTransfer.setData('text/plain',o.id);card.classList.add('dragging');});
       card.addEventListener('dragend',()=>card.classList.remove('dragging'));
+      // drop a card ON another card => adopt its priority (drag-to-sort within a lane);
+      // across lanes it also takes the target lane's status
+      card.addEventListener('dragover',ev=>{ev.preventDefault();ev.stopPropagation();card.classList.add('dropover');});
+      card.addEventListener('dragleave',()=>card.classList.remove('dropover'));
+      card.addEventListener('drop',ev=>{ev.preventDefault();ev.stopPropagation();card.classList.remove('dropover');
+        const id=ev.dataTransfer.getData('text/plain'); if(!id||id===o.id)return;
+        const src=(S.objects||[]).find(x=>x.id===id);
+        if(field==='status'&&src&&String(src.status||'')!==String(lane))vscode.postMessage({type:'setStatus',id:id,status:lane});
+        vscode.postMessage({type:'setPriority',id:id,priority:o.priority||'-'});});
       cards.appendChild(card);
     });
     col.appendChild(cards);
@@ -576,8 +606,9 @@ function applyZoom(){const g=$('#gz');if(g)g.setAttribute('transform','translate
 function renderCanvas(){ $('#canvas').innerHTML='<div style="font-size:40px">✎</div><div><b>Visual canvas — Excalidraw</b></div><div style="max-width:420px">A free-form sketch/whiteboard saved to <code>~/docs/planning/canvas/board.excalidraw</code> (versioned in git with the rest of the plan).</div><button class="ghost" id="cbtn" style="margin-top:6px">Open Excalidraw canvas →</button>'; const b=$('#cbtn'); if(b)b.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openCanvas'})); }
 
 // detail drawer
+let flushAutosave=null;
 function openDetail(id){ vscode.postMessage({type:'show',id:id}); $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden'); $('#drawerInner').innerHTML='<div style="opacity:.6">Loading '+esc(id)+'…</div>'; }
-function closeDrawer(){ $('#drawer').classList.add('hidden'); $('#backdrop').classList.add('hidden'); }
+function closeDrawer(){ if(flushAutosave){try{flushAutosave();}catch(e){}} flushAutosave=null; $('#drawer').classList.add('hidden'); $('#backdrop').classList.add('hidden'); }
 function mdLite(s){ return esc(s).replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h2>$1</h2>').replace(/\\*\\*(.+?)\\*\\*/g,'<b>$1</b>').replace(/\`([^\`]+)\`/g,'<code>$1</code>'); }
 function refRow(r,bad,onclick){ const d=el('div','refitem'+(bad?' bad':'')); d.innerHTML=esc(r.title||r.id||r.path); if(r.status)d.innerHTML+=' <span class="badge">'+esc(r.status)+'</span>'; if(onclick)d.addEventListener('click',onclick); return d; }
 function renderDrawer(o){
@@ -587,7 +618,22 @@ function renderDrawer(o){
   // status changer
   const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>vscode.postMessage({type:'setStatus',id:o.id,status:sel.value})); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); I.appendChild(sr); }
   { const fr=el('div','statusrow'); const mkf=(field,val)=>{ const inp=el('input','fldEdit'); inp.value=val||''; inp.placeholder=field; inp.title='Edit '+field; inp.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:field,value:inp.value})); return inp; }; fr.appendChild(el('span',null,'Domain:')); fr.appendChild(mkf('domain',o.domain)); fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); I.appendChild(fr); }
-  { const dr=el('div','statusrow'); dr.appendChild(el('span',null,'Due:')); const di=el('input','fldEdit'); di.type='date'; di.value=String(o.due||(o.frontmatter&&o.frontmatter.due)||'').slice(0,10); di.title='Assign a due date — clear to unset'; di.addEventListener('change',()=>vscode.postMessage({type:'setDue',id:o.id,due:di.value||'-'})); dr.appendChild(di); I.appendChild(dr); }
+  { const dr=el('div','statusrow'); dr.appendChild(el('span',null,'Due:')); const di=el('input','fldEdit'); di.type='date'; di.style.width='150px';
+    let lastDue=String(o.due||(o.frontmatter&&o.frontmatter.due)||'').slice(0,10); di.value=lastDue; di.title='Assign a due date — clear to unset';
+    // chromium fires 'change' per keystroke in the year segment (year "2" => valid 0002-07-25),
+    // so debounce and refuse implausible years instead of saving intermediates
+    let dueT=null;
+    const commitDue=()=>{const v=di.value; if(v===lastDue)return; if(v&&(!/^\\d{4}-\\d{2}-\\d{2}$/.test(v)||Number(v.slice(0,4))<1970))return; lastDue=v; vscode.postMessage({type:'setDue',id:o.id,due:v||'-'});};
+    di.addEventListener('change',()=>{clearTimeout(dueT);dueT=setTimeout(commitDue,700);});
+    di.addEventListener('blur',()=>{clearTimeout(dueT);commitDue();});
+    di.addEventListener('click',()=>{try{if(di.showPicker)di.showPicker();}catch(e){}});
+    dr.appendChild(di);
+    // Priority: p0 (highest) … p3, or none
+    dr.appendChild(el('span',null,'Priority:'));
+    const pi=el('select'); ['-','p0','p1','p2','p3'].forEach(p=>{const op=el('option',null,p);op.value=p;if(p===((o.frontmatter&&o.frontmatter.priority)||'-'))op.selected=true;pi.appendChild(op);});
+    pi.addEventListener('change',()=>vscode.postMessage({type:'setPriority',id:o.id,priority:pi.value}));
+    dr.appendChild(pi);
+    I.appendChild(dr); }
   // agent actions
   const act=el('div','sec'); act.appendChild(el('h4',null,'Agent actions'));
   const grid=el('div','actions');
@@ -611,7 +657,14 @@ function renderDrawer(o){
   grid3.appendChild(mk('Delete','remove item','deleteItem'));
   act.appendChild(grid3); I.appendChild(act);
   // body
-  { const s=el('div','sec'); const h=el('div','bodyhead'); h.appendChild(el('h4',null,'Notes / details')); const sb=el('button','ghost mini','Save'); h.appendChild(sb); s.appendChild(h); const ta=el('textarea','bodyEdit'); ta.value=o.body||''; ta.placeholder='Markdown details…'; s.appendChild(ta); sb.addEventListener('click',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:'body',value:ta.value})); I.appendChild(s); }
+  { const s=el('div','sec'); const h=el('div','bodyhead'); h.appendChild(el('h4',null,'Notes / details')); const st=el('span','savenote',''); h.appendChild(st); s.appendChild(h);
+    const ta=el('textarea','bodyEdit'); ta.value=o.body||''; ta.placeholder='Markdown details… (autosaves)'; s.appendChild(ta);
+    let t=null, saved=ta.value;
+    const save=()=>{ if(ta.value===saved)return; saved=ta.value; vscode.postMessage({type:'action',action:'autosaveField',id:o.id,field:'body',value:ta.value}); st.textContent='saved ✓'; setTimeout(()=>{if(st.textContent==='saved ✓')st.textContent='';},1500); };
+    ta.addEventListener('input',()=>{clearTimeout(t);st.textContent='…';t=setTimeout(save,800);});
+    ta.addEventListener('blur',()=>{clearTimeout(t);save();});
+    flushAutosave=save;
+    I.appendChild(s); }
   // references
   const refs=[['Blocked by knowledge',o.blocked_by,true],['Cites',o.cites,false],['Children',o.children,false],['Depends on',o.depends_on,false],['Related',o.related,false]];
   refs.forEach(([label,list,isBlock])=>{ if(!list||!list.length)return; const s=el('div','sec'); s.appendChild(el('h4',null,label+' ('+list.length+')')); const rl=el('div','reflist'); list.forEach(r=>{ const bad=isBlock?(r.status!=='resolved'):(r.exists===false||r.missing); const open = r.id&&!r.missing? ()=>openDetail(r.id) : (r.path? ()=>vscode.postMessage({type:'open',kbPath:r.path}) : null); rl.appendChild(refRow(r,bad,open)); }); s.appendChild(rl); I.appendChild(s); });

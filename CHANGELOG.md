@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.12.0 — 2026-07-12
+
+### Planning board: due-date fix, drawer autosave + priority, column maximize, drag-to-sort
+
+- **Due date fix** — Chromium fires `change` per keystroke in the year segment (typing "2" yields a valid `0002-…` date), which got saved mid-typing. Commits are now debounced (700ms) and years < 1970 refused; clicking the field opens the native calendar picker (`showPicker()`).
+- **Clone opens the editor** — no more top-bar title prompt: the copy is created as "<title> (copy)" and opens straight in the detail drawer where the title (and everything else) is editable in place.
+- **Column maximize** — double-click a column header/empty area to expand that lane full-width as a compact single-line list; double-click again or press Esc to restore.
+- **Drag-to-sort priorities** — lanes now sort p0→p3 (unset last); dropping a card onto another card adopts that card's priority (`kp set-priority`); dropping across lanes also moves status.
+- **Drawer: autosave + Esc + priority** — the body textarea autosaves (800ms debounce + on blur; Save button removed, "saved ✓" indicator); Escape closes the drawer (flushing pending autosave); new Priority selector (p0–p3 / none) next to Due.
+
+MINOR — new board/drawer capabilities + a data-corrupting due-date bug fix.
+
 ## 1.11.0 — 2026-07-12
 
 ### Planning board: clone, done-lane age window, drawer due date
