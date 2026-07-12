@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.0 — 2026-07-12
+
+### Planning board: clone, done-lane age window, drawer due date
+
+- **Clone a task/idea/plan** — new ⧉ hover action on board cards and a "Clone" action in the detail drawer. Prompts for the copy's title (default "<title> (copy)"), copies status/domain/priority/due plus body and lane via `kp create` + `kp edit`. A clone of a closed item (done/outdated) restarts at the type's default open status (task→inbox, idea→capture, plan→plan).
+- **Done lane age window** — the done column header gains a selector (**yesterday / week / month / all**, default week) that hides done items whose `updated` is older than the window; the header count shows "+N older" for what's hidden. Persisted in webview state.
+- **Due date in the drawer** — the detail drawer gains a Due date field (native date input) wired to `kp set-due`; clearing the input unsets the date.
+
+MINOR — new user-facing board/drawer capabilities.
+
 ## 1.10.0 — 2026-07-12
 
 ### Board date filter — "tasks worked on / due on a day"

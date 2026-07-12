@@ -184,6 +184,7 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .col h3{font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin:0;padding:10px 12px;display:flex;align-items:center;gap:7px;position:sticky;top:0}
 .dot{width:8px;height:8px;border-radius:50%}
 .col .cnt{margin-left:auto;opacity:.6;font-weight:400}
+.donewin{font-size:10px;padding:0 2px;margin-left:2px;border-radius:4px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border)}
 .cards{padding:0 10px 10px;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
 .card{background:var(--vscode-editor-background);border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px;cursor:grab;transition:border-color .1s,transform .05s}
 .card:hover{border-color:var(--vscode-focusBorder)}
@@ -293,7 +294,8 @@ let S = null, view='board', laneSet='task';
 const _st=(vscode.getState&&vscode.getState())||{};
 let groupBy = _st.groupBy || 'status';
 let customLanes = _st.customLanes || [];
-function saveState(){ try{ vscode.setState({groupBy, customLanes}); }catch(e){} }
+let doneWindow = _st.doneWindow || 'week'; // hide done items older than: yesterday|week|month|all
+function saveState(){ try{ vscode.setState({groupBy, customLanes, doneWindow}); }catch(e){} }
 const BOARD_TYPES=['task','idea','plan'];
 const $=s=>document.querySelector(s), el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
 const esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -369,16 +371,34 @@ function renderBoard(){
   if(fb.querySelector('#bfN'))fb.querySelector('#bfN').textContent=objs.length+' '+laneSet+'(s) '+boardDateField+' '+boardDateVal;
   const lanesWrap=el('div','lanes');board.appendChild(lanesWrap);
   lanes.forEach(lane=>{
-    const rows=objs.filter(o=>String(o[field]||'(none)')===String(lane));
+    let rows=objs.filter(o=>String(o[field]||'(none)')===String(lane));
+    const isDone = field==='status' && lane==='done';
+    let hidDone=0;
+    if(isDone && doneWindow!=='all'){
+      const days={yesterday:1,week:7,month:30}[doneWindow]||7;
+      const cut=addDays(todayStr(),-days);
+      const before=rows.length;
+      rows=rows.filter(o=>String(o.updated||'').slice(0,10)>=cut);
+      hidDone=before-rows.length;
+    }
     const col=el('div','col'); col.dataset.lane=lane;
-    col.appendChild(el('h3',null,'<span class="dot" style="background:'+(LANE_COLOR[lane]||TYPE_COLOR[lane]||'#888')+'"></span>'+esc(lane)+'<span class="cnt">'+rows.length+'</span>'));
+    const h=el('h3',null,'<span class="dot" style="background:'+(LANE_COLOR[lane]||TYPE_COLOR[lane]||'#888')+'"></span>'+esc(lane)+'<span class="cnt">'+rows.length+(hidDone?' <span style="opacity:.55" title="'+hidDone+' older done hidden">+'+hidDone+' older</span>':'')+'</span>');
+    if(isDone){
+      const sel=el('select','donewin');
+      ['yesterday','week','month','all'].forEach(w=>{const op=el('option',null,w);op.value=w;if(w===doneWindow)op.selected=true;sel.appendChild(op);});
+      sel.title='show items done (updated) within… — older ones are hidden';
+      sel.addEventListener('click',ev=>ev.stopPropagation());
+      sel.addEventListener('change',()=>{doneWindow=sel.value;saveState();renderBoard();});
+      h.insertBefore(sel,h.querySelector('.cnt'));
+    }
+    col.appendChild(h);
     const cards=el('div','cards');
     rows.forEach(o=>{
       const card=el('div','card'+(bl.has(o.id)?' blocked':'')); card.draggable=true; card.dataset.id=o.id;
-      card.innerHTML='<div class="cact"><button data-act="edit" title="Edit">✎</button><button data-act="recat" title="Recategorize / move">⇄</button><button data-act="del" title="Delete">✕</button></div>'+
+      card.innerHTML='<div class="cact"><button data-act="edit" title="Edit">✎</button><button data-act="clone" title="Clone">⧉</button><button data-act="recat" title="Recategorize / move">⇄</button><button data-act="del" title="Delete">✕</button></div>'+
         '<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm"><span class="badge">'+o.type+'</span>'+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+(o.due?'<span class="due'+(o.due<todayStr()&&o.status!=='done'&&o.status!=='outdated'?' late':'')+'">⏰ '+esc(o.due)+'</span>':'')+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.lane?'<span>⋔ '+esc(o.lane)+'</span>':'')+(o.project?'<span>· '+esc(o.project.split('/').pop())+'</span>':'')+'</div>';
       card.addEventListener('click',ev=>{ if(ev.target.closest('[data-act]'))return; openDetail(o.id); });
-      card.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();const a=b.dataset.act;vscode.postMessage({type:'action',action:a==='edit'?'editItem':a==='recat'?'recategorize':'deleteItem',id:o.id});}));
+      card.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();const a=b.dataset.act;vscode.postMessage({type:'action',action:a==='edit'?'editItem':a==='recat'?'recategorize':a==='clone'?'cloneItem':'deleteItem',id:o.id});}));
       card.addEventListener('dragstart',ev=>{ev.dataTransfer.setData('text/plain',o.id);card.classList.add('dragging');});
       card.addEventListener('dragend',()=>card.classList.remove('dragging'));
       cards.appendChild(card);
@@ -567,6 +587,7 @@ function renderDrawer(o){
   // status changer
   const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>vscode.postMessage({type:'setStatus',id:o.id,status:sel.value})); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); I.appendChild(sr); }
   { const fr=el('div','statusrow'); const mkf=(field,val)=>{ const inp=el('input','fldEdit'); inp.value=val||''; inp.placeholder=field; inp.title='Edit '+field; inp.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:field,value:inp.value})); return inp; }; fr.appendChild(el('span',null,'Domain:')); fr.appendChild(mkf('domain',o.domain)); fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); I.appendChild(fr); }
+  { const dr=el('div','statusrow'); dr.appendChild(el('span',null,'Due:')); const di=el('input','fldEdit'); di.type='date'; di.value=String(o.due||(o.frontmatter&&o.frontmatter.due)||'').slice(0,10); di.title='Assign a due date — clear to unset'; di.addEventListener('change',()=>vscode.postMessage({type:'setDue',id:o.id,due:di.value||'-'})); dr.appendChild(di); I.appendChild(dr); }
   // agent actions
   const act=el('div','sec'); act.appendChild(el('h4',null,'Agent actions'));
   const grid=el('div','actions');
@@ -584,6 +605,7 @@ function renderDrawer(o){
   act.appendChild(grid2);
   const grid3=el('div','actions'); grid3.style.marginTop='7px';
   grid3.appendChild(mk('Edit','title / fields','editItem'));
+  grid3.appendChild(mk('Clone','duplicate this item','cloneItem'));
   grid3.appendChild(mk('Recategorize','type / domain / lane','recategorize'));
   if(o.type==='idea'){ grid3.appendChild(mk('Promote → plan','create a plan','promote')); grid3.appendChild(mk('Move → task','convert to task','moveToTask')); }
   grid3.appendChild(mk('Delete','remove item','deleteItem'));

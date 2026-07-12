@@ -697,6 +697,39 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     model.reload(log);
   };
 
+  // Clone — kp create with the source's fields, then copy body/lane via kp edit.
+  // A clone of a closed item restarts at the type's default open status.
+  const cloneItem = async (id: string) => {
+    const d = detailOf(id);
+    if (!d) {
+      void vscode.window.showWarningMessage(`Planning: could not load ${id}`);
+      return;
+    }
+    const fm = (d.frontmatter || {}) as Record<string, unknown>;
+    const title = await vscode.window.showInputBox({ prompt: "Clone — title for the copy", value: `${d.title} (copy)` });
+    if (title === undefined || !title.trim()) return;
+    const type = String(d.type || "task");
+    const openDefault: Record<string, string> = { task: "inbox", idea: "capture", plan: "plan" };
+    let status = String(d.status || "");
+    if (!status || status === "done" || status === "outdated") status = openDefault[type] || "inbox";
+    const args = ["create", title.trim(), "--type", type, "--status", status];
+    if (d.domain) args.push("--domain", String(d.domain));
+    if (fm.priority) args.push("--priority", String(fm.priority));
+    if (fm.due) args.push("--due", String(fm.due));
+    const r = runKp(args);
+    if (!r.ok) {
+      void vscode.window.showWarningMessage(`clone failed: ${r.stderr}`);
+      return;
+    }
+    const newId = /created\s+(\S+)/.exec(r.stdout)?.[1];
+    if (newId) {
+      if (d.body && String(d.body).trim()) runKp(["edit", newId, "--body", "-"], String(d.body));
+      if (fm.lane) runKp(["edit", newId, "--lane", String(fm.lane)]);
+    }
+    model.reload(log);
+    void vscode.window.showInformationMessage(newId ? `cloned ${id} → ${newId}` : r.stdout.trim());
+  };
+
   const dashAction = (msg: any) => {
     if (!msg) return;
     const snap = model.get();
@@ -751,6 +784,9 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         break;
       case "recategorize":
         void recategorizeItem(id);
+        break;
+      case "cloneItem":
+        void cloneItem(id);
         break;
       case "deleteItem":
         void deleteItem(id);
