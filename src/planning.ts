@@ -760,6 +760,17 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         model.reload(log);
         break;
       }
+      case "convertToIdea": {
+        const r = runKp(["recategorize", id, "--to-type", "idea"]);
+        model.reload(log);
+        const newId = /→\s+(\S+)\s*$/.exec(r.stdout.trim())?.[1];
+        if (r.ok && newId) DashboardPanel.current?.post({ type: "openItem", id: newId });
+        else if (!r.ok) void vscode.window.showWarningMessage(`convert failed: ${r.stderr}`);
+        break;
+      }
+      case "openUrl":
+        if (msg.url) void vscode.env.openExternal(vscode.Uri.parse(String(msg.url)));
+        break;
       case "moveToTask": {
         const r = runKp(["recategorize", id, "--to-type", "task"]);
         void vscode.window.showInformationMessage(r.ok ? r.stdout.trim() : `move failed: ${r.stderr}`);

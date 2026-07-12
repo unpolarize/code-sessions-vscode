@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.13.0 — 2026-07-12
+
+### Thoughts view — gdoc prose lands on the board, convertible to ideas
+
+- New **Thoughts** lane set on the Planning board (`new / kept / converted / archived`) showing the `thought` objects the v2 gdoc ingest extracts from prose/reflections in the Google-Doc mirror (knowledge-planning: `kp ingest-thoughts`).
+- Thought cards show provenance — the date-header/section context (◔) and surfaced-on date; the drawer adds context/surfaced badges and a clickable ↗ source link (opens the gdoc).
+- **Convert → idea**: hover action (→💡) on thought cards + drawer action; runs `kp recategorize --to-type idea` and opens the new idea in the drawer.
+- Type-grouped board now includes a thought lane.
+
+MINOR — pairs with knowledge-planning `thought` type + provenance columns.
+
 ## 1.12.0 — 2026-07-12
 
 ### Planning board: due-date fix, drawer autosave + priority, column maximize, drag-to-sort
