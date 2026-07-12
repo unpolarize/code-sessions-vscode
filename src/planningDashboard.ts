@@ -375,6 +375,9 @@ function render(){ if(!S){return;} syncSeg();
 }
 const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
 
+// closing statuses prompt for a resolution note (host shows the InputBox; Esc aborts)
+const CLOSING=new Set(['done','deferred','outdated','parked','archived']);
+function postStatus(id,status){ vscode.postMessage(CLOSING.has(status)?{type:'action',action:'setStatusNote',id:id,status:status}:{type:'setStatus',id:id,status:status}); }
 function laneFieldAndList(objs){
   if(groupBy==='status') return {field:'status', lanes:(LANES[laneSet]||[...new Set(objs.map(o=>o.status||'inbox'))])};
   if(groupBy==='type') return {field:'type', lanes:BOARD_TYPES.slice()};
@@ -445,7 +448,7 @@ function renderBoard(){
       card.addEventListener('drop',ev=>{ev.preventDefault();ev.stopPropagation();card.classList.remove('dropover');
         const id=ev.dataTransfer.getData('text/plain'); if(!id||id===o.id)return;
         const src=(S.objects||[]).find(x=>x.id===id);
-        if(field==='status'&&src&&String(src.status||'')!==String(lane))vscode.postMessage({type:'setStatus',id:id,status:lane});
+        if(field==='status'&&src&&String(src.status||'')!==String(lane))postStatus(id,lane);
         vscode.postMessage({type:'setPriority',id:id,priority:o.priority||'-'});});
       cards.appendChild(card);
     });
@@ -453,7 +456,7 @@ function renderBoard(){
     col.addEventListener('dragover',ev=>{ev.preventDefault();col.classList.add('over');});
     col.addEventListener('dragleave',()=>col.classList.remove('over'));
     col.addEventListener('drop',ev=>{ev.preventDefault();col.classList.remove('over');const id=ev.dataTransfer.getData('text/plain');if(!id)return;
-      if(field==='status')vscode.postMessage({type:'setStatus',id:id,status:lane});
+      if(field==='status')postStatus(id,lane);
       else if(field==='type')vscode.postMessage({type:'action',action:'setType',id:id,toType:lane});
       else vscode.postMessage({type:'action',action:'setField',id:id,field:field,value:lane==='(none)'?'':lane});});
     lanesWrap.appendChild(col);
@@ -634,7 +637,7 @@ function renderDrawer(o){
   const meta=el('div','drow'); meta.innerHTML='<span class="badge">'+o.type+'</span>'+(o.status?'<span class="badge">'+esc(o.status)+'</span>':'')+(o.domain?'<span class="badge">'+esc(o.domain)+'</span>':'')+(fm.context?'<span class="badge" title="captured under">◔ '+esc(fm.context)+'</span>':'')+(fm.surfaced_on?'<span class="badge" title="surfaced on">'+esc(fm.surfaced_on)+'</span>':''); I.appendChild(meta);
   if(fm.source_url){ const sr=el('div','drow'); const a=el('span','badge','↗ '+esc(fm.source||'source')); a.style.cursor='pointer'; a.title=fm.source_url; a.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openUrl',url:fm.source_url})); sr.appendChild(a); I.appendChild(sr); }
   // status changer
-  const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>vscode.postMessage({type:'setStatus',id:o.id,status:sel.value})); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); I.appendChild(sr); }
+  const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>postStatus(o.id,sel.value)); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); I.appendChild(sr); }
   { const fr=el('div','statusrow'); const mkf=(field,val)=>{ const inp=el('input','fldEdit'); inp.value=val||''; inp.placeholder=field; inp.title='Edit '+field; inp.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:field,value:inp.value})); return inp; };
     const dl=el('datalist'); dl.id='domList';
     const doms=new Set(); ((S&&S.objects)||[]).forEach(x=>{ if(x.type==='domain')doms.add(String(x.title||x.id.split('/').pop())); else if(x.domain)doms.add(String(x.domain)); });

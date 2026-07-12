@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.16.0 — 2026-07-12
+
+### Resolution notes on closing moves
+
+- Moving an item to **done / deferred / outdated / parked / archived** — by lane drag, card-on-card drop, or the drawer status selector — now prompts for a resolution note. Enter with text saves it into the item's body as `## Resolution (<status> — <date>)` (via `kp set-status --note`); empty Enter moves without a note; **Esc cancels the move**.
+- Pairs with knowledge-planning 9381acf: the kp serve web board/drawer prompts the same way, and the CLI gained `kp set-status <id> <status> --note "…"`.
+
+MINOR.
+
 ## 1.15.1 — 2026-07-12
 
 ### Project labels on planning items

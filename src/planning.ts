@@ -766,6 +766,36 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         model.reload(log);
         break;
       }
+      // Closing a task deserves a word on WHY: prompt for a resolution note,
+      // saved into the body as '## Resolution (<status> — <date>)'. Esc aborts.
+      case "setStatusNote": {
+        void (async () => {
+          const status = String(msg.status);
+          const note = await vscode.window.showInputBox({
+            title: `${id} → ${status}`,
+            prompt: "Resolution / notes (Enter = move without a note, Esc = cancel the move)",
+            placeHolder: `What resolved it / why ${status}?`,
+          });
+          if (note === undefined) {
+            model.reload(log); // nothing changed — re-push the snapshot so the board snaps back
+            return;
+          }
+          const args = ["set-status", id, status];
+          if (note.trim()) args.push("--note", note.trim());
+          const r = runKp(args);
+          if (!r.ok) void vscode.window.showWarningMessage(`set-status failed: ${r.stderr}`);
+          model.reload(log);
+          const det = runKp(["show", id]);
+          if (det.ok) {
+            try {
+              DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) });
+            } catch {
+              /* drawer refresh is best-effort */
+            }
+          }
+        })();
+        break;
+      }
       case "convertToIdea":
       case "convertToTask": {
         const toType = msg.action === "convertToTask" ? "task" : "idea";
