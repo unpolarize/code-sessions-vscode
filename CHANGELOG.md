@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.15.1 — 2026-07-12
+
+### Project labels on planning items
+
+- Detail drawer gains a **Project** selector (KP projects from the snapshot). Writes via `kp set-project` (aliases CS/CSV/CB/KP, or `-` to clear).
+- Cards already show `· <project-slug>` when `project` is set on the object.
+
+PATCH — pairs with knowledge-planning `set-project` / `derive-projects` / `label-sessions`.
+
 ## 1.15.0 — 2026-07-12
 
 ### On-demand sync button + planning/session keybindings

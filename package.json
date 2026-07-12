@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.15.0",
+  "version": "1.15.1",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -154,7 +154,7 @@
       },
       {
         "command": "codePlanning.promote",
-        "title": "Promote idea → plan",
+        "title": "Promote idea \u2192 plan",
         "icon": "$(arrow-up)",
         "category": "Planning"
       },
@@ -230,7 +230,7 @@
       },
       {
         "command": "codeSessions.openSessionGraph",
-        "title": "Open sessions × topics graph (from CS library)",
+        "title": "Open sessions \u00d7 topics graph (from CS library)",
         "icon": "$(type-hierarchy)",
         "category": "Code Sessions"
       },
@@ -384,7 +384,7 @@
       },
       {
         "command": "codeSessions.renameSession",
-        "title": "Rename session…",
+        "title": "Rename session\u2026",
         "icon": "$(edit)",
         "category": "Code Sessions"
       },
@@ -411,7 +411,7 @@
       },
       {
         "command": "codePlanning.runSync",
-        "title": "Planning: Run Sync Script…"
+        "title": "Planning: Run Sync Script\u2026"
       }
     ],
     "menus": {
@@ -618,17 +618,17 @@
         "codeSessions.planning.cliPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the knowledge-planning CLI entry (src/cli/index.ts). Empty → ~/projects/unpolarize/knowledge-planning/src/cli/index.ts."
+          "description": "Path to the knowledge-planning CLI entry (src/cli/index.ts). Empty \u2192 ~/projects/unpolarize/knowledge-planning/src/cli/index.ts."
         },
         "codeSessions.planning.nodePath": {
           "type": "string",
           "default": "node",
-          "description": "Node binary used to run the knowledge-planning CLI (needs Node ≥22 with TypeScript stripping)."
+          "description": "Node binary used to run the knowledge-planning CLI (needs Node \u226522 with TypeScript stripping)."
         },
         "codeSessions.planning.storeRoot": {
           "type": "string",
           "default": "",
-          "description": "Planning store root (KP_ROOT). Empty → the CLI default (~/docs/planning)."
+          "description": "Planning store root (KP_ROOT). Empty \u2192 the CLI default (~/docs/planning)."
         },
         "codeSessions.limit": {
           "type": "number",
@@ -638,18 +638,18 @@
         "codeSessions.refresh.forceRecent": {
           "type": "number",
           "default": 100,
-          "description": "When the Refresh button is pressed, force a full re-parse of the N most recently-modified JSONLs (regardless of mtime cache). Catches on-disk edits — most notably session renames — that don't always bump mtime. Set to 0 to use only the cheap incremental sync."
+          "description": "When the Refresh button is pressed, force a full re-parse of the N most recently-modified JSONLs (regardless of mtime cache). Catches on-disk edits \u2014 most notably session renames \u2014 that don't always bump mtime. Set to 0 to use only the cheap incremental sync."
         },
         "codeSessions.scriptPath": {
           "type": "string",
           "default": "",
-          "deprecationMessage": "Deprecated since 1.2.2 — the session-center.sh fallback was removed because it pointed at a developer-personal script that doesn't exist on any other user's machine (caused 'exit 127: No such file or directory' on fresh installs). Sessions are read from the SQLite cache exclusively.",
-          "description": "Deprecated — no longer used. The SQLite cache is the only data source."
+          "deprecationMessage": "Deprecated since 1.2.2 \u2014 the session-center.sh fallback was removed because it pointed at a developer-personal script that doesn't exist on any other user's machine (caused 'exit 127: No such file or directory' on fresh installs). Sessions are read from the SQLite cache exclusively.",
+          "description": "Deprecated \u2014 no longer used. The SQLite cache is the only data source."
         },
         "codeSessions.cacheEnabled": {
           "type": "boolean",
           "default": true,
-          "description": "Use the SQLite cache. Default true — this is now the ONLY data source for the Sessions tree and the Insights view. Setting this to false will show an empty-state error in the tree (the legacy session-center.sh fallback was removed in 1.2.2 because it pointed at a developer-personal script)."
+          "description": "Use the SQLite cache. Default true \u2014 this is now the ONLY data source for the Sessions tree and the Insights view. Setting this to false will show an empty-state error in the tree (the legacy session-center.sh fallback was removed in 1.2.2 because it pointed at a developer-personal script)."
         },
         "codeSessions.showAutomated": {
           "type": "boolean",
@@ -664,7 +664,7 @@
         "codeSessions.filterByCurrentWorkspace": {
           "type": "boolean",
           "default": true,
-          "description": "Show only sessions that originated from the current workspace's first folder (or a subfolder of it). Default on — keeps the sidebar focused on sessions you can actually resume from this window. Toggle off to see every session across every project."
+          "description": "Show only sessions that originated from the current workspace's first folder (or a subfolder of it). Default on \u2014 keeps the sidebar focused on sessions you can actually resume from this window. Toggle off to see every session across every project."
         },
         "codeSessions.insightsLookbackDays": {
           "type": "number",
@@ -694,7 +694,7 @@
         "codeSessions.sync.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "While this viewer is open, keep the shared git stores fresh by pulling them — the KB (~/docs, which contains the Planning store) and the Sessions store (~/.sessions). Syncs on activation, on a poll, and when a coding turn completes. Nothing runs while the viewer is closed."
+          "description": "While this viewer is open, keep the shared git stores fresh by pulling them \u2014 the KB (~/docs, which contains the Planning store) and the Sessions store (~/.sessions). Syncs on activation, on a poll, and when a coding turn completes. Nothing runs while the viewer is closed."
         },
         "codeSessions.sync.intervalMinutes": {
           "type": "number",
@@ -746,8 +746,8 @@
             "native"
           ],
           "enumDescriptions": [
-            "Open the session in zhirafovod.code-build-vscode (unified chat UI for any coding-agent CLI). Falls back to the native per-source extension if code-build isn't installed. Note: code-build opens a fresh conversation in the session's cwd — it cannot yet resume an arbitrary claude/grok session-id, so use 'View conversation' on the row for the original transcript.",
-            "Use the per-source native extension: anthropic.claude-code (truly resumes the session by id) for claude rows; pawelhuryn.grok-vscode-phuryn (opens the panel — pick from history) for grok rows. Falls back to the CLI in a terminal if neither is installed."
+            "Open the session in zhirafovod.code-build-vscode (unified chat UI for any coding-agent CLI). Falls back to the native per-source extension if code-build isn't installed. Note: code-build opens a fresh conversation in the session's cwd \u2014 it cannot yet resume an arbitrary claude/grok session-id, so use 'View conversation' on the row for the original transcript.",
+            "Use the per-source native extension: anthropic.claude-code (truly resumes the session by id) for claude rows; pawelhuryn.grok-vscode-phuryn (opens the panel \u2014 pick from history) for grok rows. Falls back to the CLI in a terminal if neither is installed."
           ],
           "default": "code-build",
           "description": "Which extension to prefer when clicking 'Resume' on a session. Code Build is the unified UI but loses per-session resume fidelity; native is best for resume but splits across two extensions."
@@ -765,7 +765,7 @@
         "codeProjectsActivity.repoPaths": {
           "type": "array",
           "default": [],
-          "description": "Explicit list of project repos to watch (e.g. ['~/projects/foo', '~/work/bar']). Empty by default — auto-discovery (see below) walks ~/projects/* automatically, so most users don't need to set this."
+          "description": "Explicit list of project repos to watch (e.g. ['~/projects/foo', '~/work/bar']). Empty by default \u2014 auto-discovery (see below) walks ~/projects/* automatically, so most users don't need to set this."
         },
         "codeProjectsActivity.autoDiscover": {
           "type": "boolean",
@@ -794,7 +794,7 @@
         "codeSessions.liveStatusBar.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show a compact 'AI Agents · N active' indicator in the status bar. Polls every 5 s while sessions are active, 30 s when idle. Hover for a per-session breakdown; click to open the Live monitor."
+          "description": "Show a compact 'AI Agents \u00b7 N active' indicator in the status bar. Polls every 5 s while sessions are active, 30 s when idle. Hover for a per-session breakdown; click to open the Live monitor."
         },
         "codeSessions.awaitingUser.notify": {
           "type": "boolean",

@@ -101,6 +101,12 @@ export class DashboardPanel {
         this.pushSnapshot();
         if (m.id) this.onMessage({ type: "show", id: m.id });
         break;
+      case "setProject":
+        this.deps.runKp(["set-project", String(m.id), String(m.project || "-")]);
+        this.deps.reload();
+        this.pushSnapshot();
+        if (m.id) this.onMessage({ type: "show", id: m.id });
+        break;
       default:
         this.deps.onAction(m); // open / action (agent, CB, promote, link, capture)
     }
@@ -636,6 +642,13 @@ function renderDrawer(o){
     fr.appendChild(dl);
     fr.appendChild(el('span',null,'Category:')); const di2=mkf('domain',o.domain); di2.setAttribute('list','domList'); di2.title='Category / domain — pick an existing one or type a new one'; fr.appendChild(di2);
     fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); I.appendChild(fr); }
+  { const pr=el('div','statusrow'); pr.appendChild(el('span',null,'Project:'));
+    const sel=el('select'); const none=el('option',null,'(none)'); none.value='-'; sel.appendChild(none);
+    const cur=o.project||(o.frontmatter&&o.frontmatter.project)||'';
+    ((S&&S.objects)||[]).filter(x=>x.type==='project').forEach(p=>{const op=el('option',null,p.title||p.id);op.value=p.id;if(p.id===cur)op.selected=true;sel.appendChild(op);});
+    if(!cur)none.selected=true;
+    sel.addEventListener('change',()=>vscode.postMessage({type:'setProject',id:o.id,project:sel.value}));
+    pr.appendChild(sel); I.appendChild(pr); }
   { const dr=el('div','statusrow'); dr.appendChild(el('span',null,'Due:')); const di=el('input','fldEdit'); di.type='date'; di.style.width='150px';
     let lastDue=String(o.due||(o.frontmatter&&o.frontmatter.due)||'').slice(0,10); di.value=lastDue; di.title='Assign a due date — clear to unset';
     // chromium fires 'change' per keystroke in the year segment (year "2" => valid 0002-07-25),
