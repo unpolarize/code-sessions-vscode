@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.9.0 — 2026-07-12
+
+### Board search (⌘F), guided create, create-on-calendar-day
+
+- **⌘F / Ctrl-F** reveals a search box that filters the board to cards matching the term (across all lanes); Esc clears. Re-applies after each render.
+- **"＋ New"** (was "＋ Capture", a bare string prompt) opens a guided create: pick type (task/idea/plan) → title, running `kp create`. Matches the dashboard's QuickPick/InputBox editing idiom.
+- **Click a calendar day** (empty area of a month cell or week column) → create a task pre-dated to that day (`createOnDay` → `kp create --due`). The day number still drills into that day's list.
+
+Needs `@unpolarize/knowledge-planning` with the `kp create` command (shipped together). MINOR — new UI + two host messages, no schema change.
+
+# Changelog
+
 ## 1.8.0 — 2026-07-12
 
 ### Calendar: real month / week / work-week grids (was a flat list)

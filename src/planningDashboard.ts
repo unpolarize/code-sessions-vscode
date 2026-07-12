@@ -139,7 +139,8 @@ export class DashboardPanel {
   <button id="addLaneBtn" class="ghost" title="Add a custom lane">＋ lane</button>
   <span class="spacer"></span>
   <span id="counts" class="counts"></span>
-  <button id="captureBtn" class="ghost">＋ Capture</button>
+  <input id="search" placeholder="Search… (⌘F)" style="display:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:3px 8px;width:180px">
+  <button id="captureBtn" class="ghost">＋ New</button>
   <button id="refreshBtn" class="ghost">⟳</button>
 </div>
 <div id="main">
@@ -308,6 +309,14 @@ $('#laneSeg').addEventListener('click',e=>{const b=e.target.closest('button');if
 $('#calModeSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;calMode=b.dataset.cm;syncSeg();renderCalendar();});
 $('#refreshBtn').addEventListener('click',()=>vscode.postMessage({type:'refresh'}));
 $('#captureBtn').addEventListener('click',()=>vscode.postMessage({type:'action',action:'capture'}));
+let searchTerm='';
+function applySearch(){const q=searchTerm.toLowerCase();
+  document.querySelectorAll('#board .card').forEach(c=>{c.style.display=(!q||c.textContent.toLowerCase().includes(q))?'':'none';});}
+document.addEventListener('keydown',e=>{
+  if((e.metaKey||e.ctrlKey)&&e.key==='f'){e.preventDefault();const s=$('#search');s.style.display='inline-block';s.focus();s.select();}
+  if(e.key==='Escape'){const s=$('#search');if(document.activeElement===s){searchTerm='';s.value='';s.style.display='none';applySearch();}}
+});
+$('#search').addEventListener('input',e=>{searchTerm=e.target.value;applySearch();});
 (function(){const gb=$('#groupBy'); if(gb){gb.value=groupBy; gb.addEventListener('change',()=>{groupBy=gb.value;saveState();renderBoard();});}
   const al=$('#addLaneBtn'); if(al)al.addEventListener('click',()=>vscode.postMessage({type:'action',action:'addLane'}));})();
 $('#backdrop').addEventListener('click',closeDrawer);
@@ -326,6 +335,7 @@ function syncSeg(){
 function render(){ if(!S){return;} syncSeg();
   $('#counts').textContent = Object.entries(S.counts||{}).map(([k,v])=>k+':'+v).join('  ');
   if(view==='board')renderBoard(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
+  applySearch();
 }
 const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
 
@@ -412,7 +422,9 @@ function renderCalendar(){
       const due=by[d]||[];
       due.slice(0,3).forEach(o=>cell.appendChild(dueItem(o,'mi')));
       if(due.length>3)cell.appendChild(el('div','mi','+'+(due.length-3)+' more…'));
-      cell.addEventListener('click',()=>{calMode='list';calFrom=d;calTo=d;renderCalendar();});
+      cell.addEventListener('click',ev=>{ if(ev.target.closest('.mi'))return; vscode.postMessage({type:'action',action:'createOnDay',due:d}); });
+      cell.querySelector('.d').addEventListener('click',ev=>{ev.stopPropagation();calMode='list';calFrom=d;calTo=d;renderCalendar();});
+      cell.querySelector('.d').style.cursor='pointer';cell.querySelector('.d').title='open day list';
       calDrop(cell,d);
       grid.appendChild(cell);
     }
@@ -431,6 +443,8 @@ function renderCalendar(){
       h.addEventListener('click',()=>{calMode='list';calFrom=d;calTo=d;renderCalendar();});
       col.appendChild(h);
       (by[d]||[]).forEach(o=>col.appendChild(dueItem(o,'witem')));
+      col.addEventListener('click',ev=>{ if(ev.target.closest('.witem')||ev.target.closest('h4'))return; vscode.postMessage({type:'action',action:'createOnDay',due:d}); });
+      col.style.cursor='pointer';col.title='click empty space to add a task due this day';
       calDrop(col,d);
       grid.appendChild(col);
     }

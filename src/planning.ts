@@ -640,6 +640,32 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     model.reload(log);
   };
 
+  // Guided create — a task/idea/plan via a short QuickPick+InputBox flow (the
+  // dashboard's editing idiom), optionally pre-dated when launched from a
+  // calendar day. Replaces the old bare "capture a string" input.
+  const createItem = async (prefill: { due?: string; type?: string }) => {
+    const type =
+      prefill.type ??
+      (await vscode.window.showQuickPick(["task", "idea", "plan"], {
+        placeHolder: "New… (type)",
+      }));
+    if (!type) return;
+    const title = await vscode.window.showInputBox({
+      prompt: prefill.due ? `New ${type} due ${prefill.due} — title` : `New ${type} — title`,
+      placeHolder: "What needs doing?",
+    });
+    if (!title || !title.trim()) return;
+    const args = ["create", title.trim(), "--type", type];
+    if (prefill.due) args.push("--due", prefill.due);
+    const r = runKp(args);
+    if (!r.ok) {
+      void vscode.window.showWarningMessage(`create failed: ${r.stderr}`);
+      return;
+    }
+    model.reload(log);
+    void vscode.window.showInformationMessage(r.stdout.trim());
+  };
+
   const recategorizeItem = async (id: string) => {
     const d = detailOf(id);
     if (!d) return;
@@ -686,7 +712,10 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     const id = msg.id as string;
     switch (msg.action) {
       case "capture":
-        void vscode.commands.executeCommand("codePlanning.capture");
+        void createItem({});
+        break;
+      case "createOnDay":
+        void createItem({ due: String(msg.due || "") || undefined });
         break;
       case "openFile":
         dashAction({ type: "open", id });
