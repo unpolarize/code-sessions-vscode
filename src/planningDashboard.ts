@@ -175,7 +175,10 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .view{position:absolute;inset:0}
 .hidden{display:none!important}
 /* board */
-#board{display:flex;gap:var(--gap);padding:14px;overflow-x:auto;align-items:flex-start}
+#board{display:flex;flex-direction:column;gap:10px;padding:14px}
+.boardfilter{display:flex;gap:8px;align-items:center;font-size:12px;flex:0 0 auto}
+.boardfilter select,.boardfilter input{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:2px 6px}
+.lanes{display:flex;gap:var(--gap);overflow-x:auto;align-items:flex-start;flex:1;min-height:0}
 .col{flex:0 0 270px;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:10px;display:flex;flex-direction:column;max-height:100%}
 .col.over{outline:2px dashed var(--vscode-focusBorder);outline-offset:-2px}
 .col h3{font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin:0;padding:10px 12px;display:flex;align-items:center;gap:7px;position:sticky;top:0}
@@ -347,9 +350,24 @@ function laneFieldAndList(objs){
 }
 function renderBoard(){
   const bl=blockedSet();
-  const objs = groupBy==='type' ? (S.objects||[]).filter(o=>BOARD_TYPES.indexOf(o.type)>=0) : (S.objects||[]).filter(o=>o.type===laneSet);
+  let objs = groupBy==='type' ? (S.objects||[]).filter(o=>BOARD_TYPES.indexOf(o.type)>=0) : (S.objects||[]).filter(o=>o.type===laneSet);
   const {field, lanes} = laneFieldAndList(objs);
   const board=$('#board'); board.innerHTML='';
+  // date filter bar (worked-on / due) — full-width row above the lanes
+  const fb=el('div','boardfilter');
+  fb.innerHTML='<span style="opacity:.6">filter by</span>'+
+    '<select id="bfField"><option value="updated"'+(boardDateField==='updated'?' selected':'')+'>worked on (updated)</option><option value="due"'+(boardDateField==='due'?' selected':'')+'>due</option></select>'+
+    '<input type="date" id="bfDate" value="'+esc(boardDateVal||'')+'">'+
+    '<button class="ghost" id="bfToday">today</button>'+
+    (boardDateVal?'<button class="ghost" id="bfClear">clear ✕</button><span style="opacity:.6" id="bfN"></span>':'');
+  board.appendChild(fb);
+  fb.querySelector('#bfField').addEventListener('change',e=>{boardDateField=e.target.value;renderBoard();});
+  fb.querySelector('#bfDate').addEventListener('change',e=>{boardDateVal=e.target.value;renderBoard();});
+  fb.querySelector('#bfToday').addEventListener('click',()=>{boardDateVal=todayStr();renderBoard();});
+  if(fb.querySelector('#bfClear'))fb.querySelector('#bfClear').addEventListener('click',()=>{boardDateVal='';renderBoard();});
+  if(boardDateVal)objs=objs.filter(o=>String(o[boardDateField]||'').slice(0,10)===boardDateVal);
+  if(fb.querySelector('#bfN'))fb.querySelector('#bfN').textContent=objs.length+' '+laneSet+'(s) '+boardDateField+' '+boardDateVal;
+  const lanesWrap=el('div','lanes');board.appendChild(lanesWrap);
   lanes.forEach(lane=>{
     const rows=objs.filter(o=>String(o[field]||'(none)')===String(lane));
     const col=el('div','col'); col.dataset.lane=lane;
@@ -372,12 +390,13 @@ function renderBoard(){
       if(field==='status')vscode.postMessage({type:'setStatus',id:id,status:lane});
       else if(field==='type')vscode.postMessage({type:'action',action:'setType',id:id,toType:lane});
       else vscode.postMessage({type:'action',action:'setField',id:id,field:field,value:lane==='(none)'?'':lane});});
-    board.appendChild(col);
+    lanesWrap.appendChild(col);
   });
 }
 
 function todayStr(){return (S&&S.board&&S.board.date)||new Date().toISOString().slice(0,10);}
 let calFrom=null, calTo=null, calMode='month', calAnchor=null;
+let boardDateField='updated', boardDateVal='';
 const addDays=(d,n)=>{const x=new Date(d+'T00:00:00Z');x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10);};
 const weekStart=d=>{const x=new Date(d+'T00:00:00Z');return addDays(d,-((x.getUTCDay()+6)%7));}; // Monday
 function dueByDay(){const m={};(S.objects||[]).filter(o=>o.type==='task'&&o.due).forEach(o=>{(m[o.due]??=[]).push(o);});

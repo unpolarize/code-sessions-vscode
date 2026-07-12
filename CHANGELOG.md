@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.10.0 — 2026-07-12
+
+### Board date filter — "tasks worked on / due on a day"
+
+- The Board gains a filter bar: pick a field (**worked on (updated)** or **due**) and a date, and the board narrows to cards whose that-field falls on that day. "today" jumps to now; "clear" removes it; a count shows how many matched.
+- Setting **worked on = today** answers "what did I touch today"; **due = a day** answers "what's due then" without leaving the board.
+- Board relaid out as a filter row + horizontally-scrolling lanes. Reads `updated`/`due` straight from the `kp export` snapshot; no new data feed.
+
+(The `kp serve` web dashboard's Day view also now splits "Worked on (updated)" / "Created" / "Due" — shipped in knowledge-planning.) MINOR — UI only.
+
+# Changelog
+
 ## 1.9.0 — 2026-07-12
 
 ### Board search (⌘F), guided create, create-on-calendar-day
