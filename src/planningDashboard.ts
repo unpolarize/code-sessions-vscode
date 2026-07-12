@@ -30,6 +30,11 @@ export class DashboardPanel {
   private panel: vscode.WebviewPanel;
   private disposables: vscode.Disposable[] = [];
 
+  /** Close the board if open (planning-mode toggle keybinding). */
+  static close(): void {
+    DashboardPanel.current?.panel.dispose();
+  }
+
   static show(deps: DashboardDeps, view?: string, itemId?: string): void {
     if (DashboardPanel.current) {
       DashboardPanel.current.panel.reveal();
@@ -148,7 +153,8 @@ export class DashboardPanel {
   <span id="counts" class="counts"></span>
   <input id="search" placeholder="Search… (⌘F)" style="display:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:3px 8px;width:180px">
   <button id="captureBtn" class="ghost">＋ New</button>
-  <button id="refreshBtn" class="ghost">⟳</button>
+  <button id="syncBtn" class="ghost" title="Run a sync script (scripts/sync/ — sync.sh is the default)">⟳ Sync</button>
+  <button id="refreshBtn" class="ghost" title="Refresh snapshot">⟳</button>
 </div>
 <div id="main">
   <div id="board" class="view"></div>
@@ -328,6 +334,7 @@ $('#laneSeg').addEventListener('click',e=>{const b=e.target.closest('button');if
 $('#calModeSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;calMode=b.dataset.cm;syncSeg();renderCalendar();});
 $('#refreshBtn').addEventListener('click',()=>vscode.postMessage({type:'refresh'}));
 $('#captureBtn').addEventListener('click',()=>vscode.postMessage({type:'action',action:'capture'}));
+$('#syncBtn').addEventListener('click',()=>vscode.postMessage({type:'action',action:'runSync'}));
 let searchTerm='', maxLane=null;
 function applySearch(){const q=searchTerm.toLowerCase();
   document.querySelectorAll('#board .card').forEach(c=>{c.style.display=(!q||c.textContent.toLowerCase().includes(q))?'':'none';});}

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.15.0 — 2026-07-12
+
+### On-demand sync button + planning/session keybindings
+
+- **⟳ Sync** button on the Planning Dashboard top bar (+ command "Planning: Run Sync Script…"): runs a script from the KB's `scripts/sync/` folder (configurable via `codeSessions.planning.syncDir`). One QuickPick entry per executable `*.sh`; `sync.sh` — the standard name — sorts first and runs directly when it's the only script. Output lands in the Planning output channel; the snapshot reloads after.
+- **Keybindings (mac)**: `⌘⌃⇧S` toggle the Code Sessions sidebar (rebound from ⌘⌃⇧C, which Code Build now uses for new chat) · `⌘⌃⇧P` toggle planning mode — opens the Planning sidebar + board together, closes both on second press · `⌘⌃⇧B` show the planning board. Windows/Linux: same on ctrl+alt+shift.
+- Pairs with knowledge-planning 5498f86: kp serve web top bar renders a run button per sync script over the same convention (`/api/sync-scripts`, `/api/sync`).
+
+MINOR.
+
 ## 1.14.0 — 2026-07-12
 
 ### Category editing, thought→task, sidebar Thoughts

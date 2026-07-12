@@ -8,7 +8,7 @@
 // Projects trees, a kanban board webview, an interactive graph webview, and a status bar.
 
 import * as vscode from "vscode";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFile } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -512,8 +512,11 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   const inbox = new InboxProvider(model);
   const projects = new ProjectsProvider(model);
 
+  // createTreeView (not registerTreeDataProvider) for Today so the planning-mode
+  // toggle keybinding can read container visibility, mirroring the sessions toggle.
+  const todayTreeView = vscode.window.createTreeView("codePlanningToday", { treeDataProvider: today });
   ctx.subscriptions.push(
-    vscode.window.registerTreeDataProvider("codePlanningToday", today),
+    todayTreeView,
     vscode.window.registerTreeDataProvider("codePlanningInbox", inbox),
     vscode.window.registerTreeDataProvider("codePlanningProjects", projects),
   );
@@ -776,6 +779,9 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       case "openUrl":
         if (msg.url) void vscode.env.openExternal(vscode.Uri.parse(String(msg.url)));
         break;
+      case "runSync":
+        void vscode.commands.executeCommand("codePlanning.runSync");
+        break;
       case "moveToTask": {
         const r = runKp(["recategorize", id, "--to-type", "task"]);
         void vscode.window.showInformationMessage(r.ok ? r.stdout.trim() : `move failed: ${r.stderr}`);
@@ -962,6 +968,78 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       if (id) term.sendText(`# Working on ${id}. After the session: kp link-session ${id} <session-uuid>`, false);
     }),
     vscode.commands.registerCommand("codePlanning.openDashboard", () => DashboardPanel.show(dashDeps)),
+    // Cmd+Ctrl+Shift+P — planning mode toggle: open the Planning sidebar + board
+    // together; press again to hide the sidebar and close the board.
+    vscode.commands.registerCommand("codePlanning.togglePlanningMode", async () => {
+      try {
+        if (todayTreeView.visible || DashboardPanel.current) {
+          DashboardPanel.close();
+          if (todayTreeView.visible) await vscode.commands.executeCommand("workbench.action.closeSidebar");
+        } else {
+          await vscode.commands.executeCommand("workbench.view.extension.code-planning");
+          DashboardPanel.show(dashDeps);
+        }
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Planning toggle failed: ${e.message}`);
+      }
+    }),
+    // ⟳ Sync — run an on-demand sync script from the KB's scripts/sync/ folder
+    // (convention: ~/docs/scripts/sync/README.md; sync.sh is the standard action).
+    vscode.commands.registerCommand("codePlanning.runSync", async (scriptArg?: string) => {
+      const dir =
+        planningConfig().get<string>("syncDir") || path.join(os.homedir(), "docs", "scripts", "sync");
+      let names: string[] = [];
+      try {
+        names = readdirSync(dir).filter((f) => {
+          if (!f.endsWith(".sh")) return false;
+          try {
+            const st = statSync(path.join(dir, f));
+            return st.isFile() && (st.mode & 0o111) !== 0;
+          } catch {
+            return false;
+          }
+        });
+      } catch {
+        void vscode.window.showWarningMessage(`No sync folder at ${dir} (codeSessions.planning.syncDir)`);
+        return;
+      }
+      if (!names.length) {
+        void vscode.window.showWarningMessage(`No executable *.sh in ${dir}`);
+        return;
+      }
+      names.sort((a, b) => (a === "sync.sh" ? -1 : b === "sync.sh" ? 1 : a.localeCompare(b)));
+      let script = scriptArg && names.includes(scriptArg) ? scriptArg : undefined;
+      if (!script) {
+        script =
+          names.length === 1
+            ? names[0]
+            : await vscode.window.showQuickPick(names, {
+                placeHolder: `Run a sync script from ${dir}`,
+                title: "⟳ Sync",
+              });
+      }
+      if (!script) return;
+      const file = path.join(dir, script);
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `⟳ ${script}` },
+        () =>
+          new Promise<void>((resolveP) => {
+            execFile(file, { timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+              const out = `${stdout ?? ""}${stderr ? "\n" + stderr : ""}`.trim();
+              log?.appendLine(`[sync] ${script}${err ? ` FAILED (${(err as any).code})` : ""}\n${out}`);
+              if (err) {
+                void vscode.window
+                  .showWarningMessage(`${script} failed — see output`, "Show output")
+                  .then((c) => c && log?.show(true));
+              } else {
+                void vscode.window.showInformationMessage(`${script} ✓`);
+              }
+              model.reload(log);
+              resolveP();
+            });
+          }),
+      );
+    }),
     vscode.commands.registerCommand("codePlanning.openCanvas", () => {
       const root = model.get()?.root || path.join(os.homedir(), "docs", "planning");
       openCanvas(ctx, root);
