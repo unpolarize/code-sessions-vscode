@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.8.0 — 2026-07-12
+
+### Calendar: real month / week / work-week grids (was a flat list)
+
+The Planning Dashboard's Calendar showed only a flat date-grouped list. It now has proper grid modes, matching the standalone `kp serve` dashboard:
+
+- **Mode selector** (Month · Week · Work week · List) appears when Calendar is active.
+- **Month**: a 6×7 grid (Monday-first), each day cell showing its due tasks (priority-prefixed, overdue in red), out-of-month days dimmed, today outlined; click a cell → that day's List.
+- **Week / Work week**: 7- or 5-day columns of due items; click a column header → that day's List; prev/next/Today navigation.
+- **List**: the previous flat view (from/to + All-dated / +Overdue), still available and used for the single-day drill-down.
+- **Drag a task to another date**: due items are draggable onto any month cell / week column → new `setDue` host message runs `kp set-due`. Reads due/priority straight from the `kp export` snapshot (no new data feed); all views reload after a change.
+
+MINOR (`1.7.0 → 1.8.0`) — new calendar UI + one host message. No schema/protocol change.
+
+# Changelog
+
 ## 1.7.0 — 2026-07-11
 
 ### Viewer-owned background git sync (KB / Sessions / Planning)

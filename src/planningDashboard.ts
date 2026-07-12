@@ -84,6 +84,12 @@ export class DashboardPanel {
         // refresh the open drawer
         if (m.id) this.onMessage({ type: "show", id: m.id });
         break;
+      case "setDue":
+        this.deps.runKp(["set-due", String(m.id), String(m.due || "-")]);
+        this.deps.reload();
+        this.pushSnapshot();
+        if (m.id) this.onMessage({ type: "show", id: m.id });
+        break;
       default:
         this.deps.onAction(m); // open / action (agent, CB, promote, link, capture)
     }
@@ -117,6 +123,12 @@ export class DashboardPanel {
     <button data-lane="task" class="on">Tasks</button>
     <button data-lane="idea">Ideas</button>
     <button data-lane="plan">Plans</button>
+  </div>
+  <div class="seg" id="calModeSeg" style="display:none">
+    <button data-cm="month" class="on">Month</button>
+    <button data-cm="week">Week</button>
+    <button data-cm="workweek">Work week</button>
+    <button data-cm="list">List</button>
   </div>
   <select id="groupBy" title="Group lanes by">
     <option value="status">▦ status</option>
@@ -188,6 +200,25 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .calrow .cm{opacity:.6;font-size:11px;margin-left:auto}
 .calrow .dot{width:8px;height:8px;border-radius:50%;flex:none}
 .calempty{opacity:.6;padding:16px;font-size:12px}
+.calbar .title{font-weight:700;font-size:14px;min-width:150px}
+.mgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.mgrid .dow{opacity:.6;font-size:10px;text-transform:uppercase;text-align:center;padding:2px}
+.mcell{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:6px;min-height:88px;padding:5px;cursor:pointer;overflow:hidden}
+.mcell:hover{border-color:var(--vscode-focusBorder)}
+.mcell.dim{opacity:.35}
+.mcell.today{border-color:var(--vscode-focusBorder);box-shadow:0 0 0 1px var(--vscode-focusBorder) inset}
+.mcell .d{font-size:11px;opacity:.7;display:flex;justify-content:space-between}
+.mcell .mi{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;padding:1px 3px;border-radius:3px;background:var(--vscode-editorWidget-background)}
+.mcell .mi.late{color:#d16969}
+.mcell.over{border-color:var(--vscode-focusBorder);background:var(--vscode-list-hoverBackground)}
+.wgrid{display:grid;gap:6px}
+.wcol{background:var(--vscode-editor-background);border:1px solid var(--vscode-panel-border);border-radius:8px;padding:6px;min-height:180px;min-width:0}
+.wcol.today{border-color:var(--vscode-focusBorder)}
+.wcol.over{background:var(--vscode-list-hoverBackground)}
+.wcol h4{margin:0 0 5px;font-size:11px;opacity:.75;cursor:pointer;display:flex;justify-content:space-between}
+.wcol h4:hover{opacity:1}
+.witem{font-size:11px;padding:3px 5px;border-radius:5px;margin-top:3px;background:var(--vscode-editorWidget-background);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;border-left:3px solid var(--vscode-charts-yellow)}
+.witem.late{border-left-color:#d16969}
 .card.blocked{border-left:3px solid #e51400}
 /* graph */
 #graph{width:100%;height:100%;cursor:grab}
@@ -274,6 +305,7 @@ window.addEventListener('message',e=>{const m=e.data;
 // top bar
 $('#viewSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;view=b.dataset.view;syncSeg();render();});
 $('#laneSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;laneSet=b.dataset.lane;syncSeg();renderBoard();});
+$('#calModeSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;calMode=b.dataset.cm;syncSeg();renderCalendar();});
 $('#refreshBtn').addEventListener('click',()=>vscode.postMessage({type:'refresh'}));
 $('#captureBtn').addEventListener('click',()=>vscode.postMessage({type:'action',action:'capture'}));
 (function(){const gb=$('#groupBy'); if(gb){gb.value=groupBy; gb.addEventListener('change',()=>{groupBy=gb.value;saveState();renderBoard();});}
@@ -282,7 +314,9 @@ $('#backdrop').addEventListener('click',closeDrawer);
 function syncSeg(){
   document.querySelectorAll('#viewSeg button').forEach(b=>b.classList.toggle('on',b.dataset.view===view));
   document.querySelectorAll('#laneSeg button').forEach(b=>b.classList.toggle('on',b.dataset.lane===laneSet));
+  document.querySelectorAll('#calModeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.cm===calMode));
   $('#laneSeg').style.display = view==='board'?'inline-flex':'none';
+  $('#calModeSeg').style.display = view==='calendar'?'inline-flex':'none';
   $('#board').classList.toggle('hidden',view!=='board');
   $('#calendar').classList.toggle('hidden',view!=='calendar');
   $('#graph').classList.toggle('hidden',view!=='graph');
@@ -333,28 +367,94 @@ function renderBoard(){
 }
 
 function todayStr(){return (S&&S.board&&S.board.date)||new Date().toISOString().slice(0,10);}
-let calFrom=null, calTo=null;
+let calFrom=null, calTo=null, calMode='month', calAnchor=null;
+const addDays=(d,n)=>{const x=new Date(d+'T00:00:00Z');x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10);};
+const weekStart=d=>{const x=new Date(d+'T00:00:00Z');return addDays(d,-((x.getUTCDay()+6)%7));}; // Monday
+function dueByDay(){const m={};(S.objects||[]).filter(o=>o.type==='task'&&o.due).forEach(o=>{(m[o.due]??=[]).push(o);});
+  for(const k in m)m[k].sort((a,b)=>((a.priority||'p9')).localeCompare(b.priority||'p9'));return m;}
+function calDrop(elm,day){
+  elm.addEventListener('dragover',ev=>{ev.preventDefault();ev.dataTransfer.dropEffect='move';elm.classList.add('over');});
+  elm.addEventListener('dragleave',()=>elm.classList.remove('over'));
+  elm.addEventListener('drop',ev=>{ev.preventDefault();elm.classList.remove('over');
+    const id=ev.dataTransfer.getData('text/plain');
+    if(id)vscode.postMessage({type:'setDue',id:id,due:day});});
+}
+function dueItem(o,cls){
+  const now=todayStr();const closed=o.status==='done'||o.status==='outdated';
+  const it=el('div',cls+(o.due<now&&!closed?' late':''));
+  it.textContent=(o.priority?o.priority+' · ':'')+(o.title||o.id);
+  it.draggable=true;
+  it.addEventListener('dragstart',ev=>{ev.stopPropagation();ev.dataTransfer.setData('text/plain',o.id);ev.dataTransfer.effectAllowed='move';});
+  it.addEventListener('click',ev=>{ev.stopPropagation();openDetail(o.id);});
+  return it;
+}
 function renderCalendar(){
   const now=todayStr();
-  if(!calFrom){calFrom=now;}
-  if(!calTo){const d=new Date(now+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+14);calTo=d.toISOString().slice(0,10);}
+  if(!calAnchor)calAnchor=now;
   const cal=$('#calendar'); cal.innerHTML='';
+  const by=dueByDay();
+  if(calMode==='list'){ renderCalList(cal,by,now); return; }
+  const bar=el('div','calbar');
+  const title=calMode==='month'?new Date(calAnchor+'T00:00:00Z').toLocaleDateString(undefined,{month:'long',year:'numeric',timeZone:'UTC'}):'Week of '+weekStart(calAnchor);
+  bar.innerHTML='<button class="ghost" id="cPrev">‹</button><span class="title">'+esc(title)+'</span><button class="ghost" id="cNext">›</button><button class="ghost" id="cToday">Today</button>';
+  cal.appendChild(bar);
+  bar.querySelector('#cToday').addEventListener('click',()=>{calAnchor=now;renderCalendar();});
+  if(calMode==='month'){
+    bar.querySelector('#cPrev').addEventListener('click',()=>{const d=new Date(calAnchor+'T00:00:00Z');d.setUTCMonth(d.getUTCMonth()-1,1);calAnchor=d.toISOString().slice(0,10);renderCalendar();});
+    bar.querySelector('#cNext').addEventListener('click',()=>{const d=new Date(calAnchor+'T00:00:00Z');d.setUTCMonth(d.getUTCMonth()+1,1);calAnchor=d.toISOString().slice(0,10);renderCalendar();});
+    const gridStart=weekStart(calAnchor.slice(0,8)+'01');
+    const grid=el('div','mgrid');
+    ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].forEach(d=>grid.appendChild(el('div','dow',d)));
+    for(let i=0;i<42;i++){
+      const d=addDays(gridStart,i);
+      const cell=el('div','mcell'+(d.slice(0,7)!==calAnchor.slice(0,7)?' dim':'')+(d===now?' today':''));
+      cell.appendChild(el('div','d','<span>'+Number(d.slice(8))+'</span>'));
+      const due=by[d]||[];
+      due.slice(0,3).forEach(o=>cell.appendChild(dueItem(o,'mi')));
+      if(due.length>3)cell.appendChild(el('div','mi','+'+(due.length-3)+' more…'));
+      cell.addEventListener('click',()=>{calMode='list';calFrom=d;calTo=d;renderCalendar();});
+      calDrop(cell,d);
+      grid.appendChild(cell);
+    }
+    cal.appendChild(grid);
+  }else{
+    const days=calMode==='workweek'?5:7;
+    bar.querySelector('#cPrev').addEventListener('click',()=>{calAnchor=addDays(calAnchor,-7);renderCalendar();});
+    bar.querySelector('#cNext').addEventListener('click',()=>{calAnchor=addDays(calAnchor,7);renderCalendar();});
+    const start=weekStart(calAnchor);
+    const grid=el('div','wgrid');grid.style.gridTemplateColumns='repeat('+days+',1fr)';
+    for(let i=0;i<days;i++){
+      const d=addDays(start,i);
+      const col=el('div','wcol'+(d===now?' today':''));
+      const label=new Date(d+'T00:00:00Z').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',timeZone:'UTC'});
+      const h=el('h4',null,'<span>'+esc(label)+'</span><span>›</span>');
+      h.addEventListener('click',()=>{calMode='list';calFrom=d;calTo=d;renderCalendar();});
+      col.appendChild(h);
+      (by[d]||[]).forEach(o=>col.appendChild(dueItem(o,'witem')));
+      calDrop(col,d);
+      grid.appendChild(col);
+    }
+    cal.appendChild(grid);
+  }
+}
+function renderCalList(cal,by,now){
+  if(!calFrom){calFrom=now;}
+  if(!calTo){calTo=addDays(now,14);}
   const bar=el('div','calbar');
   bar.innerHTML='<label>from <input type="date" id="calFrom" value="'+calFrom+'"></label> <label>to <input type="date" id="calTo" value="'+calTo+'"></label> <button id="calAll" class="ghost">All dated</button> <button id="calOverdue" class="ghost">+ Overdue</button>';
   cal.appendChild(bar);
-  const tasks=(S.objects||[]).filter(o=>o.type==='task'&&o.due);
-  const inWin=tasks.filter(o=>o.due>=calFrom&&o.due<=calTo).sort((a,b)=>(a.due+(a.priority||'p9')).localeCompare(b.due+(b.priority||'p9')));
-  if(!inWin.length){cal.appendChild(el('div','calempty','(no tasks due between '+calFrom+' and '+calTo+' — set due dates with kp set-due)'));}
-  let day='';let dayEl=null;
-  inWin.forEach(o=>{
-    if(o.due!==day){day=o.due;dayEl=el('div','calday');
-      const mark=day<now?' ⚠':day===now?' ← today':'';
-      dayEl.appendChild(el('h3',null,esc(day)+mark));cal.appendChild(dayEl);}
-    const done=o.status==='done'||o.status==='outdated';
-    const row=el('div','calrow'+(done?' done':'')+(o.due<now&&!done?' late':''));
-    row.innerHTML='<span class="dot" style="background:'+(LANE_COLOR[o.status]||'#888')+'"></span>'+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+'<span class="ct">'+esc(o.title||o.id)+'</span><span class="cm">'+esc(o.status||'')+(o.domain?' · '+esc(o.domain):'')+'</span>';
-    row.addEventListener('click',()=>openDetail(o.id));
-    dayEl.appendChild(row);
+  const inWin=Object.keys(by).filter(d=>d>=calFrom&&d<=calTo).sort();
+  if(!inWin.length)cal.appendChild(el('div','calempty','(no tasks due between '+calFrom+' and '+calTo+')'));
+  inWin.forEach(day=>{
+    const dayEl=el('div','calday');
+    const mark=day<now?' ⚠':day===now?' ← today':'';
+    dayEl.appendChild(el('h3',null,esc(day)+mark));
+    by[day].forEach(o=>{const done=o.status==='done'||o.status==='outdated';
+      const row=el('div','calrow'+(done?' done':'')+(o.due<now&&!done?' late':''));
+      row.innerHTML='<span class="dot" style="background:'+(LANE_COLOR[o.status]||'#888')+'"></span>'+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+'<span class="ct">'+esc(o.title||o.id)+'</span><span class="cm">'+esc(o.status||'')+(o.domain?' · '+esc(o.domain):'')+'</span>';
+      row.addEventListener('click',()=>openDetail(o.id));
+      dayEl.appendChild(row);});
+    cal.appendChild(dayEl);
   });
   bar.querySelector('#calFrom').addEventListener('change',e=>{calFrom=e.target.value;renderCalendar();});
   bar.querySelector('#calTo').addEventListener('change',e=>{calTo=e.target.value;renderCalendar();});
