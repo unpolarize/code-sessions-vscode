@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.20.2 — 2026-07-13
+
+- Fix Sessions view Today/Yesterday/Last-week filtering: read the actual `store.listRecent` fields (`session_id`, `mtime_ns`, `started_at`, `message_count`) and bucket by **last activity** (mtime), matching the Code Sessions sidebar — previously it mis-read epoch fields and bucketed by first-timestamp, so recent sessions showed as older / empty.
+
 ## 1.20.1 — 2026-07-13
 
 - Sessions view now sources from the Code Sessions SQLite index (recent + rich) so Today/Yesterday/Last-week actually populate; falls back to the ~/.sessions git store when the cache is off. Linked-planning badges resolve from the snapshot's `linked_sessions` (works for any session source).

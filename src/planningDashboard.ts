@@ -691,8 +691,9 @@ function renderProjects(){
 // ── sessions view: CS git-store sessions with time filters + link-to-task ──
 let SESS=null, sessFilter='week', sessSearch='';
 function dayStart(offset){ const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()+(offset||0)); return d.getTime(); }
+function sessWhen(s){ return s.mtime||s.startedAt||0; } // last activity — matches the CS "Today" bucketing
 function sessInWindow(s){
-  const t=s.startedAt||s.mtime||0;
+  const t=sessWhen(s);
   if(sessFilter==='all')return true;
   if(sessFilter==='today')return t>=dayStart(0);
   if(sessFilter==='yesterday')return t>=dayStart(-1)&&t<dayStart(0);
@@ -727,6 +728,7 @@ function renderSessions(){
   el2.appendChild(bar);
   const q=sessSearch.toLowerCase();
   let rows=SESS.filter(sessInWindow).filter(s=>!q||((s.title||'')+' '+(s.project||'')+' '+(s.agent||'')).toLowerCase().includes(q));
+  rows.sort((a,b)=>sessWhen(b)-sessWhen(a));
   const cnt=el('div','sesscount',rows.length+' session(s) · '+sessFilter); el2.appendChild(cnt);
   if(!rows.length){ el2.appendChild(el('div',null,'<div style="opacity:.55;padding:14px 2px">No sessions in this window.</div>')); return; }
   const list=el('div','sesslist');
@@ -735,7 +737,7 @@ function renderSessions(){
     const src=s.source==='grok'?'[G]':s.source==='git'?'[S]':'[C]';
     const links=sessionLinks(s);
     const refs=links.map(id=>'<span class="badge" title="linked">↔ '+esc(titleForId(id))+'</span>').join('');
-    c.innerHTML='<div class="sh"><span class="ct">'+esc(s.title||s.uuid)+'</span><span class="cm">'+fmtWhen(s.startedAt||s.mtime)+'</span></div>'+
+    c.innerHTML='<div class="sh"><span class="ct">'+esc(s.title||s.uuid)+'</span><span class="cm">'+fmtWhen(sessWhen(s))+'</span></div>'+
       '<div class="sm"><span class="badge">'+src+' '+esc(s.agent||'')+'</span>'+(s.project?'<span>'+esc(s.project)+'</span>':'')+(s.turns?'<span>'+s.turns+'t</span>':'')+'</div>'+
       (refs?'<div class="srefs">'+refs+'</div>':'');
     const acts=el('div','sacts');
