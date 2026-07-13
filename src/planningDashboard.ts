@@ -308,13 +308,22 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .col .cnt{margin-left:auto;opacity:.6;font-weight:400}
 .donewin{font-size:10px;padding:0 2px;margin-left:2px;border-radius:4px;background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border)}
 .col.max{flex:1 1 auto;max-width:none}
+/* Narrow panes (side bar open / small window): stack lanes full-width so cards stay
+   readable instead of being crushed into a horizontal scroll of tiny columns. */
+@media (max-width:760px){
+  .lanes{flex-wrap:wrap;overflow-x:hidden}
+  .col{flex:1 1 100%;max-width:none;max-height:none}
+  .cards{max-height:none}
+  #topbar{gap:8px;flex-wrap:wrap}
+}
+.card .ct{overflow-wrap:anywhere}
 .card.compact{padding:4px 10px;display:flex;align-items:center;gap:10px}
 .card.compact .ct{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
 .card.compact .cm{margin-top:0;flex:none;flex-wrap:nowrap}
 .card.dropover{border-color:var(--vscode-focusBorder);box-shadow:0 -2px 0 0 var(--vscode-focusBorder)}
 .savenote{font-size:10px;opacity:.6;min-width:52px;text-align:right}
 #projects{padding:14px;overflow-y:auto}
-.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr));gap:12px}
 .pcard{background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:10px;padding:12px;min-width:0}
 .pcard h3{margin:0 0 8px;font-size:13px;display:flex;gap:8px;align-items:baseline;cursor:pointer}
 .pcard h3:hover{color:var(--vscode-focusBorder)}

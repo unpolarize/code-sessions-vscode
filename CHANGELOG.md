@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.23.0 — 2026-07-13
+
+### Readable board on narrow panes + richer session viewer
+
+- **Responsive board** — when the pane is narrow (side bar open / small window), the kanban lanes now stack full-width and stay readable instead of being crushed into a horizontal scroll of tiny columns. Project/Sessions cards no longer overflow narrow panes.
+- **Session conversation viewer** — opening a session from the dashboard now shows **Cost, total Tokens (in/out/cache breakdown on hover), and Model** alongside turns/tools/span, matching the sidebar's stats. The primary action is relabeled **▶ Continue in Code Build** and now passes the session's source + project path so it actually resumes *that* session in Code Build (previously it could open a blank chat).
+
+PATCH/MINOR.
+
 ## 1.22.0 — 2026-07-13
 
 - Planning mode now runs the **published npm `@unpolarize/knowledge-planning`** (bundled into the extension as `dist/cli.js`, versioned with the .vsix) instead of a local source checkout. Falls back to a resolvable install, then a dev checkout. `KP_ROOT` defaults to the KB planning store so the generic package default doesn't misroute.

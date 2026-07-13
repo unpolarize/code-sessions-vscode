@@ -218,6 +218,16 @@ function renderHtml(
   jsonlPath: string,
   topics?: Map<string, { topic: string; topic_norm: string }>,
   project?: { id: string | null; path: string | null },
+  row?: {
+    source?: string;
+    project_path?: string | null;
+    cost_usd?: number | null;
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_read_tokens?: number | null;
+    cache_write_tokens?: number | null;
+    model?: string | null;
+  } | null,
 ): string {
   const totalTurns = c.summary.totalTurns;
   const totalTools = c.summary.totalTools;
@@ -231,8 +241,22 @@ function renderHtml(
   const classifyUrl = `command:codeSessions.classifyTopics?${classifyArg}`;
   const trajectoryArg = encodeURIComponent(JSON.stringify([c.sessionId, c.title || ""]));
   const trajectoryUrl = `command:codeSessions.showTrajectory?${trajectoryArg}`;
-  const resumeArg = encodeURIComponent(JSON.stringify([{ session: c.sessionId, title: c.title || "" }]));
+  // Pass source + project_path so resume actually reopens THIS session in Code Build
+  // (openExternalSession needs them) instead of a blank chat.
+  const resumeArg = encodeURIComponent(
+    JSON.stringify([
+      { session: c.sessionId, title: c.title || "", source: row?.source ?? "claude", project_path: row?.project_path ?? null },
+    ]),
+  );
   const resumeUrl = `command:codeSessions.resume?${resumeArg}`;
+  const fmtCost = (v?: number | null): string => (v == null ? "—" : v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`);
+  const fmtTok = (v?: number | null): string => {
+    if (v == null) return "—";
+    if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+    if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
+    return String(v);
+  };
+  const totalTok = (row?.input_tokens ?? 0) + (row?.output_tokens ?? 0) + (row?.cache_read_tokens ?? 0) + (row?.cache_write_tokens ?? 0);
   const revealArg = project?.path ? encodeURIComponent(JSON.stringify([project.path])) : "";
   const revealUrl = revealArg ? `command:codeSessions.revealProjectFolder?${revealArg}` : "";
   const classifiedCount = topics?.size ?? 0;
@@ -271,13 +295,16 @@ function renderHtml(
   · ${escapeHtml(jsonlPath)}
 </div>
 <div class="toolbar">
-  <a class="btn primary" href="${resumeUrl}">▶ Continue in Claude</a>
+  <a class="btn primary" href="${resumeUrl}">▶ Continue in Code Build</a>
   ${revealUrl ? `<a class="btn" href="${revealUrl}" title="Reveal the project folder in Finder/Explorer">📁 Reveal project folder</a>` : ""}
   <a class="btn" href="${classifyUrl}">${classifiedCount > 0 ? "Re-analyze topics" : "Analyze topics"}</a>
   <a class="btn" href="${trajectoryUrl}">Show trajectory</a>
   <span class="topic-meta">${escapeHtml(meta)}</span>
 </div>
 <div class="totals">
+  ${row?.cost_usd != null ? `<div class="stat"><span class="label">Cost</span><span class="value">${fmtCost(row.cost_usd)}</span></div>` : ""}
+  ${totalTok > 0 ? `<div class="stat"><span class="label">Tokens</span><span class="value" title="in ${fmtTok(row?.input_tokens)} · out ${fmtTok(row?.output_tokens)} · cache r ${fmtTok(row?.cache_read_tokens)} / w ${fmtTok(row?.cache_write_tokens)}">${fmtTok(totalTok)}</span></div>` : ""}
+  ${row?.model ? `<div class="stat"><span class="label">Model</span><span class="value">${escapeHtml(row.model)}</span></div>` : ""}
   <div class="stat"><span class="label">Turns</span><span class="value">${totalTurns}</span></div>
   <div class="stat"><span class="label">Tool calls</span><span class="value">${totalTools}</span></div>
   <div class="stat"><span class="label">Subagents</span><span class="value">${totalSubagents}</span></div>
@@ -321,7 +348,7 @@ export function openConversationViewer(
       const topics = store ? store.topicsForSession(parsed.sessionId) : undefined;
       const row = store ? store.getById(parsed.sessionId) : null;
       const project = row ? { id: row.project_id, path: row.project_path } : undefined;
-      panel.webview.html = renderHtml(parsed, jsonlPath, topics, project);
+      panel.webview.html = renderHtml(parsed, jsonlPath, topics, project, row);
     } catch (e: any) {
       panel.webview.html = `<pre>Failed to parse ${escapeHtml(jsonlPath)}\n\n${escapeHtml(e?.message || String(e))}</pre>`;
     }
