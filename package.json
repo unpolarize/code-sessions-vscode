@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.21.0",
+  "version": "1.22.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -628,7 +628,7 @@
         "codeSessions.planning.cliPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the knowledge-planning CLI entry (src/cli/index.ts). Empty → ~/projects/unpolarize/knowledge-planning/src/cli/index.ts."
+          "description": "Override the kp CLI entry. Empty → the bundled @unpolarize/knowledge-planning (dist/cli.js), then a local source checkout."
         },
         "codeSessions.planning.nodePath": {
           "type": "string",
@@ -931,6 +931,7 @@
     "typescript": "^5.4.0"
   },
   "dependencies": {
+    "@unpolarize/knowledge-planning": "^0.2.0",
     "node-sqlite3-wasm": "^0.8.57",
     "umap-js": "^1.4.0"
   }

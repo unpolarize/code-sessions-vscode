@@ -201,7 +201,28 @@ const LANES = ["today", "in_progress", "inbox", "deferred", "done", "outdated"] 
 function planningConfig() {
   return vscode.workspace.getConfiguration("codeSessions.planning");
 }
+
+/** Extension install dir — set at activation; used to resolve the bundled kp CLI. */
+let extensionRoot = "";
+
+/**
+ * Resolve the `kp` CLI. Prefer the npm package `@unpolarize/knowledge-planning`
+ * bundled into the extension (dist/cli.js — plain JS, versioned with the .vsix),
+ * then a globally-resolvable install, then a local source checkout for dev.
+ */
 function defaultCli(): string {
+  const bundled = extensionRoot
+    ? path.join(extensionRoot, "node_modules", "@unpolarize", "knowledge-planning", "dist", "cli.js")
+    : "";
+  if (bundled && existsSync(bundled)) return bundled;
+  try {
+    // resolves the package's '.' export (dist/index.js); cli.js is its sibling
+    const idx = require.resolve("@unpolarize/knowledge-planning");
+    const cli = path.join(path.dirname(idx), "cli.js");
+    if (existsSync(cli)) return cli;
+  } catch {
+    /* not installed here — fall through to the dev checkout */
+  }
   return path.join(os.homedir(), "projects/unpolarize/knowledge-planning/src/cli/index.ts");
 }
 // VS Code launched from the Dock/Finder usually has no /opt/homebrew/bin on PATH, so a
@@ -220,11 +241,12 @@ function runKp(args: string[], input?: string): { ok: boolean; stdout: string; s
   const cfg = planningConfig();
   const node = resolveNode();
   const cli = cfg.get<string>("cliPath") || defaultCli();
-  const root = cfg.get<string>("storeRoot") || "";
+  // KP's own default store root is generic; this extension's store lives in the KB.
+  const root = cfg.get<string>("storeRoot") || path.join(os.homedir(), "docs", "planning");
   const env = { ...process.env } as Record<string, string>;
   // ensure common bin dirs are on PATH for the child too
   env.PATH = `/opt/homebrew/bin:/usr/local/bin:${env.PATH || ""}`;
-  if (root) env.KP_ROOT = root;
+  env.KP_ROOT = root;
   const res = spawnSync(node, [cli, ...args], {
     encoding: "utf8",
     env,
@@ -615,6 +637,7 @@ class GraphPanel {
 // --- Registration ----------------------------------------------------------
 
 export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.OutputChannel): void {
+  extensionRoot = ctx.extensionUri.fsPath; // resolve the bundled kp CLI relative to here
   const model = new PlanningModel();
   const today = new TodayProvider(model);
   const inbox = new InboxProvider(model);

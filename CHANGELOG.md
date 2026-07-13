@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.22.0 — 2026-07-13
+
+- Planning mode now runs the **published npm `@unpolarize/knowledge-planning`** (bundled into the extension as `dist/cli.js`, versioned with the .vsix) instead of a local source checkout. Falls back to a resolvable install, then a dev checkout. `KP_ROOT` defaults to the KB planning store so the generic package default doesn't misroute.
+
 ## 1.21.0 — 2026-07-13
 
 - Opening a session from the planning dashboard (Sessions view, drawer "Linked sessions", Projects-view session rows) now shows the **conversation** ("insides") by default via `codeSessions.viewConversation`, instead of the trajectory graph. A separate **Trajectory** button per session opens the graph when you want it.
