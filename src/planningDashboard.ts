@@ -111,6 +111,17 @@ export class DashboardPanel {
         // refresh the open drawer
         if (m.id) this.onMessage({ type: "show", id: m.id });
         break;
+      case "setStatusApply": {
+        // closing move with an optional resolution note (from the modal)
+        const args = ["set-status", String(m.id), String(m.status)];
+        const note = String(m.note ?? "").trim();
+        if (note) args.push("--note", note);
+        this.deps.runKp(args);
+        this.deps.reload();
+        this.pushSnapshot();
+        if (m.id) this.onMessage({ type: "show", id: m.id });
+        break;
+      }
       case "setDue":
         this.deps.runKp(["set-due", String(m.id), String(m.due || "-")]);
         this.deps.reload();
@@ -155,6 +166,7 @@ export class DashboardPanel {
   <div class="seg" id="viewSeg">
     <button data-view="board" class="on">Board</button>
     <button data-view="projects">Projects</button>
+    <button data-view="social">✨ Social</button>
     <button data-view="calendar">Calendar</button>
     <button data-view="graph">Graph</button>
     <button data-view="canvas">Canvas</button>
@@ -199,6 +211,7 @@ export class DashboardPanel {
 <div id="main">
   <div id="board" class="view"></div>
   <div id="projects" class="view hidden"></div>
+  <div id="social" class="view hidden"></div>
   <div id="calendar" class="view hidden"></div>
   <svg id="graph" class="view hidden"></svg>
   <div id="canvas" class="view hidden"></div>
@@ -206,6 +219,18 @@ export class DashboardPanel {
 </div>
 <div id="drawer" class="hidden"><div id="drawerInner"></div></div>
 <div id="backdrop" class="hidden"></div>
+<div id="resmodal" class="hidden">
+  <div class="resbox">
+    <div class="reshead"><span id="resTitle"></span><button id="resX" class="dclose">✕</button></div>
+    <div id="resSub" class="ressub"></div>
+    <textarea id="resNote" placeholder="What resolved it / why is it being closed? (optional — leave empty to move without a note)"></textarea>
+    <div class="resactions">
+      <button id="resCancel" class="ghost">Cancel move</button>
+      <button id="resSkip" class="ghost">Move, no note</button>
+      <button id="resSave" class="ghost primary">Save note & move</button>
+    </div>
+  </div>
+</div>
 <script nonce="${n}">${SCRIPT}</script>
 </body></html>`;
   }
@@ -226,6 +251,24 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .syncpill.syncing{border-color:var(--vscode-focusBorder)}
 .syncpill.warn{border-color:#d16969;color:#e6a4a4}
 .syncpill.active{box-shadow:0 0 0 1px var(--vscode-focusBorder) inset}
+#resmodal{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)}
+#resmodal.hidden{display:none!important}
+.resbox{background:var(--vscode-editorWidget-background,var(--vscode-editor-background));border:1px solid var(--vscode-widget-border);border-radius:10px;width:min(560px,92vw);max-height:80vh;display:flex;flex-direction:column;padding:16px 18px;box-shadow:0 10px 40px rgba(0,0,0,.4)}
+.reshead{display:flex;align-items:flex-start;gap:8px}
+.reshead span{font-size:14px;font-weight:600;flex:1;line-height:1.3}
+.ressub{font-size:12px;opacity:.7;margin:4px 0 10px}
+#resNote{width:100%;min-height:160px;resize:vertical;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:9px 10px;font-family:var(--vscode-editor-font-family);font-size:13px;line-height:1.5}
+.resactions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+.resactions .primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:var(--vscode-button-background)}
+#social{padding:16px;overflow-y:auto}
+.socialdrop{border:1px dashed var(--vscode-widget-border);border-radius:8px;padding:10px;text-align:center;font-size:12px;opacity:.6;margin-bottom:12px}
+.socialdrop.over{border-color:var(--vscode-focusBorder);background:var(--vscode-list-hoverBackground);opacity:1}
+.sociallist{display:flex;flex-direction:column;gap:8px;max-width:760px}
+.socialcard{background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px 12px}
+.socialcard .sh{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.socialcard .ct{font-weight:600;font-size:13px}
+.socialcard .cm{display:flex;gap:6px;opacity:.7;font-size:11px;flex:none}
+.sacts{display:flex;gap:6px;margin-top:8px}
 .seg{display:inline-flex;border:1px solid var(--vscode-widget-border);border-radius:7px;overflow:hidden}
 .seg button{background:transparent;color:var(--vscode-foreground);border:0;padding:4px 11px;cursor:pointer;font-size:12px}
 .seg button.on{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
@@ -416,7 +459,7 @@ $('#viewSeg').addEventListener('click',e=>{const b=e.target.closest('button');if
 $('#laneSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;laneSet=b.dataset.lane;syncSeg();renderBoard();});
 $('#calModeSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;calMode=b.dataset.cm;syncSeg();renderCalendar();});
 $('#refreshBtn').addEventListener('click',()=>vscode.postMessage({type:'refresh'}));
-$('#captureBtn').addEventListener('click',()=>vscode.postMessage({type:'action',action:'capture'}));
+$('#captureBtn').addEventListener('click',()=>openCreateDrawer({}));
 $('#syncBtn').addEventListener('click',()=>vscode.postMessage({type:'action',action:'runSync'}));
 let searchTerm='', maxLane=null;
 function applySearch(){const q=searchTerm.toLowerCase();
@@ -442,6 +485,7 @@ function syncSeg(){
   $('#calModeSeg').style.display = view==='calendar'?'inline-flex':'none';
   $('#board').classList.toggle('hidden',view!=='board');
   $('#projects').classList.toggle('hidden',view!=='projects');
+  $('#social').classList.toggle('hidden',view!=='social');
   $('#calendar').classList.toggle('hidden',view!=='calendar');
   $('#graph').classList.toggle('hidden',view!=='graph');
   $('#gfilters').classList.toggle('hidden',view!=='graph');
@@ -449,14 +493,37 @@ function syncSeg(){
 }
 function render(){ if(!S){return;} syncSeg();
   $('#counts').textContent = Object.entries(S.counts||{}).map(([k,v])=>k+':'+v).join('  ');
-  if(view==='board')renderBoard(); else if(view==='projects')renderProjects(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
+  if(view==='board')renderBoard(); else if(view==='projects')renderProjects(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
   applySearch();
 }
 const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
 
 // closing statuses prompt for a resolution note (host shows the InputBox; Esc aborts)
 const CLOSING=new Set(['done','deferred','outdated','parked','archived']);
-function postStatus(id,status){ vscode.postMessage(CLOSING.has(status)?{type:'action',action:'setStatusNote',id:id,status:status}:{type:'setStatus',id:id,status:status}); }
+function postStatus(id,status){ if(CLOSING.has(status))openResModal(id,status); else vscode.postMessage({type:'setStatus',id:id,status:status}); }
+// Multi-line resolution note modal for closing moves (nicer than a one-line input).
+let resCtx=null;
+function openResModal(id,status){
+  resCtx={id:id,status:status};
+  const o=(S&&S.objects||[]).find(x=>x.id===id);
+  $('#resTitle').textContent=(o&&(o.title||o.id))||id;
+  $('#resSub').textContent='Moving to “'+status+'” — add a resolution note (optional).';
+  const ta=$('#resNote'); ta.value='';
+  $('#resmodal').classList.remove('hidden');
+  setTimeout(()=>ta.focus(),40);
+}
+function closeResModal(apply,withNote){
+  const m=$('#resmodal'); if(m.classList.contains('hidden'))return;
+  const ctx=resCtx; m.classList.add('hidden'); resCtx=null;
+  if(!ctx)return;
+  if(apply)vscode.postMessage({type:'setStatusApply',id:ctx.id,status:ctx.status,note:withNote?$('#resNote').value.trim():''});
+  else vscode.postMessage({type:'refresh'}); // cancel → snap the board back
+}
+$('#resSave').addEventListener('click',()=>closeResModal(true,true));
+$('#resSkip').addEventListener('click',()=>closeResModal(true,false));
+$('#resCancel').addEventListener('click',()=>closeResModal(false));
+$('#resX').addEventListener('click',()=>closeResModal(false));
+$('#resNote').addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();closeResModal(true,true);} if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeResModal(false);} });
 function laneFieldAndList(objs){
   if(groupBy==='status') return {field:'status', lanes:(LANES[laneSet]||[...new Set(objs.map(o=>o.status||'inbox'))])};
   if(groupBy==='type') return {field:'type', lanes:BOARD_TYPES.slice()};
@@ -600,6 +667,33 @@ function renderProjects(){
   });
   if(!wrap.children.length)wrap.appendChild(el('div',null,'<span style="opacity:.6">No projects yet — create type:project objects in the store, or assign items a Project in the drawer.</span>'));
 }
+// ── social: ideas/tasks flagged (lane==='social') to polish into a post ──
+const SOCIAL_LANE='social';
+function isSocial(o){ return String(o.lane||'')===SOCIAL_LANE; }
+function renderSocial(){
+  const el2=$('#social'); el2.innerHTML='';
+  const rows=(S.objects||[]).filter(o=>(o.type==='idea'||o.type==='task'||o.type==='thought')&&isSocial(o));
+  const bar=el('div',null,'<div style="font-size:13px;font-weight:600;margin-bottom:2px">✨ Polish → social media post</div><div style="opacity:.65;font-size:12px;margin-bottom:12px">Ideas / tasks / thoughts flagged for social. Flag any item from its drawer ("Mark for social"), or drag a card here. "Polish in Code Build" drafts a post from the item.</div>');
+  el2.appendChild(bar);
+  const drop=el('div','socialdrop'); drop.textContent='＋ drop a card here to flag it for social';
+  drop.addEventListener('dragover',ev=>{ev.preventDefault();drop.classList.add('over');});
+  drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
+  drop.addEventListener('drop',ev=>{ev.preventDefault();drop.classList.remove('over');const id=ev.dataTransfer.getData('text/plain');if(id)vscode.postMessage({type:'action',action:'toggleSocial',id:id,on:true});});
+  el2.appendChild(drop);
+  if(!rows.length){ el2.appendChild(el('div',null,'<div style="opacity:.55;padding:14px 2px">Nothing flagged yet.</div>')); return; }
+  const list=el('div','sociallist');
+  rows.forEach(o=>{
+    const c=el('div','socialcard');
+    c.innerHTML='<div class="sh"><span class="ct">'+esc(o.title||o.id)+'</span><span class="cm"><span class="badge">'+o.type+'</span>'+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.status?'<span>'+esc(o.status)+'</span>':'')+'</span></div>';
+    const acts=el('div','sacts');
+    const polish=el('button','ghost mini','✨ Polish in Code Build'); polish.addEventListener('click',()=>vscode.postMessage({type:'action',action:'polishSocial',id:o.id}));
+    const open=el('button','ghost mini','Open'); open.addEventListener('click',()=>openDetail(o.id));
+    const unflag=el('button','ghost mini','Unflag'); unflag.addEventListener('click',()=>vscode.postMessage({type:'action',action:'toggleSocial',id:o.id,on:false}));
+    acts.appendChild(polish); acts.appendChild(open); acts.appendChild(unflag);
+    c.appendChild(acts); list.appendChild(c);
+  });
+  el2.appendChild(list);
+}
 function todayStr(){return (S&&S.board&&S.board.date)||new Date().toISOString().slice(0,10);}
 let calFrom=null, calTo=null, calMode='month', calAnchor=null;
 let boardDateField='updated', boardDateVal='';
@@ -647,7 +741,7 @@ function renderCalendar(){
       const due=by[d]||[];
       due.slice(0,3).forEach(o=>cell.appendChild(dueItem(o,'mi')));
       if(due.length>3)cell.appendChild(el('div','mi','+'+(due.length-3)+' more…'));
-      cell.addEventListener('click',ev=>{ if(ev.target.closest('.mi'))return; vscode.postMessage({type:'action',action:'createOnDay',due:d}); });
+      cell.addEventListener('click',ev=>{ if(ev.target.closest('.mi'))return; openCreateDrawer({due:d}); });
       cell.querySelector('.d').addEventListener('click',ev=>{ev.stopPropagation();calMode='list';calFrom=d;calTo=d;renderCalendar();});
       cell.querySelector('.d').style.cursor='pointer';cell.querySelector('.d').title='open day list';
       calDrop(cell,d);
@@ -668,7 +762,7 @@ function renderCalendar(){
       h.addEventListener('click',()=>{calMode='list';calFrom=d;calTo=d;renderCalendar();});
       col.appendChild(h);
       (by[d]||[]).forEach(o=>col.appendChild(dueItem(o,'witem')));
-      col.addEventListener('click',ev=>{ if(ev.target.closest('.witem')||ev.target.closest('h4'))return; vscode.postMessage({type:'action',action:'createOnDay',due:d}); });
+      col.addEventListener('click',ev=>{ if(ev.target.closest('.witem')||ev.target.closest('h4'))return; openCreateDrawer({due:d}); });
       col.style.cursor='pointer';col.title='click empty space to add a task due this day';
       calDrop(col,d);
       grid.appendChild(col);
@@ -765,6 +859,49 @@ function renderCanvas(){ $('#canvas').innerHTML='<div style="font-size:40px">✎
 let flushAutosave=null;
 function openDetail(id){ vscode.postMessage({type:'show',id:id}); $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden'); $('#drawerInner').innerHTML='<div style="opacity:.6">Loading '+esc(id)+'…</div>'; }
 function closeDrawer(){ if(flushAutosave){try{flushAutosave();}catch(e){}} flushAutosave=null; $('#drawer').classList.add('hidden'); $('#backdrop').classList.add('hidden'); }
+function domainOptions(){ const s=new Set(); ((S&&S.objects)||[]).forEach(x=>{ if(x.type==='domain')s.add(String(x.title||x.id.split('/').pop())); else if(x.domain)s.add(String(x.domain)); }); return [...s].sort(); }
+function projectOptions(){ return ((S&&S.objects)||[]).filter(x=>x.type==='project').map(x=>({id:x.id,title:x.title||x.id.split('/').pop()})).sort((a,b)=>a.title.localeCompare(b.title)); }
+// New-item editor rendered in the side drawer — all fields editable before it's
+// created (replaces the cramped one-line top-bar input).
+function openCreateDrawer(prefill){
+  flushAutosave=null;
+  prefill=prefill||{};
+  $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden');
+  const I=$('#drawerInner'); I.innerHTML='';
+  const head=el('div','dh'); head.appendChild(el('h2',null,'New item')); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
+  const STAT={task:['inbox','today','in_progress','done','deferred','outdated'],idea:['capture','refine','accepted','parked','done'],plan:['plan','prototype','implement','validate','done','parked'],thought:['new','kept','converted','archived']};
+  const DEF={task:'inbox',idea:'capture',plan:'plan',thought:'new'};
+  let type=prefill.type||'task';
+  const row=(label,node)=>{const r=el('div','statusrow'); r.appendChild(el('span',null,label)); r.appendChild(node); I.appendChild(r); return r;};
+  // Type
+  const tSel=el('select'); ['task','idea','plan','thought'].forEach(t=>{const o=el('option',null,t);o.value=t;if(t===type)o.selected=true;tSel.appendChild(o);}); row('Type:',tSel);
+  // Title
+  const title=el('input','fldEdit'); title.style.width='100%'; title.placeholder='What needs doing?'; title.value=prefill.title||''; row('Title:',title); title.parentElement.style.flexWrap='wrap';
+  // Status
+  const sSel=el('select'); const fillStatus=()=>{sSel.innerHTML=''; (STAT[type]||STAT.task).forEach(s=>{const o=el('option',null,s);o.value=s;if(s===(prefill.status||DEF[type]))o.selected=true;sSel.appendChild(o);});}; fillStatus(); row('Status:',sSel);
+  // Category/domain with datalist
+  const dl=el('datalist'); dl.id='newDomList'; domainOptions().forEach(d=>{const o=el('option');o.value=d;dl.appendChild(o);}); I.appendChild(dl);
+  const dom=el('input','fldEdit'); dom.setAttribute('list','newDomList'); dom.placeholder='kids / tech / career…'; dom.value=prefill.domain||''; row('Category:',dom);
+  // Lane
+  const lane=el('input','fldEdit'); lane.placeholder='(optional)'; lane.value=prefill.lane||''; row('Lane:',lane);
+  // Project
+  const pSel=el('select'); const pn=el('option',null,'(none)'); pn.value=''; pSel.appendChild(pn); projectOptions().forEach(p=>{const o=el('option',null,p.title);o.value=p.id;if(p.id===prefill.project)o.selected=true;pSel.appendChild(o);}); row('Project:',pSel);
+  // Due + priority
+  const due=el('input','fldEdit'); due.type='date'; due.value=prefill.due||''; const prio=el('select'); ['-','p0','p1','p2','p3'].forEach(p=>{const o=el('option',null,p);o.value=p;pSel;prio.appendChild(o);}); const dpr=el('div','statusrow'); dpr.appendChild(el('span',null,'Due:')); dpr.appendChild(due); dpr.appendChild(el('span',null,'Priority:')); dpr.appendChild(prio); I.appendChild(dpr);
+  // Body
+  { const s=el('div','sec'); s.appendChild(el('h4',null,'Notes / details')); const ta=el('textarea','bodyEdit'); ta.id='newBody'; ta.placeholder='Markdown details…'; ta.value=prefill.body||''; s.appendChild(ta); I.appendChild(s); }
+  tSel.addEventListener('change',()=>{type=tSel.value;fillStatus();});
+  // actions
+  const act=el('div','actions'); act.style.marginTop='14px';
+  const create=el('button','act primary','Create'); const cancel=el('button','act','Cancel');
+  act.appendChild(create); act.appendChild(cancel); I.appendChild(act);
+  cancel.addEventListener('click',closeDrawer);
+  const submit=()=>{ const t=title.value.trim(); if(!t){title.focus();return;}
+    vscode.postMessage({type:'action',action:'createItem',fields:{type:type,title:t,status:sSel.value,domain:dom.value.trim(),lane:lane.value.trim(),project:pSel.value,due:due.value,priority:prio.value==='-'?'':prio.value,body:$('#newBody').value}}); };
+  create.addEventListener('click',submit);
+  title.addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();submit();} });
+  setTimeout(()=>title.focus(),50);
+}
 function mdLite(s){ return esc(s).replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h2>$1</h2>').replace(/\\*\\*(.+?)\\*\\*/g,'<b>$1</b>').replace(/\`([^\`]+)\`/g,'<code>$1</code>'); }
 function refRow(r,bad,onclick){ const d=el('div','refitem'+(bad?' bad':'')); d.innerHTML=esc(r.title||r.id||r.path); if(r.status)d.innerHTML+=' <span class="badge">'+esc(r.status)+'</span>'; if(onclick)d.addEventListener('click',onclick); return d; }
 function renderDrawer(o){
@@ -826,6 +963,13 @@ function renderDrawer(o){
   grid3.appendChild(mk('Recategorize','type / domain / lane','recategorize'));
   if(o.type==='idea'){ grid3.appendChild(mk('Promote → plan','create a plan','promote')); grid3.appendChild(mk('Move → task','convert to task','moveToTask')); }
   if(o.type==='thought'){ grid3.appendChild(mk('Convert → idea','promote this thought','convertToIdea')); grid3.appendChild(mk('Convert → task','make it actionable','convertToTask')); }
+  if(o.type==='idea'||o.type==='task'||o.type==='thought'){
+    const soc=String((o.frontmatter&&o.frontmatter.lane)||o.lane||'')==='social';
+    const b=el('button','act','<span class="k">'+(soc?'★ Unmark social':'✨ Mark for social')+'</span><span class="d">'+(soc?'flagged to polish':'polish → social post')+'</span>');
+    b.addEventListener('click',()=>vscode.postMessage({type:'action',action:'toggleSocial',id:o.id,on:!soc}));
+    grid3.appendChild(b);
+    grid3.appendChild(mk('Polish → social post','draft in Code Build','polishSocial'));
+  }
   grid3.appendChild(mk('Delete','remove item','deleteItem'));
   act.appendChild(grid3); I.appendChild(act);
   // body

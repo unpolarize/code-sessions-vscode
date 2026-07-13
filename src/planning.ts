@@ -618,10 +618,21 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     [...((d?.cites || []) as any[]).map((c) => c.path || c.id), ...((d?.kb_paths || []) as string[])].filter(Boolean);
 
   // Copy a seed prompt to the clipboard and open a real Code Build chat (no terminals).
+  // Code Build activates lazily (only on its own webview/view), so its command isn't
+  // registered until then — activate the extension by id first, otherwise the check
+  // wrongly reports "not installed".
   const runInCB = async (seed: string, label: string) => {
     await vscode.env.clipboard.writeText(seed);
+    const ext = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
+    if (ext && !ext.isActive) {
+      try {
+        await ext.activate();
+      } catch (e) {
+        log?.appendLine(`[planning] Code Build activate failed: ${String(e)}`);
+      }
+    }
     const cmds = await vscode.commands.getCommands(true);
-    if (cmds.includes("codeBuild.newConversation")) {
+    if (ext || cmds.includes("codeBuild.newConversation")) {
       await vscode.commands.executeCommand("codeBuild.newConversation");
       void vscode.window.showInformationMessage(`Code Build opened (${label}) — prompt copied; paste into the composer to review & send.`);
     } else {
@@ -672,30 +683,41 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     model.reload(log);
   };
 
-  // Guided create — a task/idea/plan via a short QuickPick+InputBox flow (the
-  // dashboard's editing idiom), optionally pre-dated when launched from a
-  // calendar day. Replaces the old bare "capture a string" input.
-  const createItem = async (prefill: { due?: string; type?: string }) => {
-    const type =
-      prefill.type ??
-      (await vscode.window.showQuickPick(["task", "idea", "plan", "thought"], {
-        placeHolder: "New… (type)",
-      }));
-    if (!type) return;
-    const title = await vscode.window.showInputBox({
-      prompt: prefill.due ? `New ${type} due ${prefill.due} — title` : `New ${type} — title`,
-      placeHolder: "What needs doing?",
-    });
-    if (!title || !title.trim()) return;
-    const args = ["create", title.trim(), "--type", type];
-    if (prefill.due) args.push("--due", prefill.due);
+  // Create an item from the drawer's new-item editor (all fields at once).
+  // The dashboard collects everything; here we run `kp create` for the fields it
+  // supports, then follow-ups for lane/project/body, and open the result.
+  const createItemFromFields = (f: {
+    type?: string;
+    title?: string;
+    status?: string;
+    domain?: string;
+    lane?: string;
+    project?: string;
+    due?: string;
+    priority?: string;
+    body?: string;
+  }): void => {
+    const title = (f.title ?? "").trim();
+    if (!title) return;
+    const type = f.type || "task";
+    const args = ["create", title, "--type", type];
+    if (f.status) args.push("--status", f.status);
+    if (f.domain) args.push("--domain", f.domain);
+    if (f.priority) args.push("--priority", f.priority);
+    if (f.due && /^\d{4}-\d{2}-\d{2}$/.test(f.due)) args.push("--due", f.due);
     const r = runKp(args);
     if (!r.ok) {
       void vscode.window.showWarningMessage(`create failed: ${r.stderr}`);
       return;
     }
+    const newId = /created\s+(\S+)/.exec(r.stdout)?.[1];
+    if (newId) {
+      if (f.lane) runKp(["edit", newId, "--lane", f.lane]);
+      if (f.project) runKp(["set-project", newId, f.project]);
+      if (f.body && f.body.trim()) runKp(["edit", newId, "--body", "-"], f.body);
+    }
     model.reload(log);
-    void vscode.window.showInformationMessage(r.stdout.trim());
+    if (newId) DashboardPanel.current?.post({ type: "openItem", id: newId });
   };
 
   const recategorizeItem = async (id: string) => {
@@ -777,11 +799,8 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     if (msg.type !== "action") return;
     const id = msg.id as string;
     switch (msg.action) {
-      case "capture":
-        void createItem({});
-        break;
-      case "createOnDay":
-        void createItem({ due: String(msg.due || "") || undefined });
+      case "createItem":
+        createItemFromFields((msg.fields as Record<string, string>) || {});
         break;
       case "openFile":
         dashAction({ type: "open", id });
@@ -792,34 +811,34 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         model.reload(log);
         break;
       }
-      // Closing a task deserves a word on WHY: prompt for a resolution note,
-      // saved into the body as '## Resolution (<status> — <date>)'. Esc aborts.
-      case "setStatusNote": {
-        void (async () => {
-          const status = String(msg.status);
-          const note = await vscode.window.showInputBox({
-            title: `${id} → ${status}`,
-            prompt: "Resolution / notes (Enter = move without a note, Esc = cancel the move)",
-            placeHolder: `What resolved it / why ${status}?`,
-          });
-          if (note === undefined) {
-            model.reload(log); // nothing changed — re-push the snapshot so the board snaps back
-            return;
+      case "toggleSocial": {
+        // flag/unflag an item to polish into a social post (stored in the lane field)
+        runKp(["edit", id, "--lane", msg.on ? "social" : ""]);
+        model.reload(log);
+        const det = runKp(["show", id]);
+        if (det.ok) {
+          try {
+            DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) });
+          } catch {
+            /* best-effort */
           }
-          const args = ["set-status", id, status];
-          if (note.trim()) args.push("--note", note.trim());
-          const r = runKp(args);
-          if (!r.ok) void vscode.window.showWarningMessage(`set-status failed: ${r.stderr}`);
-          model.reload(log);
-          const det = runKp(["show", id]);
-          if (det.ok) {
-            try {
-              DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) });
-            } catch {
-              /* drawer refresh is best-effort */
-            }
-          }
-        })();
+        }
+        break;
+      }
+      case "polishSocial": {
+        const d = detailOf(id);
+        if (!d) {
+          void vscode.window.showWarningMessage(`Planning: could not load ${id}`);
+          break;
+        }
+        const prompt =
+          `Polish the following ${d.type} into a short, engaging social-media post (LinkedIn/X). ` +
+          `Keep it authentic and specific; 1–3 tight paragraphs, optional 3–5 hashtags. ` +
+          `Offer 2 variants (a concise one and a slightly longer one). Do not invent facts beyond what's given.\n\n` +
+          `Title: ${d.title}\n` +
+          (d.domain ? `Domain: ${d.domain}\n` : "") +
+          `\n${(d.body || "").trim() || "(no additional notes)"}\n`;
+        void runInCB(prompt, "polish→social");
         break;
       }
       case "convertToIdea":

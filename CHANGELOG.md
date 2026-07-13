@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.19.0 — 2026-07-13
+
+### Drawer-based create + resolution editor, Social column, Code Build fix
+
+- **"＋ New" opens a full editor in the side drawer** (type, title, status, category, lane, project, due, priority, body) instead of the one-line top-bar input; clicking a calendar day opens it pre-dated. Creates via `kp create` + follow-ups, then opens the new item.
+- **Resolution note on closing moves is now a multi-line modal** (Save note & move / Move, no note / Cancel move; ⌘↵ saves, Esc cancels) instead of the cramped one-line input.
+- **✨ Social view** — a dedicated column of ideas/tasks/thoughts flagged to polish into a social-media post. Flag from the drawer ("Mark for social") or drag a card onto the drop zone; "Polish in Code Build" drafts a post (2 variants) from the item. Flag is stored in the `lane` field (`social`).
+- **Fix: "Run in Code Build" reliably launches** — Code Build activates lazily, so its command wasn't registered until first use; the dashboard now activates the extension by id first (pairs with code-build-vscode 0.9.9, which also activates `onCommand`).
+
+MINOR.
+
 ## 1.18.0 — 2026-07-12
 
 ### Store-sync status + activity-driven polling
