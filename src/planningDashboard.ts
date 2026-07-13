@@ -16,6 +16,8 @@ export interface DashboardDeps {
   runKp: (args: string[]) => { ok: boolean; stdout: string; stderr: string };
   /** delegate open-file / agent actions to the host (needs vscode + terminals) */
   onAction: (msg: { type: string; [k: string]: unknown }) => void;
+  /** rich session list from the ~/.sessions git store, for the Sessions view */
+  listSessions?: () => unknown[];
   /** the user is interacting with the board — arm aggressive store polling */
   noteActivity?: () => void;
   /** current store-sync status for the header indicator */
@@ -85,6 +87,9 @@ export class DashboardPanel {
         break;
       case "activity":
         this.deps.noteActivity?.();
+        break;
+      case "requestSessions":
+        this.post({ type: "sessions", data: this.deps.listSessions?.() ?? [] });
         break;
       case "syncNow":
         void vscode.commands.executeCommand("codeSessions.syncStoresNow");
@@ -166,6 +171,7 @@ export class DashboardPanel {
   <div class="seg" id="viewSeg">
     <button data-view="board" class="on">Board</button>
     <button data-view="projects">Projects</button>
+    <button data-view="sessions">Sessions</button>
     <button data-view="social">✨ Social</button>
     <button data-view="calendar">Calendar</button>
     <button data-view="graph">Graph</button>
@@ -211,6 +217,7 @@ export class DashboardPanel {
 <div id="main">
   <div id="board" class="view"></div>
   <div id="projects" class="view hidden"></div>
+  <div id="sessions" class="view hidden"></div>
   <div id="social" class="view hidden"></div>
   <div id="calendar" class="view hidden"></div>
   <svg id="graph" class="view hidden"></svg>
@@ -260,6 +267,18 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 #resNote{width:100%;min-height:160px;resize:vertical;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:9px 10px;font-family:var(--vscode-editor-font-family);font-size:13px;line-height:1.5}
 .resactions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
 .resactions .primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:var(--vscode-button-background)}
+#sessions{padding:16px;overflow-y:auto}
+.sessbar{display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.sesssearch{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:4px 9px;width:220px}
+.sesscount{font-size:11px;opacity:.6;margin-bottom:10px}
+.sesslist{display:flex;flex-direction:column;gap:8px;max-width:820px}
+.sesscard{background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px 12px;cursor:pointer}
+.sesscard:hover{border-color:var(--vscode-focusBorder)}
+.sesscard .sh{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.sesscard .ct{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sesscard .cm{opacity:.6;font-size:11px;flex:none}
+.sesscard .sm{display:flex;gap:8px;opacity:.7;font-size:11px;margin-top:5px;flex-wrap:wrap}
+.srefs{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
 #social{padding:16px;overflow-y:auto}
 .socialdrop{border:1px dashed var(--vscode-widget-border);border-radius:8px;padding:10px;text-align:center;font-size:12px;opacity:.6;margin-bottom:12px}
 .socialdrop.over{border-color:var(--vscode-focusBorder);background:var(--vscode-list-hoverBackground);opacity:1}
@@ -432,6 +451,7 @@ window.addEventListener('message',e=>{const m=e.data;
   else if(m.type==='laneAdded'){ if(groupBy!=='lane'){groupBy='lane';const gb=$('#groupBy');if(gb)gb.value='lane';} if(m.name&&!customLanes.includes(m.name))customLanes.push(m.name); saveState(); renderBoard(); }
   else if(m.type==='openItem'){ view='board'; syncSeg(); render(); if(m.id)openDetail(m.id); }
   else if(m.type==='syncStatus'){ renderSyncPill(m.data); }
+  else if(m.type==='sessions'){ SESS=m.data||[]; if(view==='sessions')renderSessions(); }
 });
 
 // ── store-sync status pill + activity reporting ──────────────────────────────
@@ -485,6 +505,7 @@ function syncSeg(){
   $('#calModeSeg').style.display = view==='calendar'?'inline-flex':'none';
   $('#board').classList.toggle('hidden',view!=='board');
   $('#projects').classList.toggle('hidden',view!=='projects');
+  $('#sessions').classList.toggle('hidden',view!=='sessions');
   $('#social').classList.toggle('hidden',view!=='social');
   $('#calendar').classList.toggle('hidden',view!=='calendar');
   $('#graph').classList.toggle('hidden',view!=='graph');
@@ -493,7 +514,7 @@ function syncSeg(){
 }
 function render(){ if(!S){return;} syncSeg();
   $('#counts').textContent = Object.entries(S.counts||{}).map(([k,v])=>k+':'+v).join('  ');
-  if(view==='board')renderBoard(); else if(view==='projects')renderProjects(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
+  if(view==='board')renderBoard(); else if(view==='projects')renderProjects(); else if(view==='sessions')renderSessions(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
   applySearch();
 }
 const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
@@ -666,6 +687,60 @@ function renderProjects(){
     wrap.appendChild(card);
   });
   if(!wrap.children.length)wrap.appendChild(el('div',null,'<span style="opacity:.6">No projects yet — create type:project objects in the store, or assign items a Project in the drawer.</span>'));
+}
+// ── sessions view: CS git-store sessions with time filters + link-to-task ──
+let SESS=null, sessFilter='week', sessSearch='';
+function dayStart(offset){ const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()+(offset||0)); return d.getTime(); }
+function sessInWindow(s){
+  const t=s.startedAt||s.mtime||0;
+  if(sessFilter==='all')return true;
+  if(sessFilter==='today')return t>=dayStart(0);
+  if(sessFilter==='yesterday')return t>=dayStart(-1)&&t<dayStart(0);
+  if(sessFilter==='week')return t>=dayStart(-6);
+  return true;
+}
+function titleForId(id){ const o=(S&&S.objects||[]).find(x=>x.id===id); return o?(o.title||o.id):id; }
+function fmtWhen(t){ if(!t)return ''; const d=new Date(t); const today=dayStart(0);
+  const hm=d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  if(t>=today)return 'today '+hm; if(t>=dayStart(-1))return 'yst '+hm;
+  return d.toLocaleDateString([], {month:'short',day:'numeric'})+' '+hm; }
+function renderSessions(){
+  const el2=$('#sessions'); el2.innerHTML='';
+  if(SESS===null){ el2.innerHTML='<div style="opacity:.6;padding:16px">Loading sessions…</div>'; vscode.postMessage({type:'requestSessions'}); return; }
+  const bar=el('div','sessbar');
+  const seg=el('div','seg');
+  [['today','Today'],['yesterday','Yesterday'],['week','Last week'],['all','All']].forEach(([k,lbl])=>{
+    const b=el('button',sessFilter===k?'on':null,lbl); b.addEventListener('click',()=>{sessFilter=k;renderSessions();}); seg.appendChild(b);
+  });
+  bar.appendChild(seg);
+  const srch=el('input'); srch.placeholder='Search sessions…'; srch.value=sessSearch; srch.className='sesssearch';
+  srch.addEventListener('input',e=>{sessSearch=e.target.value;renderSessions();});
+  bar.appendChild(srch);
+  const reload=el('button','ghost mini','⟳'); reload.title='reload sessions'; reload.addEventListener('click',()=>{SESS=null;vscode.postMessage({type:'requestSessions'});renderSessions();}); bar.appendChild(reload);
+  el2.appendChild(bar);
+  const q=sessSearch.toLowerCase();
+  let rows=SESS.filter(sessInWindow).filter(s=>!q||((s.title||'')+' '+(s.project||'')+' '+(s.agent||'')).toLowerCase().includes(q));
+  const cnt=el('div','sesscount',rows.length+' session(s) · '+sessFilter); el2.appendChild(cnt);
+  if(!rows.length){ el2.appendChild(el('div',null,'<div style="opacity:.55;padding:14px 2px">No sessions in this window.</div>')); return; }
+  const list=el('div','sesslist');
+  rows.slice(0,300).forEach(s=>{
+    const c=el('div','sesscard');
+    const src=s.source==='grok'?'[G]':s.source==='git'?'[S]':'[C]';
+    const refs=(s.planningRefs||[]).map(id=>'<span class="badge" title="linked">↔ '+esc(titleForId(id))+'</span>').join('');
+    c.innerHTML='<div class="sh"><span class="ct">'+esc(s.title||s.uuid)+'</span><span class="cm">'+fmtWhen(s.startedAt||s.mtime)+'</span></div>'+
+      '<div class="sm"><span class="badge">'+src+' '+esc(s.agent||'')+'</span>'+(s.project?'<span>'+esc(s.project)+'</span>':'')+(s.turns?'<span>'+s.turns+'t</span>':'')+'</div>'+
+      (refs?'<div class="srefs">'+refs+'</div>':'');
+    const acts=el('div','sacts');
+    const open=el('button','ghost mini','Open'); open.title='view transcript'; open.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openSession',uuid:s.uuid,title:s.title}));
+    const resume=el('button','ghost mini','Resume ▸'); resume.title='resume in Code Build'; resume.addEventListener('click',()=>vscode.postMessage({type:'action',action:'resumeSession',uuid:s.uuid,cwd:s.projectPath,source:s.source,title:s.title}));
+    const link=el('button','ghost mini','Link to task'); link.addEventListener('click',()=>vscode.postMessage({type:'action',action:'linkSessionToTask',uuid:s.uuid}));
+    acts.appendChild(open); acts.appendChild(resume); acts.appendChild(link);
+    if((s.planningRefs||[]).length){ const g=el('button','ghost mini','→ planning'); g.addEventListener('click',()=>openDetail(s.planningRefs[0])); acts.appendChild(g); }
+    c.appendChild(acts);
+    c.addEventListener('click',ev=>{ if(ev.target.closest('button'))return; vscode.postMessage({type:'action',action:'openSession',uuid:s.uuid,title:s.title}); });
+    list.appendChild(c);
+  });
+  el2.appendChild(list);
 }
 // ── social: ideas/tasks flagged (lane==='social') to polish into a post ──
 const SOCIAL_LANE='social';
@@ -870,7 +945,8 @@ function openCreateDrawer(prefill){
   const I=$('#drawerInner'); I.innerHTML='';
   const head=el('div','dh'); head.appendChild(el('h2',null,'New item')); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
   const STAT={task:['inbox','today','in_progress','done','deferred','outdated'],idea:['capture','refine','accepted','parked','done'],plan:['plan','prototype','implement','validate','done','parked'],thought:['new','kept','converted','archived']};
-  const DEF={task:'inbox',idea:'capture',plan:'plan',thought:'new'};
+  // tasks default to 'today' (new items are things to do now); ideas/plans/thoughts keep theirs
+  const DEF={task:'today',idea:'capture',plan:'plan',thought:'new'};
   let type=prefill.type||'task';
   const row=(label,node)=>{const r=el('div','statusrow'); r.appendChild(el('span',null,label)); r.appendChild(node); I.appendChild(r); return r;};
   // Type
@@ -887,7 +963,7 @@ function openCreateDrawer(prefill){
   // Project
   const pSel=el('select'); const pn=el('option',null,'(none)'); pn.value=''; pSel.appendChild(pn); projectOptions().forEach(p=>{const o=el('option',null,p.title);o.value=p.id;if(p.id===prefill.project)o.selected=true;pSel.appendChild(o);}); row('Project:',pSel);
   // Due + priority
-  const due=el('input','fldEdit'); due.type='date'; due.value=prefill.due||''; const prio=el('select'); ['-','p0','p1','p2','p3'].forEach(p=>{const o=el('option',null,p);o.value=p;pSel;prio.appendChild(o);}); const dpr=el('div','statusrow'); dpr.appendChild(el('span',null,'Due:')); dpr.appendChild(due); dpr.appendChild(el('span',null,'Priority:')); dpr.appendChild(prio); I.appendChild(dpr);
+  const due=el('input','fldEdit'); due.type='date'; due.value=prefill.due||todayStr(); const prio=el('select'); ['-','p0','p1','p2','p3'].forEach(p=>{const o=el('option',null,p);o.value=p;prio.appendChild(o);}); const dpr=el('div','statusrow'); dpr.appendChild(el('span',null,'Due:')); dpr.appendChild(due); dpr.appendChild(el('span',null,'Priority:')); dpr.appendChild(prio); I.appendChild(dpr);
   // Body
   { const s=el('div','sec'); s.appendChild(el('h4',null,'Notes / details')); const ta=el('textarea','bodyEdit'); ta.id='newBody'; ta.placeholder='Markdown details…'; ta.value=prefill.body||''; s.appendChild(ta); I.appendChild(s); }
   tSel.addEventListener('change',()=>{type=tSel.value;fillStatus();});

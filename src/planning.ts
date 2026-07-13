@@ -15,8 +15,23 @@ import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
 import { syncBridge } from "./storeSync";
 
-/** Scan the git session store (~/.sessions) for a searchable session list. */
-function listStoreSessions(): { uuid: string; title?: string; agent?: string; mtime: number }[] {
+interface SessionInfo {
+  uuid: string;
+  title?: string;
+  agent?: string;
+  host?: string;
+  project?: string;
+  projectPath?: string;
+  source: "claude" | "grok" | "git";
+  startedAt: number; // epoch ms (started_at, else file mtime)
+  mtime: number;
+  turns?: number;
+  cost?: number;
+  planningRefs: string[];
+}
+
+/** Scan the git session store (~/.sessions) for a rich, searchable session list. */
+function listSessionsRich(): SessionInfo[] {
   const root = path.join(os.homedir(), ".sessions", "hosts");
   if (!existsSync(root)) return [];
   const ls = (p: string): string[] => {
@@ -26,7 +41,7 @@ function listStoreSessions(): { uuid: string; title?: string; agent?: string; mt
       return [];
     }
   };
-  const out: { uuid: string; title?: string; agent?: string; mtime: number }[] = [];
+  const out: SessionInfo[] = [];
   for (const host of ls(root))
     for (const month of ls(path.join(root, host)))
       for (const sid of ls(path.join(root, host, month))) {
@@ -34,12 +49,33 @@ function listStoreSessions(): { uuid: string; title?: string; agent?: string; mt
         if (!existsSync(f)) continue;
         try {
           const s = JSON.parse(readFileSync(f, "utf8"));
-          out.push({ uuid: s.session_id || sid, title: s.title, agent: s.agent, mtime: statSync(f).mtimeMs });
+          const agent: string = s.agent ?? "";
+          const source: "claude" | "grok" | "git" = /grok/i.test(agent) ? "grok" : /claude/i.test(agent) ? "claude" : "git";
+          const started = s.started_at ? Date.parse(s.started_at) : NaN;
+          out.push({
+            uuid: s.session_id || sid,
+            title: s.title,
+            agent,
+            host: s.host,
+            projectPath: s.project_path,
+            project: s.project_path ? path.basename(s.project_path) : undefined,
+            source,
+            startedAt: Number.isFinite(started) ? started : statSync(f).mtimeMs,
+            mtime: statSync(f).mtimeMs,
+            turns: s.turn_count,
+            cost: s.totals?.cost_usd,
+            planningRefs: Array.isArray(s.planning_refs) ? s.planning_refs : [],
+          });
         } catch {
           /* skip */
         }
       }
-  return out.sort((a, b) => b.mtime - a.mtime).slice(0, 300);
+  return out.sort((a, b) => b.startedAt - a.startedAt).slice(0, 500);
+}
+
+/** Back-compat thin list for codePlanning.linkSession's QuickPick. */
+function listStoreSessions(): { uuid: string; title?: string; agent?: string; mtime: number }[] {
+  return listSessionsRich().map((s) => ({ uuid: s.uuid, title: s.title, agent: s.agent, mtime: s.mtime }));
 }
 import { openCanvas } from "./planningCanvas";
 
@@ -870,8 +906,57 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         void openInCB(id);
         break;
       case "openSession":
-        void vscode.commands.executeCommand("codeSessions.showTrajectory", String(msg.uuid), id || String(msg.uuid));
+        void vscode.commands.executeCommand("codeSessions.showTrajectory", String(msg.uuid), String(msg.title || msg.uuid));
         break;
+      case "resumeSession": {
+        // resume the session in Code Build (openExternalSession if available)
+        void (async () => {
+          const ext = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
+          try {
+            if (ext && !ext.isActive) await ext.activate();
+            const cmds = await vscode.commands.getCommands(true);
+            if (ext && cmds.includes("codeBuild.openExternalSession") && msg.cwd) {
+              await vscode.commands.executeCommand("codeBuild.openExternalSession", {
+                source: String(msg.source || "claude"),
+                sessionId: String(msg.uuid),
+                cwd: String(msg.cwd),
+                title: msg.title ? String(msg.title) : undefined,
+              });
+            } else if (ext) {
+              await vscode.commands.executeCommand("codeBuild.newConversation");
+              void vscode.window.showInformationMessage("Code Build opened a new conversation (upgrade for external session import).");
+            } else {
+              void vscode.commands.executeCommand("codeSessions.showTrajectory", String(msg.uuid), String(msg.title || msg.uuid));
+            }
+          } catch (e) {
+            log?.appendLine(`[planning] resumeSession failed: ${String(e)}`);
+            void vscode.commands.executeCommand("codeSessions.showTrajectory", String(msg.uuid), String(msg.title || msg.uuid));
+          }
+        })();
+        break;
+      }
+      case "linkSessionToTask": {
+        // from a session, pick a planning item (searchable) and link it
+        void (async () => {
+          const uuid = String(msg.uuid);
+          const snap = model.get();
+          const items = (snap?.objects ?? []).filter((o: any) => ["task", "idea", "plan", "thought"].includes(o.type));
+          const pick = await vscode.window.showQuickPick(
+            items.map((o: any) => ({ label: o.title || o.id, description: `${o.type} · ${o.status ?? ""}`, id: o.id })),
+            { title: `Link session ${uuid.slice(0, 8)}… → planning`, placeHolder: "Search a task/idea/plan to link this session to", matchOnDescription: true },
+          );
+          if (!pick) return;
+          const r = runKp(["link-session", (pick as { id: string }).id, uuid]);
+          if (!r.ok) {
+            void vscode.window.showWarningMessage(`link failed: ${r.stderr}`);
+            return;
+          }
+          model.reload(log);
+          DashboardPanel.current?.post({ type: "sessions", data: listSessionsRich() });
+          void vscode.window.showInformationMessage(`Linked session → ${(pick as { id: string }).id}`);
+        })();
+        break;
+      }
       case "openCanvas": {
         const root = snap?.root || path.join(os.homedir(), "docs", "planning");
         openCanvas(ctx, root);
@@ -951,6 +1036,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     onChange: model.onDidChange.event,
     runKp: (args) => runKp(args),
     onAction: dashAction,
+    listSessions: () => listSessionsRich(),
     noteActivity: () => syncBridge()?.noteActivity(),
     getSyncStatus: () => syncBridge()?.getStatus(),
     onSyncStatus: (cb) => {

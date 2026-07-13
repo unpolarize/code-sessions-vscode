@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.20.0 — 2026-07-13
+
+### Sessions view + create defaults
+
+- **Sessions view** — a new top-level view listing Code Sessions from the `~/.sessions` git store, filtered by **Today / Yesterday / Last week / All**, with a search box (title/project/agent). Each session shows when it ran, project, agent, turn count, and any linked planning items. Click (or Open) to view the transcript; Resume ▸ opens it in Code Build; "Link to task" searches/selects a planning item and links it (`kp link-session`); "→ planning" jumps to a linked item.
+- **New items default to actionable** — the drawer create editor now defaults tasks to **today** status and pre-fills **Due = today** (still editable / pre-dated from a calendar day).
+
+MINOR.
+
 ## 1.19.0 — 2026-07-13
 
 ### Drawer-based create + resolution editor, Social column, Code Build fix
