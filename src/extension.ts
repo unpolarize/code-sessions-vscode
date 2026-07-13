@@ -12,7 +12,7 @@ import { SessionStore } from "./db";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
-import { StoreSyncManager } from "./storeSync";
+import { StoreSyncManager, setSyncBridge, type SyncStatus } from "./storeSync";
 import { classifySession } from "./topicClassifier";
 import { openAgentGraph } from "./agentGraph";
 import { openTrajectoryView } from "./trajectoryView";
@@ -2755,6 +2755,39 @@ export function activate(ctx: vscode.ExtensionContext) {
     },
   });
   ctx.subscriptions.push(storeSync.start(sessionsRoot));
+  setSyncBridge(storeSync);
+  ctx.subscriptions.push({ dispose: () => setSyncBridge(undefined) });
+
+  // Sync-status bar item: shows last-sync age + state; click to sync now.
+  const syncStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
+  syncStatusBar.command = "codeSessions.syncStoresNow";
+  ctx.subscriptions.push(syncStatusBar);
+  const renderSyncStatus = (s: SyncStatus) => {
+    const ago = (t: number): string => {
+      if (!t) return "never";
+      const sec = Math.round((Date.now() - t) / 1000);
+      if (sec < 60) return `${sec}s ago`;
+      if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+      return `${Math.round(sec / 3600)}h ago`;
+    };
+    const icon =
+      s.status === "syncing"
+        ? "$(sync~spin)"
+        : s.status === "conflict" || s.status === "error"
+          ? "$(warning)"
+          : s.status === "offline"
+            ? "$(cloud-offline)"
+            : "$(cloud)";
+    syncStatusBar.text = `${icon} ${s.status === "syncing" ? "syncing…" : ago(s.lastSyncAt)}${s.active ? " ⚡" : ""}`;
+    syncStatusBar.tooltip =
+      `Store sync — ${s.status}${s.detail ? `: ${s.detail}` : ""}\n` +
+      `Last: ${s.lastSyncAt ? new Date(s.lastSyncAt).toLocaleTimeString() : "never"}` +
+      `${s.lastChanged.length ? `\nUpdated: ${s.lastChanged.join(", ")}` : ""}` +
+      `${s.active ? "\n⚡ active — polling aggressively" : ""}\nClick to sync now.`;
+    syncStatusBar.show();
+  };
+  renderSyncStatus(storeSync.getStatus());
+  ctx.subscriptions.push(storeSync.onDidSync(renderSyncStatus));
   ctx.subscriptions.push(
     vscode.commands.registerCommand("codeSessions.syncStoresNow", () => storeSync.syncNow()),
   );

@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSy
 import * as os from "node:os";
 import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
+import { syncBridge } from "./storeSync";
 
 /** Scan the git session store (~/.sessions) for a searchable session list. */
 function listStoreSessions(): { uuid: string; title?: string; agent?: string; mtime: number }[] {
@@ -931,6 +932,12 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     onChange: model.onDidChange.event,
     runKp: (args) => runKp(args),
     onAction: dashAction,
+    noteActivity: () => syncBridge()?.noteActivity(),
+    getSyncStatus: () => syncBridge()?.getStatus(),
+    onSyncStatus: (cb) => {
+      const b = syncBridge();
+      return b ? b.onDidSync(cb) : new vscode.Disposable(() => {});
+    },
   };
 
   ctx.subscriptions.push(

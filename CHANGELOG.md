@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.18.0 — 2026-07-12
+
+### Store-sync status + activity-driven polling
+
+- **Sync status everywhere** — a new status-bar item (`☁ 2m ago`) and a header pill on the Planning Dashboard show when the git stores were last synced, the current state (syncing / ok / conflict / offline), and which repos changed; click either to sync now.
+- **Activity-driven cadence** — while you're active on the Planning Dashboard (focus, clicks, keys, scroll), the store poll switches to an aggressive interval (`codeSessions.sync.activeIntervalSeconds`, default 20s) for a bounded window (`codeSessions.sync.activeWindowMinutes`, default 3m after your last interaction), then falls back to the normal `intervalMinutes`. Opening/focusing the board pulls immediately.
+- Pairs with knowledge-planning 1b25ae7: the kp serve web dashboard pulls the KB repo on open and while active, with the same header sync pill.
+
+MINOR.
+
 ## 1.17.0 — 2026-07-12
 
 ### Sorting, project-centric view, session ↔ planning navigation

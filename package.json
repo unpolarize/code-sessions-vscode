@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.17.0",
+  "version": "1.18.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -899,6 +899,16 @@
           "type": "string",
           "default": "",
           "description": "Folder of on-demand sync scripts (executable *.sh; sync.sh = standard). Empty = ~/docs/scripts/sync. Convention: scripts/sync/README.md in the KB."
+        },
+        "codeSessions.sync.activeIntervalSeconds": {
+          "type": "number",
+          "default": 20,
+          "description": "While you're active on a planning surface, poll the git stores this often (seconds). Min 5."
+        },
+        "codeSessions.sync.activeWindowMinutes": {
+          "type": "number",
+          "default": 3,
+          "description": "How long aggressive polling stays armed after your last interaction, before falling back to intervalMinutes."
         }
       }
     }

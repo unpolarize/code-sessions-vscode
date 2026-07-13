@@ -16,6 +16,12 @@ export interface DashboardDeps {
   runKp: (args: string[]) => { ok: boolean; stdout: string; stderr: string };
   /** delegate open-file / agent actions to the host (needs vscode + terminals) */
   onAction: (msg: { type: string; [k: string]: unknown }) => void;
+  /** the user is interacting with the board — arm aggressive store polling */
+  noteActivity?: () => void;
+  /** current store-sync status for the header indicator */
+  getSyncStatus?: () => unknown;
+  /** subscribe to store-sync status changes (returns a disposable) */
+  onSyncStatus?: (cb: (s: unknown) => void) => vscode.Disposable;
 }
 
 function nonce(): string {
@@ -53,6 +59,14 @@ export class DashboardPanel {
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     this.panel.webview.onDidReceiveMessage((m) => this.onMessage(m), null, this.disposables);
     this.deps.onChange(() => this.pushSnapshot(), null, this.disposables);
+    // Store-sync status → header indicator; arm aggressive polling when the panel
+    // has focus (a pull that advances HEAD reloads the snapshot via onChange).
+    if (this.deps.onSyncStatus) this.disposables.push(this.deps.onSyncStatus((s) => this.post({ type: "syncStatus", data: s })));
+    this.disposables.push(
+      this.panel.onDidChangeViewState((e) => {
+        if (e.webviewPanel.active) this.deps.noteActivity?.();
+      }),
+    );
     this.panel.webview.html = this.html();
   }
 
@@ -64,8 +78,16 @@ export class DashboardPanel {
     switch (m.type) {
       case "ready":
         this.pushSnapshot();
+        if (this.deps.getSyncStatus) this.post({ type: "syncStatus", data: this.deps.getSyncStatus() });
+        this.deps.noteActivity?.();
         if (this.initialView) this.panel.webview.postMessage({ type: "setView", view: this.initialView });
         if (this.initialItem) this.panel.webview.postMessage({ type: "openItem", id: this.initialItem });
+        break;
+      case "activity":
+        this.deps.noteActivity?.();
+        break;
+      case "syncNow":
+        void vscode.commands.executeCommand("codeSessions.syncStoresNow");
         break;
       case "refresh":
         this.deps.reload();
@@ -167,6 +189,7 @@ export class DashboardPanel {
   </select>
   <button id="addLaneBtn" class="ghost" title="Add a custom lane">＋ lane</button>
   <span class="spacer"></span>
+  <span id="syncPill" class="syncpill" title="Store sync status — click to sync now">◌ sync</span>
   <span id="counts" class="counts"></span>
   <input id="search" placeholder="Search… (⌘F)" style="display:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:3px 8px;width:180px">
   <button id="captureBtn" class="ghost">＋ New</button>
@@ -197,6 +220,12 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .brand{font-weight:700;letter-spacing:.3px}
 .spacer{flex:1}
 .counts{opacity:.7;font-size:12px}
+.syncpill{font-size:11px;padding:2px 9px;border-radius:11px;border:1px solid var(--vscode-widget-border);cursor:pointer;white-space:nowrap;display:inline-flex;gap:5px;align-items:center;opacity:.9}
+.syncpill:hover{background:var(--vscode-toolbar-hoverBackground)}
+.syncpill.ok{border-color:#4ec9b0}
+.syncpill.syncing{border-color:var(--vscode-focusBorder)}
+.syncpill.warn{border-color:#d16969;color:#e6a4a4}
+.syncpill.active{box-shadow:0 0 0 1px var(--vscode-focusBorder) inset}
 .seg{display:inline-flex;border:1px solid var(--vscode-widget-border);border-radius:7px;overflow:hidden}
 .seg button{background:transparent;color:var(--vscode-foreground);border:0;padding:4px 11px;cursor:pointer;font-size:12px}
 .seg button.on{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
@@ -359,7 +388,28 @@ window.addEventListener('message',e=>{const m=e.data;
   else if(m.type==='setView'){view=m.view;syncSeg();render();}
   else if(m.type==='laneAdded'){ if(groupBy!=='lane'){groupBy='lane';const gb=$('#groupBy');if(gb)gb.value='lane';} if(m.name&&!customLanes.includes(m.name))customLanes.push(m.name); saveState(); renderBoard(); }
   else if(m.type==='openItem'){ view='board'; syncSeg(); render(); if(m.id)openDetail(m.id); }
+  else if(m.type==='syncStatus'){ renderSyncPill(m.data); }
 });
+
+// ── store-sync status pill + activity reporting ──────────────────────────────
+let syncState=null;
+function agoStr(t){ if(!t)return 'never'; const s=Math.round((Date.now()-t)/1000);
+  return s<60?s+'s ago':s<3600?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago'; }
+function renderSyncPill(s){ if(s)syncState=s; s=syncState; const p=$('#syncPill'); if(!p||!s)return;
+  const cls=s.status==='syncing'?'syncing':(s.status==='conflict'||s.status==='error'||s.status==='offline')?'warn':'ok';
+  p.className='syncpill '+cls+(s.active?' active':'');
+  const icon=s.status==='syncing'?'⟳':(cls==='warn'?'⚠':'☁');
+  p.textContent=icon+' '+(s.status==='syncing'?'syncing…':agoStr(s.lastSyncAt))+(s.active?' ⚡':'');
+  p.title='Store sync — '+s.status+(s.detail?': '+s.detail:'')+
+    '\\nLast: '+(s.lastSyncAt?new Date(s.lastSyncAt).toLocaleTimeString():'never')+
+    (s.lastChanged&&s.lastChanged.length?'\\nUpdated: '+s.lastChanged.join(', '):'')+
+    (s.active?'\\n⚡ active — polling aggressively':'')+'\\nClick to sync now.'; }
+setInterval(()=>{ if(syncState&&syncState.status!=='syncing')renderSyncPill(); },15000); // keep "Xs ago" fresh
+$('#syncPill')&&$('#syncPill').addEventListener('click',()=>vscode.postMessage({type:'syncNow'}));
+// report activity (keyboard/click/scroll) so the host arms aggressive polling; throttled
+let lastActivity=0;
+function reportActivity(){ const now=Date.now(); if(now-lastActivity>10000){ lastActivity=now; vscode.postMessage({type:'activity'}); } }
+['click','keydown','wheel'].forEach(ev=>document.addEventListener(ev,reportActivity,{passive:true}));
 
 // top bar
 $('#viewSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;view=b.dataset.view;syncSeg();render();});

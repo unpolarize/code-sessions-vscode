@@ -27,16 +27,70 @@ export interface StoreSyncOptions {
   log?: vscode.OutputChannel;
 }
 
+/** Overall state of the most recent (or in-flight) sync pass, for status UI. */
+export type SyncPassStatus = "idle" | "syncing" | "ok" | "unchanged" | "conflict" | "error" | "offline";
+
+export interface SyncStatus {
+  /** Current/last overall status. */
+  status: SyncPassStatus;
+  /** Epoch ms of the last completed pass (0 if none yet). */
+  lastSyncAt: number;
+  /** Repos whose HEAD advanced in the last pass. */
+  lastChanged: string[];
+  /** One-line detail for conflict/error/offline. */
+  detail?: string;
+  /** Whether the aggressive (user-active) cadence is currently armed. */
+  active: boolean;
+  /** Reason string of the last pass (activation/poll/turn-complete/manual/active). */
+  reason?: string;
+}
+
+/** Decouples the dashboard (registered at activation) from the sync manager
+ *  (created later in activate()). The manager registers itself here; the
+ *  planning dashboard reads it lazily by the time a panel is opened. */
+export interface SyncBridge {
+  noteActivity(): void;
+  getStatus(): SyncStatus;
+  onDidSync: vscode.Event<SyncStatus>;
+}
+let _bridge: SyncBridge | undefined;
+export function setSyncBridge(b: SyncBridge | undefined): void {
+  _bridge = b;
+}
+export function syncBridge(): SyncBridge | undefined {
+  return _bridge;
+}
+
 export class StoreSyncManager {
   private timer: NodeJS.Timeout | undefined;
+  private activeTimer: NodeJS.Timeout | undefined;
   private turnWatcher: vscode.FileSystemWatcher | undefined;
   private turnDebounce: NodeJS.Timeout | undefined;
   private running = false;
   private queued = false;
   private disposed = false;
   private warnedConflict = new Set<string>();
+  private activeUntil = 0; // epoch ms — aggressive polling armed until this time
+
+  private readonly _onDidSync = new vscode.EventEmitter<SyncStatus>();
+  /** Fires at the start and end of every sync pass with the current status. */
+  readonly onDidSync = this._onDidSync.event;
+  private state: SyncStatus = { status: "idle", lastSyncAt: 0, lastChanged: [], active: false };
 
   constructor(private readonly opts: StoreSyncOptions) {}
+
+  getStatus(): SyncStatus {
+    return { ...this.state, active: Date.now() < this.activeUntil };
+  }
+
+  private emit(): void {
+    this.state.active = Date.now() < this.activeUntil;
+    try {
+      this._onDidSync.fire(this.getStatus());
+    } catch {
+      /* listeners are best-effort */
+    }
+  }
 
   private cfg() {
     return vscode.workspace.getConfiguration("codeSessions.sync");
@@ -89,9 +143,11 @@ export class StoreSyncManager {
         this.disposed = true;
         clearTimeout(bootTimer);
         if (this.timer) clearInterval(this.timer);
+        if (this.activeTimer) clearInterval(this.activeTimer);
         if (this.turnDebounce) clearTimeout(this.turnDebounce);
         this.turnWatcher?.dispose();
         cfgSub.dispose();
+        this._onDidSync.dispose();
       },
     };
   }
@@ -106,6 +162,36 @@ export class StoreSyncManager {
       this.timer = setInterval(() => void this.sync("poll"), minutes * 60_000);
       this.log(`polling every ${minutes}m`);
     }
+  }
+
+  /** Called when the user is active on a planning surface: arm an aggressive
+   * poll (default 20s) for a bounded window (default 3m of inactivity), then
+   * fall back to the normal cadence. Repeated calls extend the window. Also
+   * kicks an immediate sync if the last one is stale. */
+  noteActivity(): void {
+    if (this.disposed || !this.cfg().get<boolean>("enabled", true)) return;
+    const windowMin = this.cfg().get<number>("activeWindowMinutes", 3);
+    const wasActive = Date.now() < this.activeUntil;
+    this.activeUntil = Date.now() + Math.max(0.5, windowMin) * 60_000;
+    if (!this.activeTimer) {
+      const secs = Math.max(5, this.cfg().get<number>("activeIntervalSeconds", 20));
+      this.activeTimer = setInterval(() => {
+        if (Date.now() >= this.activeUntil) {
+          // window elapsed — stand down to the normal cadence
+          if (this.activeTimer) clearInterval(this.activeTimer);
+          this.activeTimer = undefined;
+          this.log("active window elapsed — back to normal cadence");
+          this.emit();
+          return;
+        }
+        void this.sync("active");
+      }, secs * 1000);
+      this.log(`active: polling every ${secs}s for ${windowMin}m`);
+    }
+    // an immediate refresh if we haven't synced in the last active interval
+    const staleMs = Math.max(5, this.cfg().get<number>("activeIntervalSeconds", 20)) * 1000;
+    if (!wasActive || Date.now() - this.state.lastSyncAt > staleMs) void this.sync("active");
+    else this.emit();
   }
 
   /** Public manual trigger (command palette). */
@@ -123,16 +209,41 @@ export class StoreSyncManager {
       return;
     }
     this.running = true;
+    this.state.status = "syncing";
+    this.state.reason = reason;
+    this.emit();
     try {
       const push = this.cfg().get<boolean>("push", true);
       const changed: string[] = [];
+      let worst: SyncPassStatus = "unchanged";
+      const rank: Record<string, number> = { unchanged: 0, ok: 1, offline: 2, conflict: 3, error: 4 };
+      let detail: string | undefined;
       for (const repo of this.opts.repos()) {
         if (this.disposed) break;
         const res = await syncRepoOnce(repo, { push });
         if (res.status === "ok") changed.push(repo);
         else if (res.status === "conflict") this.warnConflictOnce(repo, res.detail ?? "");
         else if (res.detail && res.status !== "unchanged") this.log(`${path.basename(repo)}: ${res.status} — ${res.detail}`);
+        // map a per-repo result into the overall pass status
+        const mapped: SyncPassStatus =
+          res.status === "ok"
+            ? "ok"
+            : res.status === "conflict"
+              ? "conflict"
+              : res.status === "error"
+                ? "error"
+                : res.status === "skipped" && /fetch failed|offline/i.test(res.detail ?? "")
+                  ? "offline"
+                  : "unchanged";
+        if ((rank[mapped] ?? 0) >= (rank[worst] ?? 0)) {
+          worst = mapped;
+          if (mapped !== "ok" && mapped !== "unchanged") detail = res.detail;
+        }
       }
+      this.state.status = worst;
+      this.state.detail = detail;
+      this.state.lastChanged = changed.map((r) => path.basename(r));
+      this.state.lastSyncAt = Date.now();
       if (changed.length) {
         this.log(`${reason}: updated ${changed.map((r) => path.basename(r)).join(", ")}`);
         try {
@@ -143,6 +254,7 @@ export class StoreSyncManager {
       }
     } finally {
       this.running = false;
+      this.emit();
       if (this.queued && !this.disposed) {
         this.queued = false;
         void this.sync("coalesced");
