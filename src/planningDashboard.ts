@@ -700,6 +700,13 @@ function sessInWindow(s){
   return true;
 }
 function titleForId(id){ const o=(S&&S.objects||[]).find(x=>x.id===id); return o?(o.title||o.id):id; }
+// linked planning items for a session uuid: prefer the snapshot's linked_sessions
+// (works regardless of session source), else the envelope's planningRefs.
+function sessionLinks(s){
+  const out=new Set((s.planningRefs||[]));
+  (S&&S.objects||[]).forEach(o=>{ let ls=o.linked_sessions; if(typeof ls==='string'){try{ls=JSON.parse(ls);}catch(e){ls=[];}} if(Array.isArray(ls)&&ls.includes(s.uuid))out.add(o.id); });
+  return [...out];
+}
 function fmtWhen(t){ if(!t)return ''; const d=new Date(t); const today=dayStart(0);
   const hm=d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
   if(t>=today)return 'today '+hm; if(t>=dayStart(-1))return 'yst '+hm;
@@ -726,7 +733,8 @@ function renderSessions(){
   rows.slice(0,300).forEach(s=>{
     const c=el('div','sesscard');
     const src=s.source==='grok'?'[G]':s.source==='git'?'[S]':'[C]';
-    const refs=(s.planningRefs||[]).map(id=>'<span class="badge" title="linked">↔ '+esc(titleForId(id))+'</span>').join('');
+    const links=sessionLinks(s);
+    const refs=links.map(id=>'<span class="badge" title="linked">↔ '+esc(titleForId(id))+'</span>').join('');
     c.innerHTML='<div class="sh"><span class="ct">'+esc(s.title||s.uuid)+'</span><span class="cm">'+fmtWhen(s.startedAt||s.mtime)+'</span></div>'+
       '<div class="sm"><span class="badge">'+src+' '+esc(s.agent||'')+'</span>'+(s.project?'<span>'+esc(s.project)+'</span>':'')+(s.turns?'<span>'+s.turns+'t</span>':'')+'</div>'+
       (refs?'<div class="srefs">'+refs+'</div>':'');
@@ -735,7 +743,7 @@ function renderSessions(){
     const resume=el('button','ghost mini','Resume ▸'); resume.title='resume in Code Build'; resume.addEventListener('click',()=>vscode.postMessage({type:'action',action:'resumeSession',uuid:s.uuid,cwd:s.projectPath,source:s.source,title:s.title}));
     const link=el('button','ghost mini','Link to task'); link.addEventListener('click',()=>vscode.postMessage({type:'action',action:'linkSessionToTask',uuid:s.uuid}));
     acts.appendChild(open); acts.appendChild(resume); acts.appendChild(link);
-    if((s.planningRefs||[]).length){ const g=el('button','ghost mini','→ planning'); g.addEventListener('click',()=>openDetail(s.planningRefs[0])); acts.appendChild(g); }
+    if(links.length){ const g=el('button','ghost mini','→ planning'); g.addEventListener('click',()=>openDetail(links[0])); acts.appendChild(g); }
     c.appendChild(acts);
     c.addEventListener('click',ev=>{ if(ev.target.closest('button'))return; vscode.postMessage({type:'action',action:'openSession',uuid:s.uuid,title:s.title}); });
     list.appendChild(c);

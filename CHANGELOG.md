@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.20.1 — 2026-07-13
+
+- Sessions view now sources from the Code Sessions SQLite index (recent + rich) so Today/Yesterday/Last-week actually populate; falls back to the ~/.sessions git store when the cache is off. Linked-planning badges resolve from the snapshot's `linked_sessions` (works for any session source).
+
 ## 1.20.0 — 2026-07-13
 
 ### Sessions view + create defaults

@@ -30,8 +30,54 @@ interface SessionInfo {
   planningRefs: string[];
 }
 
-/** Scan the git session store (~/.sessions) for a rich, searchable session list. */
+// The CS SQLite index (created in extension.ts, after registerPlanning) is the
+// authoritative source of RECENT sessions — the ~/.sessions git store lags. The
+// extension registers a provider here; the dashboard reads it lazily.
+type CsSessionRow = {
+  session: string;
+  title?: string;
+  source?: string;
+  project?: string;
+  project_path?: string | null;
+  mtime_epoch?: number; // seconds
+  first_ts_epoch?: number; // seconds
+  messages?: number;
+  cost_usd?: number;
+};
+let _sessionProvider: (() => CsSessionRow[] | null) | undefined;
+export function setSessionProvider(p: (() => CsSessionRow[] | null) | undefined): void {
+  _sessionProvider = p;
+}
+
+/** Session list for the dashboard: prefer the CS SQLite index (recent + rich),
+ * fall back to scanning the ~/.sessions git store when the cache is disabled. */
 function listSessionsRich(): SessionInfo[] {
+  const norm = (e?: number): number => (!e ? 0 : e < 1e12 ? e * 1000 : e); // seconds → ms
+  const rows = _sessionProvider?.();
+  if (rows && rows.length) {
+    return rows.map((r) => {
+      const src: "claude" | "grok" | "git" = r.source === "grok" ? "grok" : r.source === "git" ? "git" : "claude";
+      const started = norm(r.first_ts_epoch) || norm(r.mtime_epoch);
+      return {
+        uuid: r.session,
+        title: r.title,
+        agent: r.source,
+        project: r.project || (r.project_path ? path.basename(r.project_path) : undefined),
+        projectPath: r.project_path ?? undefined,
+        source: src,
+        startedAt: started,
+        mtime: norm(r.mtime_epoch) || started,
+        turns: r.messages,
+        cost: r.cost_usd,
+        planningRefs: [], // resolved in the webview from the snapshot's linked_sessions
+      } as SessionInfo;
+    });
+  }
+  return listGitStoreSessions();
+}
+
+/** Scan the git session store (~/.sessions) for a rich, searchable session list. */
+function listGitStoreSessions(): SessionInfo[] {
   const root = path.join(os.homedir(), ".sessions", "hosts");
   if (!existsSync(root)) return [];
   const ls = (p: string): string[] => {

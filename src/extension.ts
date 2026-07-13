@@ -7,7 +7,7 @@ import { openConversationViewer } from "./conversationView";
 import { openInsightsView } from "./insightsView";
 import { openUsageView } from "./usageView";
 import { openSessionGraphView } from "./sessionGraphView";
-import { registerPlanning } from "./planning";
+import { registerPlanning, setSessionProvider } from "./planning";
 import { SessionStore } from "./db";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
@@ -2057,6 +2057,10 @@ export function activate(ctx: vscode.ExtensionContext) {
   }
 
   const sessions = new SessionsProvider(store);
+  // Feed the planning dashboard's Sessions view from the CS index (recent + rich);
+  // it falls back to the ~/.sessions git store when the cache is disabled.
+  setSessionProvider(() => (store ? (store.listRecent(500, true) as unknown as never[]) : null));
+  ctx.subscriptions.push({ dispose: () => setSessionProvider(undefined) });
   const kb = new KbChangesProvider();
   const projects = new ProjectsActivityProvider();
   const tasks = new TasksProvider(store);
