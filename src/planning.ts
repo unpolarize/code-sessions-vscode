@@ -952,6 +952,12 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         void openInCB(id);
         break;
       case "openSession":
+        // default: open the session's conversation ("insides"), not the trajectory graph
+        void vscode.commands.executeCommand("codeSessions.viewConversation", {
+          row: { session: String(msg.uuid), title: String(msg.title || msg.uuid) },
+        });
+        break;
+      case "openTrajectory":
         void vscode.commands.executeCommand("codeSessions.showTrajectory", String(msg.uuid), String(msg.title || msg.uuid));
         break;
       case "resumeSession": {

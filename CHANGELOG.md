@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.21.0 — 2026-07-13
+
+- Opening a session from the planning dashboard (Sessions view, drawer "Linked sessions", Projects-view session rows) now shows the **conversation** ("insides") by default via `codeSessions.viewConversation`, instead of the trajectory graph. A separate **Trajectory** button per session opens the graph when you want it.
+
 ## 1.20.2 — 2026-07-13
 
 - Fix Sessions view Today/Yesterday/Last-week filtering: read the actual `store.listRecent` fields (`session_id`, `mtime_ns`, `started_at`, `message_count`) and bucket by **last activity** (mtime), matching the Code Sessions sidebar — previously it mis-read epoch fields and bucketed by first-timestamp, so recent sessions showed as older / empty.

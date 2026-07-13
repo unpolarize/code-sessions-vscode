@@ -741,10 +741,11 @@ function renderSessions(){
       '<div class="sm"><span class="badge">'+src+' '+esc(s.agent||'')+'</span>'+(s.project?'<span>'+esc(s.project)+'</span>':'')+(s.turns?'<span>'+s.turns+'t</span>':'')+'</div>'+
       (refs?'<div class="srefs">'+refs+'</div>':'');
     const acts=el('div','sacts');
-    const open=el('button','ghost mini','Open'); open.title='view transcript'; open.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openSession',uuid:s.uuid,title:s.title}));
+    const open=el('button','ghost mini','Open'); open.title='view the conversation'; open.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openSession',uuid:s.uuid,title:s.title}));
+    const traj=el('button','ghost mini','Trajectory'); traj.title='conversation trajectory graph'; traj.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openTrajectory',uuid:s.uuid,title:s.title}));
     const resume=el('button','ghost mini','Resume ▸'); resume.title='resume in Code Build'; resume.addEventListener('click',()=>vscode.postMessage({type:'action',action:'resumeSession',uuid:s.uuid,cwd:s.projectPath,source:s.source,title:s.title}));
     const link=el('button','ghost mini','Link to task'); link.addEventListener('click',()=>vscode.postMessage({type:'action',action:'linkSessionToTask',uuid:s.uuid}));
-    acts.appendChild(open); acts.appendChild(resume); acts.appendChild(link);
+    acts.appendChild(open); acts.appendChild(traj); acts.appendChild(resume); acts.appendChild(link);
     if(links.length){ const g=el('button','ghost mini','→ planning'); g.addEventListener('click',()=>openDetail(links[0])); acts.appendChild(g); }
     c.appendChild(acts);
     c.addEventListener('click',ev=>{ if(ev.target.closest('button'))return; vscode.postMessage({type:'action',action:'openSession',uuid:s.uuid,title:s.title}); });
