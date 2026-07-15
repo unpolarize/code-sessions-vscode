@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.24.0 — 2026-07-14
+
+### Overdue tasks
+
+- **See past-due, not-completed tasks** — a red **⚠ N overdue** pill in the top bar (when any exist) and an **⚠ Overdue** toggle in the board filter bar show only tasks whose due date is before today and aren't done/outdated. Click the pill to jump to the filtered board. Cards already flag overdue due-dates in red.
+- Bundles knowledge-planning **0.2.1**, which adds a `kp overdue [--date D]` CLI command and an `overdue` field in `kp export`.
+
+MINOR.
+
 ## 1.23.0 — 2026-07-13
 
 ### Readable board on narrow panes + richer session viewer

@@ -207,6 +207,7 @@ export class DashboardPanel {
   </select>
   <button id="addLaneBtn" class="ghost" title="Add a custom lane">＋ lane</button>
   <span class="spacer"></span>
+  <span id="overduePill" class="opill" title="Past-due, not-completed tasks — click to filter the board" style="display:none"></span>
   <span id="syncPill" class="syncpill" title="Store sync status — click to sync now">◌ sync</span>
   <span id="counts" class="counts"></span>
   <input id="search" placeholder="Search… (⌘F)" style="display:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:3px 8px;width:180px">
@@ -258,6 +259,10 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .syncpill.syncing{border-color:var(--vscode-focusBorder)}
 .syncpill.warn{border-color:#d16969;color:#e6a4a4}
 .syncpill.active{box-shadow:0 0 0 1px var(--vscode-focusBorder) inset}
+.opill{font-size:11px;padding:2px 9px;border-radius:11px;border:1px solid #d16969;color:#e6a4a4;cursor:pointer;white-space:nowrap;align-items:center}
+.opill:hover{background:var(--vscode-toolbar-hoverBackground)}
+.opill.on{background:#d16969;color:#fff;border-color:#d16969}
+.boardfilter .ghost.on{background:#d16969;color:#fff;border-color:#d16969}
 #resmodal{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)}
 #resmodal.hidden{display:none!important}
 .resbox{background:var(--vscode-editorWidget-background,var(--vscode-editor-background));border:1px solid var(--vscode-widget-border);border-radius:10px;width:min(560px,92vw);max-height:80vh;display:flex;flex-direction:column;padding:16px 18px;box-shadow:0 10px 40px rgba(0,0,0,.4)}
@@ -523,9 +528,15 @@ function syncSeg(){
 }
 function render(){ if(!S){return;} syncSeg();
   $('#counts').textContent = Object.entries(S.counts||{}).map(([k,v])=>k+':'+v).join('  ');
+  renderOverduePill();
   if(view==='board')renderBoard(); else if(view==='projects')renderProjects(); else if(view==='sessions')renderSessions(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
   applySearch();
 }
+$('#overduePill')&&$('#overduePill').addEventListener('click',()=>{
+  overdueOnly=!overdueOnly;
+  if(overdueOnly){ view='board'; if(groupBy==='type'){} else if(laneSet!=='task')laneSet='task'; }
+  syncSeg(); render();
+});
 const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
 
 // closing statuses prompt for a resolution note (host shows the InputBox; Esc aborts)
@@ -567,18 +578,23 @@ function renderBoard(){
   const board=$('#board'); board.innerHTML='';
   // date filter bar (worked-on / due) — full-width row above the lanes
   const fb=el('div','boardfilter');
+  const odCount=overdueList().length;
   fb.innerHTML='<span style="opacity:.6">filter by</span>'+
     '<select id="bfField"><option value="updated"'+(boardDateField==='updated'?' selected':'')+'>worked on (updated)</option><option value="due"'+(boardDateField==='due'?' selected':'')+'>due</option></select>'+
     '<input type="date" id="bfDate" value="'+esc(boardDateVal||'')+'">'+
     '<button class="ghost" id="bfToday">today</button>'+
-    (boardDateVal?'<button class="ghost" id="bfClear">clear ✕</button><span style="opacity:.6" id="bfN"></span>':'');
+    (boardDateVal?'<button class="ghost" id="bfClear">clear ✕</button>':'')+
+    '<button class="ghost'+(overdueOnly?' on':'')+'" id="bfOverdue" title="Show only past-due, not-completed tasks">⚠ Overdue'+(odCount?' ('+odCount+')':'')+'</button>'+
+    '<span style="opacity:.6" id="bfN"></span>';
   board.appendChild(fb);
   fb.querySelector('#bfField').addEventListener('change',e=>{boardDateField=e.target.value;renderBoard();});
   fb.querySelector('#bfDate').addEventListener('change',e=>{boardDateVal=e.target.value;renderBoard();});
   fb.querySelector('#bfToday').addEventListener('click',()=>{boardDateVal=todayStr();renderBoard();});
   if(fb.querySelector('#bfClear'))fb.querySelector('#bfClear').addEventListener('click',()=>{boardDateVal='';renderBoard();});
+  fb.querySelector('#bfOverdue').addEventListener('click',()=>{overdueOnly=!overdueOnly;renderOverduePill();renderBoard();});
   if(boardDateVal)objs=objs.filter(o=>String(o[boardDateField]||'').slice(0,10)===boardDateVal);
-  if(fb.querySelector('#bfN'))fb.querySelector('#bfN').textContent=objs.length+' '+laneSet+'(s) '+boardDateField+' '+boardDateVal;
+  if(overdueOnly)objs=objs.filter(isOverdue);
+  if(fb.querySelector('#bfN'))fb.querySelector('#bfN').textContent=overdueOnly?(objs.length+' overdue'):(boardDateVal?(objs.length+' '+laneSet+'(s) '+boardDateField+' '+boardDateVal):'');
   const lanesWrap=el('div','lanes');board.appendChild(lanesWrap);
   const shown=(maxLane&&lanes.includes(maxLane))?[maxLane]:lanes;
   shown.forEach(lane=>{
@@ -791,7 +807,15 @@ function renderSocial(){
 }
 function todayStr(){return (S&&S.board&&S.board.date)||new Date().toISOString().slice(0,10);}
 let calFrom=null, calTo=null, calMode='month', calAnchor=null;
-let boardDateField='updated', boardDateVal='';
+let boardDateField='updated', boardDateVal='', overdueOnly=false;
+// A task is overdue when its due date is before today and it isn't done/outdated.
+function isOverdue(o){ return o.type==='task' && o.due && String(o.due).slice(0,10)<todayStr() && o.status!=='done' && o.status!=='outdated'; }
+function overdueList(){ return (S&&S.objects||[]).filter(isOverdue); }
+function renderOverduePill(){
+  const p=$('#overduePill'); if(!p)return; const n=overdueList().length;
+  if(!n){ p.style.display='none'; return; }
+  p.style.display='inline-flex'; p.textContent='⚠ '+n+' overdue'; p.classList.toggle('on',overdueOnly);
+}
 const addDays=(d,n)=>{const x=new Date(d+'T00:00:00Z');x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10);};
 const weekStart=d=>{const x=new Date(d+'T00:00:00Z');return addDays(d,-((x.getUTCDay()+6)%7));}; // Monday
 function dueByDay(){const m={};(S.objects||[]).filter(o=>o.type==='task'&&o.due).forEach(o=>{(m[o.due]??=[]).push(o);});
