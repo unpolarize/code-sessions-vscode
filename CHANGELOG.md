@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.25.0 — 2026-07-14
+
+### Inbox triage + Stale filter (dogfooding: keep the capture pile under control)
+
+- **Inbox view** — a dedicated triage queue of freshly-captured items (tasks `inbox`, ideas `capture`, thoughts `new`), newest-captured first with source/context. Per-item quick actions: Open, convert thought→idea/task, idea→task, Defer/Park. A **📥 N** pill in the top bar jumps to it.
+- **Stale filter** — a **🕸 Stale** toggle in the board filter bar shows open items untouched for 21+ days.
+- Bundles knowledge-planning **0.3.0**: `kp inbox`, `kp stale`, and near-duplicate ingest dedup (re-captured phone-dump bullets link to the existing item instead of minting a duplicate — grok-4.5-reviewed heuristic), plus `triage`/`stale` fields in `kp export`.
+
+MINOR.
+
 ## 1.24.0 — 2026-07-14
 
 ### Overdue tasks

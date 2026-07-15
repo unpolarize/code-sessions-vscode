@@ -170,6 +170,7 @@ export class DashboardPanel {
   <span class="brand">◧ Planning</span>
   <div class="seg" id="viewSeg">
     <button data-view="board" class="on">Board</button>
+    <button data-view="inbox">Inbox</button>
     <button data-view="projects">Projects</button>
     <button data-view="sessions">Sessions</button>
     <button data-view="social">✨ Social</button>
@@ -207,6 +208,7 @@ export class DashboardPanel {
   </select>
   <button id="addLaneBtn" class="ghost" title="Add a custom lane">＋ lane</button>
   <span class="spacer"></span>
+  <span id="inboxPill" class="ipill" title="Freshly-captured items to triage — click to open the Inbox" style="display:none"></span>
   <span id="overduePill" class="opill" title="Past-due, not-completed tasks — click to filter the board" style="display:none"></span>
   <span id="syncPill" class="syncpill" title="Store sync status — click to sync now">◌ sync</span>
   <span id="counts" class="counts"></span>
@@ -217,6 +219,7 @@ export class DashboardPanel {
 </div>
 <div id="main">
   <div id="board" class="view"></div>
+  <div id="inbox" class="view hidden"></div>
   <div id="projects" class="view hidden"></div>
   <div id="sessions" class="view hidden"></div>
   <div id="social" class="view hidden"></div>
@@ -259,6 +262,9 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .syncpill.syncing{border-color:var(--vscode-focusBorder)}
 .syncpill.warn{border-color:#d16969;color:#e6a4a4}
 .syncpill.active{box-shadow:0 0 0 1px var(--vscode-focusBorder) inset}
+.ipill{font-size:11px;padding:2px 9px;border-radius:11px;border:1px solid var(--vscode-widget-border);color:var(--vscode-foreground);cursor:pointer;white-space:nowrap;align-items:center;opacity:.9}
+.ipill:hover{background:var(--vscode-toolbar-hoverBackground)}
+.ipill.on{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:var(--vscode-button-background)}
 .opill{font-size:11px;padding:2px 9px;border-radius:11px;border:1px solid #d16969;color:#e6a4a4;cursor:pointer;white-space:nowrap;align-items:center}
 .opill:hover{background:var(--vscode-toolbar-hoverBackground)}
 .opill.on{background:#d16969;color:#fff;border-color:#d16969}
@@ -518,6 +524,7 @@ function syncSeg(){
   $('#laneSeg').style.display = view==='board'?'inline-flex':'none';
   $('#calModeSeg').style.display = view==='calendar'?'inline-flex':'none';
   $('#board').classList.toggle('hidden',view!=='board');
+  $('#inbox').classList.toggle('hidden',view!=='inbox');
   $('#projects').classList.toggle('hidden',view!=='projects');
   $('#sessions').classList.toggle('hidden',view!=='sessions');
   $('#social').classList.toggle('hidden',view!=='social');
@@ -529,7 +536,8 @@ function syncSeg(){
 function render(){ if(!S){return;} syncSeg();
   $('#counts').textContent = Object.entries(S.counts||{}).map(([k,v])=>k+':'+v).join('  ');
   renderOverduePill();
-  if(view==='board')renderBoard(); else if(view==='projects')renderProjects(); else if(view==='sessions')renderSessions(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
+  renderInboxPill();
+  if(view==='board')renderBoard(); else if(view==='inbox')renderInbox(); else if(view==='projects')renderProjects(); else if(view==='sessions')renderSessions(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
   applySearch();
 }
 $('#overduePill')&&$('#overduePill').addEventListener('click',()=>{
@@ -537,6 +545,7 @@ $('#overduePill')&&$('#overduePill').addEventListener('click',()=>{
   if(overdueOnly){ view='board'; if(groupBy==='type'){} else if(laneSet!=='task')laneSet='task'; }
   syncSeg(); render();
 });
+$('#inboxPill')&&$('#inboxPill').addEventListener('click',()=>{ view=(view==='inbox')?'board':'inbox'; syncSeg(); render(); });
 const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
 
 // closing statuses prompt for a resolution note (host shows the InputBox; Esc aborts)
@@ -585,6 +594,7 @@ function renderBoard(){
     '<button class="ghost" id="bfToday">today</button>'+
     (boardDateVal?'<button class="ghost" id="bfClear">clear ✕</button>':'')+
     '<button class="ghost'+(overdueOnly?' on':'')+'" id="bfOverdue" title="Show only past-due, not-completed tasks">⚠ Overdue'+(odCount?' ('+odCount+')':'')+'</button>'+
+    '<button class="ghost'+(staleOnly?' on':'')+'" id="bfStale" title="Open items untouched for 21+ days">🕸 Stale</button>'+
     '<span style="opacity:.6" id="bfN"></span>';
   board.appendChild(fb);
   fb.querySelector('#bfField').addEventListener('change',e=>{boardDateField=e.target.value;renderBoard();});
@@ -592,9 +602,11 @@ function renderBoard(){
   fb.querySelector('#bfToday').addEventListener('click',()=>{boardDateVal=todayStr();renderBoard();});
   if(fb.querySelector('#bfClear'))fb.querySelector('#bfClear').addEventListener('click',()=>{boardDateVal='';renderBoard();});
   fb.querySelector('#bfOverdue').addEventListener('click',()=>{overdueOnly=!overdueOnly;renderOverduePill();renderBoard();});
+  fb.querySelector('#bfStale').addEventListener('click',()=>{staleOnly=!staleOnly;renderBoard();});
   if(boardDateVal)objs=objs.filter(o=>String(o[boardDateField]||'').slice(0,10)===boardDateVal);
   if(overdueOnly)objs=objs.filter(isOverdue);
-  if(fb.querySelector('#bfN'))fb.querySelector('#bfN').textContent=overdueOnly?(objs.length+' overdue'):(boardDateVal?(objs.length+' '+laneSet+'(s) '+boardDateField+' '+boardDateVal):'');
+  if(staleOnly)objs=objs.filter(isStale);
+  if(fb.querySelector('#bfN'))fb.querySelector('#bfN').textContent=overdueOnly?(objs.length+' overdue'):staleOnly?(objs.length+' stale'):(boardDateVal?(objs.length+' '+laneSet+'(s) '+boardDateField+' '+boardDateVal):'');
   const lanesWrap=el('div','lanes');board.appendChild(lanesWrap);
   const shown=(maxLane&&lanes.includes(maxLane))?[maxLane]:lanes;
   shown.forEach(lane=>{
@@ -713,6 +725,34 @@ function renderProjects(){
   });
   if(!wrap.children.length)wrap.appendChild(el('div',null,'<span style="opacity:.6">No projects yet — create type:project objects in the store, or assign items a Project in the drawer.</span>'));
 }
+// ── inbox: triage queue of freshly-captured items (task=inbox, idea=capture, thought=new) ──
+function inboxItems(){
+  const rows=(S&&S.objects||[]).filter(o=>(o.type==='task'&&o.status==='inbox')||(o.type==='idea'&&o.status==='capture')||(o.type==='thought'&&o.status==='new'));
+  return rows.sort((a,b)=>String((b.surfaced_on||b.created||'')).localeCompare(String(a.surfaced_on||a.created||'')));
+}
+function renderInbox(){
+  const el2=$('#inbox'); el2.innerHTML='';
+  const rows=inboxItems();
+  const bar=el('div',null,'<div style="font-size:13px;font-weight:600">📥 Inbox — '+rows.length+' to triage</div><div style="opacity:.65;font-size:12px;margin:2px 0 12px">Freshly-captured items awaiting a decision. Click to open · convert thoughts→ideas→tasks · set due/priority · park noise.</div>');
+  el2.appendChild(bar);
+  if(!rows.length){ el2.appendChild(el('div',null,'<div style="opacity:.55;padding:14px 2px">Inbox zero ✓</div>')); return; }
+  const list=el('div','sociallist');
+  rows.forEach(o=>{
+    const c=el('div','socialcard');
+    const prov=(o.context?'<span class="badge" title="captured under">◔ '+esc(o.context)+'</span>':'')+((o.surfaced_on||o.created)?'<span>'+esc(o.surfaced_on||o.created)+'</span>':'');
+    c.innerHTML='<div class="sh"><span class="ct">'+esc(o.title||o.id)+'</span><span class="cm"><span class="badge">'+o.type+'</span>'+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+prov+'</span></div>';
+    const acts=el('div','sacts');
+    const open=el('button','ghost mini','Open'); open.addEventListener('click',()=>openDetail(o.id));
+    acts.appendChild(open);
+    if(o.type==='thought'){ const i=el('button','ghost mini','→ idea'); i.addEventListener('click',()=>vscode.postMessage({type:'action',action:'convertToIdea',id:o.id})); const t=el('button','ghost mini','→ task'); t.addEventListener('click',()=>vscode.postMessage({type:'action',action:'convertToTask',id:o.id})); acts.appendChild(i); acts.appendChild(t); }
+    if(o.type==='idea'){ const t=el('button','ghost mini','→ task'); t.addEventListener('click',()=>vscode.postMessage({type:'action',action:'moveToTask',id:o.id})); acts.appendChild(t); }
+    const park=el('button','ghost mini',o.type==='task'?'Defer':'Park'); park.addEventListener('click',()=>postStatus(o.id,o.type==='task'?'deferred':'parked')); acts.appendChild(park);
+    c.appendChild(acts);
+    c.addEventListener('click',ev=>{ if(ev.target.closest('button'))return; openDetail(o.id); });
+    list.appendChild(c);
+  });
+  el2.appendChild(list);
+}
 // ── sessions view: CS git-store sessions with time filters + link-to-task ──
 let SESS=null, sessFilter='week', sessSearch='';
 function dayStart(offset){ const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()+(offset||0)); return d.getTime(); }
@@ -807,14 +847,22 @@ function renderSocial(){
 }
 function todayStr(){return (S&&S.board&&S.board.date)||new Date().toISOString().slice(0,10);}
 let calFrom=null, calTo=null, calMode='month', calAnchor=null;
-let boardDateField='updated', boardDateVal='', overdueOnly=false;
+let boardDateField='updated', boardDateVal='', overdueOnly=false, staleOnly=false;
 // A task is overdue when its due date is before today and it isn't done/outdated.
 function isOverdue(o){ return o.type==='task' && o.due && String(o.due).slice(0,10)<todayStr() && o.status!=='done' && o.status!=='outdated'; }
+// Open item untouched for 21+ days (last = updated, else created).
+const CLOSED_STATUS=new Set(['done','outdated','parked','archived','converted']);
+function isStale(o){ if(CLOSED_STATUS.has(String(o.status||'')))return false; const last=String(o.updated||o.created||''); if(!last)return false; return last<addDays(todayStr(),-21); }
 function overdueList(){ return (S&&S.objects||[]).filter(isOverdue); }
 function renderOverduePill(){
   const p=$('#overduePill'); if(!p)return; const n=overdueList().length;
   if(!n){ p.style.display='none'; return; }
   p.style.display='inline-flex'; p.textContent='⚠ '+n+' overdue'; p.classList.toggle('on',overdueOnly);
+}
+function renderInboxPill(){
+  const p=$('#inboxPill'); if(!p)return; const n=inboxItems().length;
+  if(!n){ p.style.display='none'; return; }
+  p.style.display='inline-flex'; p.textContent='📥 '+n; p.classList.toggle('on',view==='inbox');
 }
 const addDays=(d,n)=>{const x=new Date(d+'T00:00:00Z');x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10);};
 const weekStart=d=>{const x=new Date(d+'T00:00:00Z');return addDays(d,-((x.getUTCDay()+6)%7));}; // Monday

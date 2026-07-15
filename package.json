@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.24.0",
+  "version": "1.25.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -931,7 +931,7 @@
     "typescript": "^5.4.0"
   },
   "dependencies": {
-    "@unpolarize/knowledge-planning": "^0.2.1",
+    "@unpolarize/knowledge-planning": "^0.3.0",
     "node-sqlite3-wasm": "^0.8.57",
     "umap-js": "^1.4.0"
   }
