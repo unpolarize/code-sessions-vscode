@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { openConversationViewer } from "./conversationView";
+import { locateStoreTurns, buildResumeSeed } from "./storeTranscript";
 import { openInsightsView } from "./insightsView";
 import { openUsageView } from "./usageView";
 import { openSessionGraphView } from "./sessionGraphView";
@@ -2217,7 +2218,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       const s = store;
       openSearchView(ctx, s, async (sessionId, title) => {
         const jsonl = await locateSessionJsonl(sessionId);
-        if (!jsonl) {
+        if (!jsonl && !locateStoreTurns(sessionId)) {
           vscode.window.showWarningMessage(`Transcript not found for ${sessionId}`);
           return;
         }
@@ -2393,7 +2394,9 @@ export function activate(ctx: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand("codeSessions.viewConversation", async (item: SessionItem) => {
       const jsonl = await locateSessionJsonl(item.row.session);
-      if (!jsonl) {
+      // No native transcript here → the cross-device fallback (~/.sessions turns)
+      // is resolved inside openConversationViewer; only bail if neither exists.
+      if (!jsonl && !locateStoreTurns(item.row.session)) {
         vscode.window.showWarningMessage(`Transcript not found for session ${item.row.session}`);
         return;
       }
@@ -2902,6 +2905,31 @@ function unwrapRow(arg: SessionRow | SessionItem | undefined): SessionRow | null
 async function resumeInCodeBuild(row: SessionRow): Promise<void> {
   const cwd = SessionsProvider.sessionCwd(row) ?? undefined;
   const codeBuildExt = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
+  // Cross-device: no native transcript on this machine → native resume can't
+  // reach it. Seed a fresh Code Build conversation with the store transcript.
+  const nativeJsonl = await locateSessionJsonl(row.session);
+  if (!nativeJsonl) {
+    const storeRef = locateStoreTurns(row.session);
+    if (storeRef) {
+      const seed = buildResumeSeed(storeRef, row.session);
+      if (seed) {
+        await vscode.env.clipboard.writeText(seed);
+        if (codeBuildExt) {
+          try {
+            if (!codeBuildExt.isActive) await codeBuildExt.activate();
+            await vscode.commands.executeCommand("codeBuild.newConversation");
+          } catch {
+            /* fall through to the message */
+          }
+        }
+        vscode.window.showInformationMessage(
+          `This session ran on ${storeRef.host}; its transcript isn't on this device. ` +
+            `A resume prompt (recent history) was copied — paste it into Code Build to continue.`,
+        );
+        return;
+      }
+    }
+  }
   if (codeBuildExt) {
     try {
       if (!codeBuildExt.isActive) await codeBuildExt.activate();

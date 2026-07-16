@@ -9,7 +9,7 @@
 
 import * as vscode from "vscode";
 import { spawnSync, execFile } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync, unlinkSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
@@ -54,26 +54,60 @@ export function setSessionProvider(p: (() => CsSessionRow[] | null) | undefined)
 function listSessionsRich(): SessionInfo[] {
   const rows = _sessionProvider?.();
   if (rows && rows.length) {
+    // The CS index has no host column; recover it from the git store's
+    // hosts/<host>/… layout, else this machine (native transcripts are local).
+    const hostMap = sessionHostMap();
+    const localHost = shortHost(os.hostname());
     return rows.map((r) => {
-      const src: "claude" | "grok" | "git" = r.source === "grok" ? "grok" : r.source === "git" ? "git" : "claude";
-      const mtime = r.mtime_ns ? Math.floor(r.mtime_ns / 1e6) : 0; // ns → ms (last activity)
-      const started = r.started_at || mtime;
-      return {
-        uuid: r.session_id,
-        title: r.title,
-        agent: r.source,
-        project: r.project_path ? path.basename(r.project_path) : undefined,
-        projectPath: r.project_path ?? undefined,
-        source: src,
-        startedAt: started,
-        mtime: mtime || started,
-        turns: r.message_count,
-        cost: r.cost_usd,
-        planningRefs: [], // resolved in the webview from the snapshot's linked_sessions
-      } as SessionInfo;
+      const s = listSessionsFromProvider(r);
+      s.host = hostMap[s.uuid] ?? localHost;
+      return s;
     });
   }
   return listGitStoreSessions();
+}
+
+/** Prettify a hostname for display: drop the .local/.lan suffix. */
+function shortHost(h: string | undefined): string {
+  return (h ?? "").replace(/\.(local|lan)$/i, "") || "unknown";
+}
+
+/** uuid → host, from the git session store directory layout hosts/<host>/<month>/<uuid>/. */
+function sessionHostMap(): Record<string, string> {
+  const root = path.join(os.homedir(), ".sessions", "hosts");
+  const map: Record<string, string> = {};
+  if (!existsSync(root)) return map;
+  const ls = (p: string): string[] => {
+    try {
+      return readdirSync(p);
+    } catch {
+      return [];
+    }
+  };
+  for (const host of ls(root))
+    for (const month of ls(path.join(root, host)))
+      for (const sid of ls(path.join(root, host, month))) map[sid] = shortHost(host);
+  return map;
+}
+
+/** Map one CS-index row to a SessionInfo (host filled in by the caller). */
+function listSessionsFromProvider(r: CsSessionRow): SessionInfo {
+  const src: "claude" | "grok" | "git" = r.source === "grok" ? "grok" : r.source === "git" ? "git" : "claude";
+  const mtime = r.mtime_ns ? Math.floor(r.mtime_ns / 1e6) : 0;
+  const started = r.started_at || mtime;
+  return {
+    uuid: r.session_id,
+    title: r.title,
+    agent: r.source,
+    project: r.project_path ? path.basename(r.project_path) : undefined,
+    projectPath: r.project_path ?? undefined,
+    source: src,
+    startedAt: started,
+    mtime: mtime || started,
+    turns: r.message_count,
+    cost: r.cost_usd,
+    planningRefs: [],
+  } as SessionInfo;
 }
 
 /** Scan the git session store (~/.sessions) for a rich, searchable session list. */
@@ -962,6 +996,52 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       case "runSync":
         void vscode.commands.executeCommand("codePlanning.runSync");
         break;
+      case "openSpec": {
+        // Specs live in a target repo (e.g. specs/NNN-slug); resolve across the
+        // unpolarize checkouts and prefer spec.md inside the folder.
+        const spec = String(msg.spec || "");
+        if (!spec) break;
+        const bases = [
+          path.join(os.homedir(), "projects/unpolarize/knowledge-planning"),
+          path.join(os.homedir(), "projects/unpolarize/code-sessions-vscode"),
+          path.join(os.homedir(), "projects/unpolarize/code-build-vscode"),
+          path.join(os.homedir(), "projects/unpolarize"),
+        ];
+        let found: string | undefined;
+        for (const b of bases) {
+          for (const cand of [path.join(b, spec, "spec.md"), path.join(b, spec)]) {
+            try {
+              if (existsSync(cand) && statSync(cand).isFile()) { found = cand; break; }
+            } catch { /* keep looking */ }
+          }
+          if (found) break;
+        }
+        if (found) void vscode.window.showTextDocument(vscode.Uri.file(found), { preview: true });
+        else void vscode.window.showWarningMessage(`Spec not found locally: ${spec} (it may be on the work branch — pull auto/night-build)`);
+        break;
+      }
+      case "autoToggle": {
+        // Flip <store>/autonomous/STOP — git-synced, honored by the orchestrator.
+        const root = snap?.root || path.join(os.homedir(), "docs", "planning");
+        const dir = path.join(root, "autonomous");
+        const stop = path.join(dir, "STOP");
+        try {
+          if (msg.on) {
+            if (existsSync(stop)) unlinkSync(stop);
+            // also clear the legacy scripts STOP so enabling always works
+            const legacy = path.join(os.homedir(), "docs", "scripts", ".night-build.STOP");
+            if (existsSync(legacy)) unlinkSync(legacy);
+          } else {
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(stop, `stopped ${new Date().toISOString()}\n`);
+          }
+          void vscode.window.setStatusBarMessage(`🤖 autonomous builder ${msg.on ? "enabled" : "paused"}`, 5000);
+        } catch (e) {
+          void vscode.window.showWarningMessage(`toggle failed: ${String(e)}`);
+        }
+        model.reload(log);
+        break;
+      }
       case "moveToTask": {
         const r = runKp(["recategorize", id, "--to-type", "task"]);
         void vscode.window.showInformationMessage(r.ok ? r.stdout.trim() : `move failed: ${r.stderr}`);
@@ -984,30 +1064,14 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         void vscode.commands.executeCommand("codeSessions.showTrajectory", String(msg.uuid), String(msg.title || msg.uuid));
         break;
       case "resumeSession": {
-        // resume the session in Code Build (openExternalSession if available)
-        void (async () => {
-          const ext = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
-          try {
-            if (ext && !ext.isActive) await ext.activate();
-            const cmds = await vscode.commands.getCommands(true);
-            if (ext && cmds.includes("codeBuild.openExternalSession") && msg.cwd) {
-              await vscode.commands.executeCommand("codeBuild.openExternalSession", {
-                source: String(msg.source || "claude"),
-                sessionId: String(msg.uuid),
-                cwd: String(msg.cwd),
-                title: msg.title ? String(msg.title) : undefined,
-              });
-            } else if (ext) {
-              await vscode.commands.executeCommand("codeBuild.newConversation");
-              void vscode.window.showInformationMessage("Code Build opened a new conversation (upgrade for external session import).");
-            } else {
-              void vscode.commands.executeCommand("codeSessions.showTrajectory", String(msg.uuid), String(msg.title || msg.uuid));
-            }
-          } catch (e) {
-            log?.appendLine(`[planning] resumeSession failed: ${String(e)}`);
-            void vscode.commands.executeCommand("codeSessions.showTrajectory", String(msg.uuid), String(msg.title || msg.uuid));
-          }
-        })();
+        // Delegate to codeSessions.resume so cross-device sessions (no native
+        // transcript here) get the ~/.sessions seed fallback, not a blank chat.
+        void vscode.commands.executeCommand("codeSessions.resume", {
+          session: String(msg.uuid),
+          title: msg.title ? String(msg.title) : "",
+          source: String(msg.source || "claude"),
+          project_path: msg.cwd ? String(msg.cwd) : null,
+        });
         break;
       }
       case "linkSessionToTask": {
@@ -1351,6 +1415,60 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       }
     }),
   );
+
+  // ── autonomous-run notifications: watch plan.json and toast when a phase lands ──
+  // (plan.json is git-synced, so runs from the other laptop notify here too.)
+  const autoDir = path.join(os.homedir(), "docs", "planning", "autonomous");
+  const notifyAutonomous = () => {
+    let plan: any;
+    try {
+      plan = JSON.parse(readFileSync(path.join(autoDir, "plan.json"), "utf8"));
+    } catch {
+      return;
+    }
+    const cw = plan?.current_window;
+    if (!cw) return;
+    const openAuto = "Open Auto view";
+    const seenIdeate = ctx.globalState.get<string>("kp.auto.lastIdeate");
+    if (cw.ideate?.ran && cw.ideate.ran !== seenIdeate) {
+      void ctx.globalState.update("kp.auto.lastIdeate", cw.ideate.ran);
+      if (seenIdeate !== undefined) {
+        const n = cw.ideate.created_count ?? (cw.ideate.created || []).length;
+        void vscode.window
+          .showInformationMessage(`🤖 Ideation ready: ${n} idea(s)${cw.ideate.spec ? ` · spec ${cw.ideate.spec}` : ""} — review in the Auto view.`, openAuto, ...(cw.ideate.spec ? ["Open spec"] : []))
+          .then((pick) => {
+            if (pick === openAuto) DashboardPanel.show(dashDeps, "autonomous");
+            else if (pick === "Open spec") dashAction({ type: "action", action: "openSpec", spec: cw.ideate.spec });
+          });
+      }
+    }
+    const seenImpl = ctx.globalState.get<string>("kp.auto.lastImplement");
+    if (cw.implement?.ran && cw.implement.ran !== seenImpl) {
+      void ctx.globalState.update("kp.auto.lastImplement", cw.implement.ran);
+      if (seenImpl !== undefined) {
+        void vscode.window
+          .showInformationMessage(`🤖 Implementation ${cw.implement.status || "done"}${cw.implement.report ? ` — report ready` : ""}.`, openAuto, ...(cw.implement.report ? ["Open report"] : []))
+          .then((pick) => {
+            if (pick === openAuto) DashboardPanel.show(dashDeps, "autonomous");
+            else if (pick === "Open report") dashAction({ type: "open", kbPath: cw.implement.report });
+          });
+      }
+    }
+  };
+  try {
+    const w = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(autoDir), "plan.json"));
+    let deb: NodeJS.Timeout | undefined;
+    const kick = () => {
+      if (deb) clearTimeout(deb);
+      deb = setTimeout(notifyAutonomous, 1500);
+    };
+    w.onDidChange(kick);
+    w.onDidCreate(kick);
+    ctx.subscriptions.push(w);
+    notifyAutonomous(); // seed the baseline so only NEW completions notify
+  } catch (e) {
+    log?.appendLine(`[planning] autonomous watcher unavailable: ${String(e)}`);
+  }
 
   model.reload(log);
   log?.appendLine("[planning] registered Planning mode");

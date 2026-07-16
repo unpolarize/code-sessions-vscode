@@ -10,6 +10,8 @@ import { preferredEditorColumn } from "./editorColumn";
 import { ParsedConversation, parseConversation, ToolCall, Turn } from "./conversationParser";
 import { SessionStore } from "./db";
 import { classifySession } from "./topicClassifier";
+import { locateStoreTurns, turnsToConversation } from "./storeTranscript";
+import * as fs from "fs";
 
 function fmtClock(ms: number): string {
   if (!ms) return "—";
@@ -228,7 +230,9 @@ function renderHtml(
     cache_write_tokens?: number | null;
     model?: string | null;
   } | null,
+  src?: { fromStore: boolean; host?: string },
 ): string {
+  const fromStore = !!src?.fromStore;
   const totalTurns = c.summary.totalTurns;
   const totalTools = c.summary.totalTools;
   const totalSubagents = c.summary.totalSubagents;
@@ -292,14 +296,15 @@ function renderHtml(
   <code>${escapeHtml(c.sessionId)}</code>
   ${project?.id ? ` · <span class="proj-chip">📁 ${escapeHtml(project.id)}</span>` : ""}
   ${project?.path ? ` · <code class="dim">${escapeHtml(project.path)}</code>` : ""}
-  · ${escapeHtml(jsonlPath)}
+  ${src?.host ? ` · <span class="proj-chip" title="ran on this machine">💻 ${escapeHtml(src.host)}</span>` : ""}
+  ${fromStore ? ` · <span class="dim">from session store (cross-device)</span>` : ` · ${escapeHtml(jsonlPath)}`}
 </div>
 <div class="toolbar">
   <a class="btn primary" href="${resumeUrl}">▶ Continue in Code Build</a>
   ${revealUrl ? `<a class="btn" href="${revealUrl}" title="Reveal the project folder in Finder/Explorer">📁 Reveal project folder</a>` : ""}
-  <a class="btn" href="${classifyUrl}">${classifiedCount > 0 ? "Re-analyze topics" : "Analyze topics"}</a>
-  <a class="btn" href="${trajectoryUrl}">Show trajectory</a>
-  <span class="topic-meta">${escapeHtml(meta)}</span>
+  ${fromStore ? "" : `<a class="btn" href="${classifyUrl}">${classifiedCount > 0 ? "Re-analyze topics" : "Analyze topics"}</a>`}
+  ${fromStore ? "" : `<a class="btn" href="${trajectoryUrl}">Show trajectory</a>`}
+  ${fromStore ? "" : `<span class="topic-meta">${escapeHtml(meta)}</span>`}
 </div>
 <div class="totals">
   ${row?.cost_usd != null ? `<div class="stat"><span class="label">Cost</span><span class="value">${fmtCost(row.cost_usd)}</span></div>` : ""}
@@ -324,11 +329,15 @@ ${turnsHtml}
  */
 export function openConversationViewer(
   ctx: vscode.ExtensionContext,
-  jsonlPath: string,
+  jsonlPath: string | null,
   sessionId: string,
   title: string,
   store?: SessionStore | null,
 ): vscode.WebviewPanel {
+  // Native transcript missing (session ran on another laptop)? Fall back to the
+  // git-synced ~/.sessions turns store so it can still be reviewed here.
+  const nativeExists = !!jsonlPath && fs.existsSync(jsonlPath);
+  const storeRef = nativeExists ? null : locateStoreTurns(sessionId);
   const panelTitle = `${title || sessionId.slice(0, 8)} · conversation`;
   const panel = vscode.window.createWebviewPanel(
     "claudeConversationViewer",
@@ -342,15 +351,20 @@ export function openConversationViewer(
   );
   const render = () => {
     try {
-      const parsed = parseConversation(jsonlPath);
+      const parsed = storeRef
+        ? turnsToConversation(storeRef, sessionId, title)
+        : parseConversation(jsonlPath as string);
       if (!parsed.title) parsed.title = title;
       if (!parsed.sessionId) parsed.sessionId = sessionId;
-      const topics = store ? store.topicsForSession(parsed.sessionId) : undefined;
+      const topics = store && !storeRef ? store.topicsForSession(parsed.sessionId) : undefined;
       const row = store ? store.getById(parsed.sessionId) : null;
       const project = row ? { id: row.project_id, path: row.project_path } : undefined;
-      panel.webview.html = renderHtml(parsed, jsonlPath, topics, project, row);
+      panel.webview.html = renderHtml(parsed, jsonlPath ?? "", topics, project, row, {
+        fromStore: !!storeRef,
+        host: storeRef?.host,
+      });
     } catch (e: any) {
-      panel.webview.html = `<pre>Failed to parse ${escapeHtml(jsonlPath)}\n\n${escapeHtml(e?.message || String(e))}</pre>`;
+      panel.webview.html = `<pre>Failed to parse transcript for ${escapeHtml(sessionId)}\n\n${escapeHtml(e?.message || String(e))}</pre>`;
     }
   };
   render();
@@ -362,7 +376,7 @@ export function openConversationViewer(
   // is the free local one (ollama), and there are unclassified turns, run
   // classification in the background and refresh the panel when done. This
   // caches topics eagerly so subsequent opens are instant.
-  if (store) {
+  if (store && !storeRef) {
     const cfg = vscode.workspace.getConfiguration("codeSessions");
     const auto = cfg.get<boolean>("classify.autoOnOpen", true);
     const backend = cfg.get<"ollama" | "claude-p">("classify.backend", "ollama");
