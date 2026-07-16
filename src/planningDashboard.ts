@@ -254,10 +254,15 @@ const STYLE = `
 :root{ --gap:10px; }
 *{box-sizing:border-box}
 body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background);height:100vh;overflow:hidden;display:flex;flex-direction:column}
-#topbar{display:flex;align-items:center;gap:14px;padding:8px 14px;border-bottom:1px solid var(--vscode-widget-border);flex:0 0 auto}
-.brand{font-weight:700;letter-spacing:.3px}
-.spacer{flex:1}
-.counts{opacity:.7;font-size:12px}
+/* Top bar must wrap when the editor group is minimized/narrow so view tabs
+   (Sessions, Projects, …) never fall off-screen past the right edge. */
+#topbar{display:flex;align-items:center;gap:8px 10px;padding:8px 10px;border-bottom:1px solid var(--vscode-widget-border);flex:0 0 auto;flex-wrap:wrap;row-gap:6px;min-width:0}
+.brand{font-weight:700;letter-spacing:.3px;flex:none}
+/* View tabs are the primary nav — keep them fully reachable via wrap/scroll. */
+#viewSeg{flex:1 1 auto;min-width:min(100%,220px);max-width:100%;overflow-x:auto;flex-wrap:nowrap;scrollbar-width:thin}
+#viewSeg button{flex:none;white-space:nowrap}
+.spacer{flex:1 1 40px;min-width:8px}
+.counts{opacity:.7;font-size:12px;flex:none}
 .syncpill{font-size:11px;padding:2px 9px;border-radius:11px;border:1px solid var(--vscode-widget-border);cursor:pointer;white-space:nowrap;display:inline-flex;gap:5px;align-items:center;opacity:.9}
 .syncpill:hover{background:var(--vscode-toolbar-hoverBackground)}
 .syncpill.ok{border-color:#4ec9b0}
@@ -280,7 +285,10 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 #resNote{width:100%;min-height:160px;resize:vertical;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:9px 10px;font-family:var(--vscode-editor-font-family);font-size:13px;line-height:1.5}
 .resactions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
 .resactions .primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:var(--vscode-button-background)}
-#autonomous{padding:16px;overflow-y:auto;max-width:900px}
+/* Scrollable content views: fill #main (absolute inset:0) and scroll inside.
+   Without overflow + min-height chain, minimized panes clip sessions/lists. */
+#autonomous,#sessions,#social,#inbox,#projects,#calendar{padding:16px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;min-height:0}
+#autonomous{max-width:900px}
 .autorow{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px}
 .autostat{display:flex;flex-direction:column;gap:2px}
 .autostat .l{font-size:10px;text-transform:uppercase;letter-spacing:.5px;opacity:.55}
@@ -295,19 +303,18 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .ph.ide{background:#3b6ea5;color:#fff}.ph.imp{background:#4e8f6e;color:#fff}.ph.nxt{background:#7a6ea0;color:#fff}.ph.rep{background:#8a6d3b;color:#fff}
 .usagebar{height:8px;border-radius:5px;background:var(--vscode-widget-border);overflow:hidden;margin:4px 0 10px;max-width:360px}
 .usagefill{height:100%;background:var(--vscode-progressBar-background,#3b6ea5)}
-#sessions{padding:16px;overflow-y:auto}
 .sessbar{display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
-.sesssearch{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:4px 9px;width:220px}
+.sesssearch{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:4px 9px;width:min(220px,100%);min-width:120px;flex:1 1 140px}
 .sesscount{font-size:11px;opacity:.6;margin-bottom:10px}
-.sesslist{display:flex;flex-direction:column;gap:8px;max-width:820px}
-.sesscard{background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px 12px;cursor:pointer}
+.sesslist{display:flex;flex-direction:column;gap:8px;max-width:820px;min-width:0;width:100%}
+.sesscard{background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px 12px;cursor:pointer;min-width:0}
 .sesscard:hover{border-color:var(--vscode-focusBorder)}
-.sesscard .sh{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
-.sesscard .ct{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sesscard .sh{display:flex;justify-content:space-between;gap:10px;align-items:baseline;min-width:0}
+.sesscard .ct{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .sesscard .cm{opacity:.6;font-size:11px;flex:none}
 .sesscard .sm{display:flex;gap:8px;opacity:.7;font-size:11px;margin-top:5px;flex-wrap:wrap}
-.srefs{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
-#social{padding:16px;overflow-y:auto}
+.sesscard .sacts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.srefs{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;min-width:0}
 .socialdrop{border:1px dashed var(--vscode-widget-border);border-radius:8px;padding:10px;text-align:center;font-size:12px;opacity:.6;margin-bottom:12px}
 .socialdrop.over{border-color:var(--vscode-focusBorder);background:var(--vscode-list-hoverBackground);opacity:1}
 .sociallist{display:flex;flex-direction:column;gap:8px;max-width:760px}
@@ -321,15 +328,25 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .seg button.on{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
 .ghost{background:transparent;color:var(--vscode-foreground);border:1px solid var(--vscode-widget-border);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px}
 .ghost:hover{background:var(--vscode-toolbar-hoverBackground)}
-#main{flex:1;position:relative;overflow:hidden}
-.view{position:absolute;inset:0}
+/* min-height:0 is required so a flex child can shrink when the VS Code
+   editor group is minimized — otherwise content (Sessions list, etc.) is
+   clipped by overflow:hidden with no inner scroll. */
+#main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
+.view{position:absolute;inset:0;min-width:0;min-height:0}
 .hidden{display:none!important}
+/* Board-only chrome: hide when not on the board so Sessions / Projects /
+   Auto tabs stay visible in a minimized pane (group/sort/lane ate the bar). */
+body:not([data-view="board"]) #laneSeg,
+body:not([data-view="board"]) #groupBy,
+body:not([data-view="board"]) #sortBy,
+body:not([data-view="board"]) #addLaneBtn{display:none!important}
+body:not([data-view="calendar"]) #calModeSeg{display:none!important}
 /* board */
-#board{display:flex;flex-direction:column;gap:10px;padding:14px}
-.boardfilter{display:flex;gap:8px;align-items:center;font-size:12px;flex:0 0 auto}
+#board{display:flex;flex-direction:column;gap:10px;padding:14px;min-height:0;overflow:hidden}
+.boardfilter{display:flex;gap:8px;align-items:center;font-size:12px;flex:0 0 auto;flex-wrap:wrap}
 .boardfilter select,.boardfilter input{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:2px 6px}
 .lanes{display:flex;gap:var(--gap);overflow-x:auto;align-items:flex-start;flex:1;min-height:0}
-.col{flex:0 0 270px;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:10px;display:flex;flex-direction:column;max-height:100%}
+.col{flex:0 0 270px;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:10px;display:flex;flex-direction:column;max-height:100%;min-width:0}
 .col.over{outline:2px dashed var(--vscode-focusBorder);outline-offset:-2px}
 .col h3{font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin:0;padding:10px 12px;display:flex;align-items:center;gap:7px;position:sticky;top:0}
 .dot{width:8px;height:8px;border-radius:50%}
@@ -338,11 +355,18 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .col.max{flex:1 1 auto;max-width:none}
 /* Narrow panes (side bar open / small window): stack lanes full-width so cards stay
    readable instead of being crushed into a horizontal scroll of tiny columns. */
-@media (max-width:760px){
-  .lanes{flex-wrap:wrap;overflow-x:hidden}
+@media (max-width:900px){
+  .lanes{flex-wrap:wrap;overflow-x:hidden;overflow-y:auto}
   .col{flex:1 1 100%;max-width:none;max-height:none}
-  .cards{max-height:none}
-  #topbar{gap:8px;flex-wrap:wrap}
+  .cards{max-height:min(50vh,420px)}
+  .brand{display:none} /* reclaim space for view tabs */
+  #counts{display:none}
+  body[data-view="board"] #groupBy,
+  body[data-view="board"] #sortBy{max-width:110px}
+}
+@media (max-width:560px){
+  body[data-view="board"] #addLaneBtn{display:none}
+  .seg button{padding:4px 8px;font-size:11px}
 }
 .card .ct{overflow-wrap:anywhere}
 .card.compact{padding:4px 10px;display:flex;align-items:center;gap:10px}
@@ -535,11 +559,17 @@ $('#search').addEventListener('input',e=>{searchTerm=e.target.value;applySearch(
   const al=$('#addLaneBtn'); if(al)al.addEventListener('click',()=>vscode.postMessage({type:'action',action:'addLane'}));})();
 $('#backdrop').addEventListener('click',closeDrawer);
 function syncSeg(){
+  // Drive CSS for board-only chrome + narrow-pane prioritization of view tabs.
+  try{ document.body.dataset.view = view; }catch(e){}
   document.querySelectorAll('#viewSeg button').forEach(b=>b.classList.toggle('on',b.dataset.view===view));
   document.querySelectorAll('#laneSeg button').forEach(b=>b.classList.toggle('on',b.dataset.lane===laneSet));
   document.querySelectorAll('#calModeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.cm===calMode));
+  // Board/calendar chrome visibility is primarily CSS (body[data-view]); keep
+  // inline display in sync for older hosts / no-CSS-fallback.
   $('#laneSeg').style.display = view==='board'?'inline-flex':'none';
   $('#calModeSeg').style.display = view==='calendar'?'inline-flex':'none';
+  const boardOnly = ['#groupBy','#sortBy','#addLaneBtn'];
+  boardOnly.forEach(sel=>{ const n=$(sel); if(n) n.style.display = view==='board'?'':'none'; });
   $('#board').classList.toggle('hidden',view!=='board');
   $('#inbox').classList.toggle('hidden',view!=='inbox');
   $('#autonomous').classList.toggle('hidden',view!=='autonomous');

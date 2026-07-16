@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.29.1 — 2026-07-16
+
+### KP dashboard: Sessions (and other views) visible when pane is minimized
+
+- Top bar **always wraps** and prioritizes the view tab strip (`Board / Inbox / … / Sessions`) so tabs no longer disappear off the right edge in a narrow editor group.
+- Board-only chrome (`groupBy` / `sortBy` / `＋ lane` / lane segment) is **hidden on non-board views**, reclaiming space for Sessions / Projects / Auto.
+- Main content area uses `min-height: 0` + proper overflow so session lists scroll instead of being clipped when the panel height is short.
+
+PATCH.
+
 ## 1.26.0 — 2026-07-15
 
 ### Autonomous builder visibility
