@@ -275,7 +275,7 @@ const MIGRATIONS: string[] = [
   `,
 ];
 
-export type CoderSourceId = "claude" | "grok" | "git";
+export type CoderSourceId = "claude" | "grok" | "codex" | "git";
 
 export interface SessionRow {
   session_id: string;

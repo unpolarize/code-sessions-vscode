@@ -373,7 +373,7 @@ function escapeMd(s: string): string {
 // --------------------------------------------------------------------------- //
 
 interface SessionRow {
-  source: "claude" | "grok" | "git";
+  source: "claude" | "grok" | "codex" | "git";
   /** Dominant / last-seen model id from the JSONL (`claude-opus-4-7`,
    * `grok-build`, etc.). Null if the indexer hasn't pinned one yet. */
   model: string | null;
@@ -1096,7 +1096,7 @@ class BucketItem extends vscode.TreeItem {
     /** Optional source filter — set when the bucket sits under a
      * SourceBucketItem so child expansion restricts to that source. Undefined
      * for kb/project buckets which are claude-only today. */
-    public readonly source?: "claude" | "grok" | "git",
+    public readonly source?: "claude" | "grok" | "codex" | "git",
   ) {
     let label = BUCKET_LABEL[bucket];
     if (kind === "session" && totals) {
