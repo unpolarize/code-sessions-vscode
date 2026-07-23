@@ -2648,7 +2648,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (!row?.session) return;
       const current = row.title || "";
       const input = await vscode.window.showInputBox({
-        prompt: `Rename ${row.source === "grok" ? "Grok" : "Claude"} session — writes to the source-of-truth file so the native CLI sees the new name on its next --resume listing.`,
+        prompt: `Rename ${row.source === "grok" ? "Grok" : row.source === "codex" ? "Codex" : "Claude"} session — writes to the source-of-truth file so the native CLI sees the new name on its next --resume listing.`,
         value: current,
         placeHolder: "New session title",
         validateInput: (v) => v.trim().length === 0 ? "Title cannot be empty (cancel with Esc to keep current)" : null,
@@ -3030,6 +3030,21 @@ async function resumeInNative(row: SessionRow): Promise<void> {
     );
     return;
   }
+  if (row.source === "codex") {
+    // No codex VS Code surface to hand off to — resume in a terminal, which
+    // is codex's native flow (`codex resume <id>` reopens the rollout).
+    const term = vscode.window.createTerminal({
+      name: `codex:${row.session.slice(0, 8)}`,
+      cwd,
+    });
+    term.show();
+    term.sendText(`codex resume ${row.session}`);
+    vscode.window.setStatusBarMessage(
+      `Launched codex CLI resuming session ${row.session.slice(0, 8)}.`,
+      6000,
+    );
+    return;
+  }
   // Claude — anthropic.claude-code truly resumes by session id.
   const candidates = [
     "claude-vscode.primaryEditor.open",
@@ -3086,6 +3101,11 @@ async function renameSessionFile(
   }
   if (row.source === "grok") {
     return renameGrokSession(row, text);
+  }
+  if (row.source === "codex") {
+    // Guard: codex rollouts have no rename affordance yet, and falling through
+    // to the claude rewriter would inject claude-shaped lines into a rollout.
+    return { ok: false, error: "Codex sessions can't be renamed yet — the title comes from the first user message in the rollout." };
   }
   return renameClaudeSession(row, text);
 }
