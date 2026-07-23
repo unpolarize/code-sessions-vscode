@@ -31,6 +31,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { StringDecoder } from "string_decoder";
 import { SessionStore, SessionRow, TurnRow } from "./db";
 
 export function codexSessionsRoot(): string {
@@ -105,11 +106,14 @@ function forEachLineSync(filePath: string, onLine: (line: string) => void): void
   const fd = fs.openSync(filePath, "r");
   try {
     const buf = Buffer.alloc(1 << 16);
+    // StringDecoder holds back a multi-byte UTF-8 sequence split across a
+    // chunk boundary instead of emitting replacement chars mid-line.
+    const decoder = new StringDecoder("utf-8");
     let carry = "";
     for (;;) {
       const n = fs.readSync(fd, buf, 0, buf.length, null);
       if (n <= 0) break;
-      carry += buf.toString("utf-8", 0, n);
+      carry += decoder.write(buf.subarray(0, n));
       let nl: number;
       while ((nl = carry.indexOf("\n")) >= 0) {
         const line = carry.slice(0, nl);
@@ -117,6 +121,7 @@ function forEachLineSync(filePath: string, onLine: (line: string) => void): void
         if (line.trim().length > 0) onLine(line);
       }
     }
+    carry += decoder.end();
     if (carry.trim().length > 0) onLine(carry);
   } finally {
     fs.closeSync(fd);

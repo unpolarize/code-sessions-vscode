@@ -166,4 +166,20 @@ t("model: last non-null turn_context.payload.model wins", () => {
   assert.strictEqual(rows.session.model, "gpt-5.5-codex");
 });
 
+// 8. Multi-byte UTF-8 straddling the 64KB chunk boundary must not corrupt
+//    lines (regression: naive per-chunk buf.toString emitted U+FFFD).
+t("utf-8 multi-byte chars across chunk boundaries survive intact", () => {
+  const { root, day } = makeRoot();
+  // Pad so a run of multi-byte chars is guaranteed to straddle the 64KiB
+  // read boundary regardless of exact header length.
+  const emoji = "日本語🎉".repeat(8192); // ~114KB of multi-byte content
+  const user = { timestamp: "2026-06-20T15:28:06.000Z", type: "event_msg", payload: { type: "user_message", message: emoji } };
+  writeRollout(day, [META, user, AGENT]);
+  const rows = buildCodexRows(listAllCodexSessions(root)[0]);
+  assert.ok(rows);
+  assert.ok(!rows.turns[0].user_text.includes("�"), "no replacement chars");
+  assert.ok(rows.turns[0].user_text.startsWith("日本語🎉"));
+  assert.strictEqual(JSON.parse(rows.session.extras_json ?? "{}").bad_lines, undefined, "no lines dropped");
+});
+
 console.log(`codexIndexer: ${passed} tests passed`);
