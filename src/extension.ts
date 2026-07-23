@@ -12,6 +12,7 @@ import { registerPlanning, setSessionProvider } from "./planning";
 import { SessionStore } from "./db";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
+import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
 import { StoreSyncManager, setSyncBridge, type SyncStatus } from "./storeSync";
 import { classifySession } from "./topicClassifier";
@@ -1134,8 +1135,9 @@ class SessionItem extends vscode.TreeItem {
     const ago = formatAgoFixed(responseEpoch);
     const titleText = row.title || row.session;
     // Source marker — always visible regardless of state. Prefix the label
-    // so it lines up with the ago column. [C] = Claude, [G] = Grok.
-    const sourceMarker = row.source === "grok" ? "[G]" : row.source === "git" ? "[S]" : "[C]";
+    // so it lines up with the ago column. [C] = Claude, [G] = Grok, [X] = Codex.
+    const sourceMarker =
+      row.source === "grok" ? "[G]" : row.source === "codex" ? "[X]" : row.source === "git" ? "[S]" : "[C]";
     super(
       `${sourceMarker} ${ago}  ·  ${titleText}`,
       // Always collapse by default — the user opens children on demand instead
@@ -1177,7 +1179,7 @@ class SessionItem extends vscode.TreeItem {
         `**${row.title || "(no title)"}**`,
         ``,
         `\`${row.session}\``,
-        `Source: ${row.source === "grok" ? "Grok Build" : "Claude Code"}` +
+        `Source: ${row.source === "grok" ? "Grok Build" : row.source === "codex" ? "Codex CLI" : "Claude Code"}` +
           (row.model ? `  ·  Model: \`${row.model}\`` : ""),
         `Modified: ${row.modified}`,
         `Messages: ${row.messages}  ·  Subagents: ${row.subagents}`,
@@ -1206,7 +1208,9 @@ class SessionItem extends vscode.TreeItem {
               ? "pulse"
               : row.source === "grok"
                 ? "rocket"
-                : "comment-discussion",
+                : row.source === "codex"
+                  ? "terminal"
+                  : "comment-discussion",
     );
     const base = row.is_automated ? "sessionAutomated" : "session";
     const starred = row.is_starred ? `${base}-starred` : base;
@@ -1244,7 +1248,7 @@ class SessionItem extends vscode.TreeItem {
       [
         `**${r.title || "(no title)"}**`,
         ``,
-        `Source: ${r.source === "grok" ? "Grok Build" : "Claude Code"}` +
+        `Source: ${r.source === "grok" ? "Grok Build" : r.source === "codex" ? "Codex CLI" : "Claude Code"}` +
           (r.model ? `  ·  Model: \`${r.model}\`` : ""),
         ...buildCostBreakdown(r),
       ].join("\n"),
@@ -2096,6 +2100,14 @@ export function activate(ctx: vscode.ExtensionContext) {
           console.error("[code-sessions] grok sync failed:", e);
         }
       }
+      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
+        try {
+          const codexStats = syncCodexToStore(s);
+          console.log(`[code-sessions] codex sync: ${JSON.stringify(codexStats)}`);
+        } catch (e: any) {
+          console.error("[code-sessions] codex sync failed:", e);
+        }
+      }
       if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("git.enabled", true)) {
         try {
           const gitStats = syncGitToStore(s, {
@@ -2277,6 +2289,13 @@ export function activate(ctx: vscode.ExtensionContext) {
             console.error("[code-sessions] refresh grok sync failed", e);
           }
         }
+        if (cfg.get<boolean>("codex.enabled", true)) {
+          try {
+            syncCodexToStore(store, recent > 0 ? { forceRecentN: recent } : {});
+          } catch (e) {
+            console.error("[code-sessions] refresh codex sync failed", e);
+          }
+        }
         if (cfg.get<boolean>("git.enabled", true)) {
           try {
             syncGitToStore(store, {
@@ -2332,8 +2351,16 @@ export function activate(ctx: vscode.ExtensionContext) {
             });
             grokParsed = grokStats.parsed;
           }
+          let codexParsed = 0;
+          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
+            const codexStats = syncCodexToStore(s, {
+              force: true,
+              onProgress: (done, total) => progress.report({ message: `codex ${done}/${total}` }),
+            });
+            codexParsed = codexStats.parsed;
+          }
           vscode.window.setStatusBarMessage(
-            `Rescanned ${stats.parsed + grokParsed} session(s) in ${Math.round(stats.elapsed_ms / 1000)}s`,
+            `Rescanned ${stats.parsed + grokParsed + codexParsed} session(s) in ${Math.round(stats.elapsed_ms / 1000)}s`,
             4000,
           );
         },
@@ -2668,6 +2695,9 @@ export function activate(ctx: vscode.ExtensionContext) {
           if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
             syncGrokToStore(store);
           }
+          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
+            syncCodexToStore(store);
+          }
         } catch (e: any) {
           console.error("[code-sessions] sync failed in watcher:", e);
         }
@@ -2829,6 +2859,9 @@ export function activate(ctx: vscode.ExtensionContext) {
       try { syncToStore(store); } catch { /* swallow; next tick retries */ }
       if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
         try { syncGrokToStore(store); } catch { /* swallow; next tick retries */ }
+      }
+      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
+        try { syncCodexToStore(store); } catch { /* swallow; next tick retries */ }
       }
     }
     sessions.refresh();

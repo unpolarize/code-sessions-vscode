@@ -691,6 +691,11 @@
           "default": true,
           "description": "Discover and index Grok Build sessions from ~/.grok/sessions/ alongside Claude Code sessions."
         },
+        "codeSessions.codex.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Discover and index Codex CLI sessions from ~/.codex/sessions/ (rollout-*.jsonl) alongside Claude Code and Grok Build sessions."
+        },
         "codeSessions.git.enabled": {
           "type": "boolean",
           "default": true,
@@ -916,7 +921,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js && node test/storeSyncGit.test.js",
+    "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js && node test/storeSyncGit.test.js && node test/codexIndexer.test.js",
     "package": "npm run compile && vsce package --allow-missing-repository",
     "vscode:prepublish": "npm run compile"
   },
