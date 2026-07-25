@@ -114,7 +114,7 @@ interface ParsedOut {
  * envelope looks like { result: "<text>", usage: { input_tokens, output_tokens } }.
  * The inner text is supposed to be JSONL of {id, topic} lines.
  */
-function parseClaudeOutput(stdout: string): ParsedOut {
+export function parseClaudeOutput(stdout: string): ParsedOut {
   const out: ParsedOut = { topics: [], inputTokens: 0, outputTokens: 0 };
   let inner = stdout;
   // Try to peel the JSON envelope first.

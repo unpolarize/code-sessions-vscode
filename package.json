@@ -921,7 +921,8 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js && node test/storeSyncGit.test.js && node test/codexIndexer.test.js",
+    "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js && node test/storeSyncGit.test.js && node test/codexIndexer.test.js && npm run test:unit",
+    "test:unit": "vitest run",
     "package": "npm run compile && vsce package --allow-missing-repository",
     "vscode:prepublish": "npm run compile"
   },
@@ -933,7 +934,8 @@
     "esbuild": "^0.28.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "@unpolarize/knowledge-planning": "^0.4.0",

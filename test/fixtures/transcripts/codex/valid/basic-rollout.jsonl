@@ -1,0 +1,6 @@
+{"timestamp":"2026-07-02T09:00:00.000Z","type":"session_meta","payload":{"id":"55555555-5555-4555-8555-555555555555","cwd":"/Users/tester/projects/demo","source":"cli","originator":"codex_cli_rs","cli_version":"0.5.0"}}
+{"timestamp":"2026-07-02T09:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.2-codex","cwd":"/Users/tester/projects/demo"}}
+{"timestamp":"2026-07-02T09:00:05.000Z","type":"event_msg","payload":{"type":"user_message","message":"add a README"}}
+{"timestamp":"2026-07-02T09:00:08.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"touch\",\"README.md\"]}"}}
+{"timestamp":"2026-07-02T09:00:12.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Created README.md."}}
+{"timestamp":"2026-07-02T09:00:13.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1200,"output_tokens":340,"cached_input_tokens":800}}}}

@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"44444444-4444-4444-8444-444444444444","timestamp":"2026-07-01T13:00:00.000Z","message":{"content":"first"}}
+{"type":"assistant","timestamp":"2026-07-01T13:00:01.000Z","message":{"content":[{"type":"text","text":"done"}]}}
