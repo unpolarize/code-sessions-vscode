@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.32.0 — 2026-07-25
+
+### Sessions tree: folder + host scope filters with a QuickPick switcher
+
+- **Host filter (new, default on).** `codeSessions.filterByCurrentHost` shows only sessions that ran on this machine. Native transcripts are always local; git-store imports carry their origin host in `extras_json.host` (matched case-insensitively, ignoring `.local`/`.lan` suffixes). Other laptops' sessions are hidden by default.
+- **Filter switcher.** New `codeSessions.chooseFilter` command — funnel icon in the Sessions title bar, also bound to the "Filtered to …" banner row. One QuickPick lists **folders** (current workspace / all / every distinct session cwd with counts) and **hosts** (this host / all / every other host with counts). Picking an entry overrides that axis for this window only (persisted in `workspaceState`); the settings defaults (`filterByCurrentWorkspace`, `filterByCurrentHost`) stay untouched.
+- **Banner** now reflects both axes (`Filtered to docs · host foo — N sessions hidden`), always renders while a non-default override is active (so there's a way back), and opens the switcher instead of Settings.
+
+MINOR.
+
+## 1.31.0 — 2026-07-19
+
+### Claude statusline parity: context-window gauge + burn rate
+
+- **Per-session context-window gauge.** Each active session now estimates tokens currently in context from the latest assistant `message.usage` block (input + cache read + cache creation) in a wider 64 KB JSONL tail. Context limits per model: `[1m]` models → 1M, grok → 256K, Claude/unknown → 200K.
+  - Live status-bar tooltip: per-session `ctx NN%` (bold + `$(warning)` at ≥ 80%).
+  - Status-bar label: appends `· $(warning) ctx NN%` (highest active session) when any session is ≥ 80%.
+  - Live Monitor cards: slim context bar with green/yellow/red thresholds at 50% / 80% plus `NN% · used/limit` tokens.
+- **Burn rate ($/hr).** New `UpdatePayload.burnRateUsdPerHour` = cost today ÷ hours since today's first session activity (shown only after 30 min of activity). Surfaced in the cost-budget tile (text + tooltip), the live status-bar tooltip summary, and the Live Monitor summary bar.
+- Status parsing, notifications, adaptive polling, and config gates are unchanged; the status parser still sees its original 8 KB tail window.
+
+MINOR.
+
 ## 1.30.1 — 2026-07-16
 
 ### Auto ideas: show session + agent/model provenance
