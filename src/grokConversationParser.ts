@@ -158,11 +158,20 @@ export function parseGrokConversation(chatPath: string): ParsedGrokSession {
   return { turns, totalTools, rawMessageCount };
 }
 
-/** Which parser a session's transcript needs. The viewer routes on the
- * SessionRow's `source` only — everything that isn't grok stays on the
- * claude parser (codex rollouts never reach the jsonl viewer path). */
-export function parserKindForSource(source: string | null | undefined): "grok" | "claude" {
-  return source === "grok" ? "grok" : "claude";
+/** Which parser a session's transcript needs. Routes on the SessionRow's
+ * `source`; when the row is unavailable (no store, cache miss) a transcript
+ * living under ~/.grok/sessions/ still routes to the grok parser so it never
+ * falls back to the claude parser's blank-body rendering. Everything else
+ * stays on the claude parser (codex rollouts never reach this viewer path). */
+export function parserKindForSource(
+  source: string | null | undefined,
+  jsonlPath?: string | null,
+): "grok" | "claude" {
+  if (source === "grok") return "grok";
+  if (source == null && jsonlPath && /[\\/]\.grok[\\/]sessions[\\/]/.test(jsonlPath)) {
+    return "grok";
+  }
+  return "claude";
 }
 
 /** Viewer adapter: grok chat_history.jsonl → the same ParsedConversation the
@@ -190,7 +199,10 @@ export function parseGrokConversationAsParsed(chatPath: string): ParsedConversat
   } catch {
     // summary.json missing/corrupt — ordinal-only timestamps.
   }
-  const base = startMs ?? 0;
+  // No summary.json → no anchor for synthesised times. Use 0 for every turn
+  // (fmtClock(0) renders as "—") instead of base+ordinal, which would paint
+  // 1970-epoch clocks on turns 1..n.
+  const turnTs = (index: number): number => (startMs != null ? startMs + index : 0);
 
   const toolCountsByName: Record<string, number> = {};
   let totalTools = 0;
@@ -212,7 +224,7 @@ export function parseGrokConversationAsParsed(chatPath: string): ParsedConversat
         id: `grok-${t.index}-${j}`,
         name: tc.name,
         input,
-        startMs: base + t.index,
+        startMs: turnTs(t.index),
         endMs: null,
         durationMs: null,
         resultText: null,
@@ -224,7 +236,7 @@ export function parseGrokConversationAsParsed(chatPath: string): ParsedConversat
     return {
       index: t.index,
       userText: t.userText,
-      userTimestampMs: base + t.index,
+      userTimestampMs: turnTs(t.index),
       assistantText: t.assistantText,
       assistantStartMs: null,
       turnEndMs: null,

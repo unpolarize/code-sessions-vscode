@@ -97,4 +97,14 @@ describe("parserKindForSource (viewer routing)", () => {
     expect(parserKindForSource(null)).toBe("claude");
     expect(parserKindForSource(undefined)).toBe("claude");
   });
+
+  it("falls back to the path heuristic only when the row/source is missing", () => {
+    const grokPath = "/Users/tester/.grok/sessions/%2Fproj/abc/chat_history.jsonl";
+    expect(parserKindForSource(null, grokPath)).toBe("grok");
+    expect(parserKindForSource(undefined, grokPath)).toBe("grok");
+    // An explicit non-grok source wins over the path.
+    expect(parserKindForSource("claude", grokPath)).toBe("claude");
+    expect(parserKindForSource(null, "/Users/tester/.claude/projects/x/y.jsonl")).toBe("claude");
+    expect(parserKindForSource(null, null)).toBe("claude");
+  });
 });

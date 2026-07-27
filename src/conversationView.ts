@@ -358,7 +358,7 @@ export function openConversationViewer(
       const row = store ? store.getById(sessionId) : null;
       const parsed = storeRef
         ? turnsToConversation(storeRef, sessionId, title)
-        : parserKindForSource(row?.source) === "grok"
+        : parserKindForSource(row?.source, jsonlPath) === "grok"
           ? parseGrokConversationAsParsed(jsonlPath as string)
           : parseConversation(jsonlPath as string);
       if (!parsed.title) parsed.title = title;
