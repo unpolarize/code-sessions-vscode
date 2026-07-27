@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.30.1",
+  "version": "1.32.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -186,6 +186,12 @@
         "command": "codeSessions.refresh",
         "title": "Refresh sessions",
         "icon": "$(refresh)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.chooseFilter",
+        "title": "Filter sessions by folder / host…",
+        "icon": "$(filter)",
         "category": "Code Sessions"
       },
       {
@@ -447,6 +453,11 @@
           "group": "navigation@9"
         },
         {
+          "command": "codeSessions.chooseFilter",
+          "when": "view == codeSessions",
+          "group": "navigation@0"
+        },
+        {
           "command": "codeSessions.openLiveMonitor",
           "when": "view == codeSessions",
           "group": "navigation@1"
@@ -674,7 +685,12 @@
         "codeSessions.filterByCurrentWorkspace": {
           "type": "boolean",
           "default": true,
-          "description": "Show only sessions that originated from the current workspace's first folder (or a subfolder of it). Default on — keeps the sidebar focused on sessions you can actually resume from this window. Toggle off to see every session across every project."
+          "description": "Show only sessions that originated from the current workspace's first folder (or a subfolder of it). Default on — keeps the sidebar focused on sessions you can actually resume from this window. Toggle off to see every session across every project. The 'Filter sessions by folder / host…' picker can temporarily override this per window."
+        },
+        "codeSessions.filterByCurrentHost": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show only sessions that ran on this machine. Sessions imported from the cross-machine git store carry their origin host; default on hides other laptops' sessions. Toggle off (or use the 'Filter sessions by folder / host…' picker) to see every host."
         },
         "codeSessions.insightsLookbackDays": {
           "type": "number",
@@ -690,6 +706,11 @@
           "type": "boolean",
           "default": true,
           "description": "Discover and index Grok Build sessions from ~/.grok/sessions/ alongside Claude Code sessions."
+        },
+        "codeSessions.codex.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Discover and index Codex CLI sessions from ~/.codex/sessions/ (rollout-*.jsonl) alongside Claude Code and Grok Build sessions."
         },
         "codeSessions.git.enabled": {
           "type": "boolean",
@@ -916,7 +937,8 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js && node test/storeSyncGit.test.js",
+    "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js && node test/storeSyncGit.test.js && node test/codexIndexer.test.js && npm run test:unit",
+    "test:unit": "vitest run",
     "package": "npm run compile && vsce package --allow-missing-repository",
     "vscode:prepublish": "npm run compile"
   },
@@ -928,7 +950,8 @@
     "esbuild": "^0.28.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "@unpolarize/knowledge-planning": "^0.4.0",

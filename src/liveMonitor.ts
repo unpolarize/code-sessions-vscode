@@ -9,6 +9,10 @@ import { SessionStore, SessionRow } from "./db";
 const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 const POLL_INTERVAL_MS = 2000;
 const TAIL_BYTES = 8192;
+// Wider tail window used only to locate the most recent assistant
+// `message.usage` block for the context-window gauge. 64 KB comfortably
+// spans a few large tool results without re-reading the whole transcript.
+const CTX_TAIL_BYTES = 65536;
 
 interface NowStatus {
   kind: "in_tool" | "responding" | "idle" | "awaiting_user";
@@ -38,6 +42,16 @@ interface LiveCard {
   cost_usd: number;
   now: NowStatus;
   toolsLast60s: number;
+  /** Dominant / last-seen model id for the session (drives the context limit). */
+  model: string | null;
+  /** Tokens currently in the model's context window — sum of input +
+   * cache_read + cache_creation from the latest assistant usage block in the
+   * JSONL tail. Null when no usage block is visible in the tail window. */
+  contextTokens: number | null;
+  /** Context-window limit for the session's model (tokens). */
+  contextLimit: number;
+  /** Rounded percentage of the context window in use, or null when unknown. */
+  contextPct: number | null;
 }
 
 export interface UpdatePayload {
@@ -55,6 +69,10 @@ export interface UpdatePayload {
   memoryEntries: number;
   /** Number of source files with at least one entry. */
   memoryFiles: number;
+  /** Today's spend divided by hours elapsed since today's first session
+   * activity. Null when under 30 minutes have elapsed (too noisy) or when
+   * there is no spend/activity today. */
+  burnRateUsdPerHour: number | null;
 }
 
 export type LiveCardForExport = LiveCard;
@@ -144,9 +162,50 @@ function nowStatusFromTail(tail: string, now: number): { status: NowStatus; tool
   return { status, toolsLast60s };
 }
 
+/** Context-window size (tokens) for a model id. `[1m]`-suffixed Claude models
+ * run the 1M-token beta window; grok models are 256K; everything else
+ * (Claude default + unknown) is 200K. */
+function contextLimitForModel(model: string | null): number {
+  const m = (model ?? "").toLowerCase();
+  if (m.includes("[1m]")) return 1_000_000;
+  if (m.includes("grok")) return 256_000;
+  return 200_000; // Claude default / unknown
+}
+
+/** Sibling of nowStatusFromTail: scan the tail backwards for the most recent
+ * assistant event carrying `message.usage` and return the tokens currently in
+ * context (input + cache_read + cache_creation). Null when no usage block is
+ * visible in the tail window. */
+function contextTokensFromTail(tail: string): number | null {
+  const lines = tail.split("\n").filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const obj = JSON.parse(lines[i]);
+      if (obj?.type !== "assistant") continue;
+      const u = obj.message?.usage;
+      if (!u || typeof u.input_tokens !== "number") continue;
+      return (
+        (u.input_tokens || 0) +
+        (typeof u.cache_read_input_tokens === "number" ? u.cache_read_input_tokens : 0) +
+        (typeof u.cache_creation_input_tokens === "number" ? u.cache_creation_input_tokens : 0)
+      );
+    } catch {
+      // skip partial / non-JSON line
+    }
+  }
+  return null;
+}
+
 function cardFromSession(s: SessionRow, now: number): LiveCard {
-  const tail = tailFile(s.jsonl_path, TAIL_BYTES);
-  const { status, toolsLast60s } = nowStatusFromTail(tail, now);
+  // Read one wide tail; the status parser keeps its original 8 KB window
+  // (sliced off the end) so its behavior is unchanged, while the context
+  // gauge scans the full 64 KB for the latest assistant usage block.
+  const tail = tailFile(s.jsonl_path, CTX_TAIL_BYTES);
+  const { status, toolsLast60s } = nowStatusFromTail(tail.slice(-TAIL_BYTES), now);
+  const contextTokens = contextTokensFromTail(tail);
+  const contextLimit = contextLimitForModel(s.model);
+  const contextPct =
+    contextTokens !== null ? Math.min(999, Math.round((contextTokens / contextLimit) * 100)) : null;
   return {
     session_id: s.session_id,
     title: s.title || s.session_id.slice(0, 8),
@@ -165,6 +224,10 @@ function cardFromSession(s: SessionRow, now: number): LiveCard {
     cost_usd: s.cost_usd,
     now: status,
     toolsLast60s,
+    model: s.model,
+    contextTokens,
+    contextLimit,
+    contextPct,
   };
 }
 
@@ -197,6 +260,18 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
   );
   const subagentsToday = todays.reduce((sum, r) => sum + (r.subagent_count || 0), 0);
   const toolsPerMin = cards.reduce((sum, c) => sum + c.toolsLast60s, 0);
+  // Burn rate: costToday spread over the hours since today's first session
+  // activity. Sessions that started before midnight are clamped to midnight
+  // (only today's hours count). Suppressed under 30 min elapsed — a fresh
+  // morning session extrapolates absurd $/hr figures.
+  let firstActivityToday = Infinity;
+  for (const r of todays) {
+    const started = r.started_at ?? (r.ended_at || Math.floor(r.mtime_ns / 1e6));
+    firstActivityToday = Math.min(firstActivityToday, Math.max(started, startToday));
+  }
+  const elapsedTodayMs = Number.isFinite(firstActivityToday) ? now - firstActivityToday : 0;
+  const burnRateUsdPerHour =
+    elapsedTodayMs > 30 * 60_000 && costToday > 0 ? costToday / (elapsedTodayMs / 3_600_000) : null;
   // Memory inventory snapshot — count entries across all configured
   // workspace folders + global ~/.claude / ~/.codex / ~/.grok files.
   // Cheap (≤ ~15 stat+read calls); refreshed every live-monitor
@@ -226,6 +301,7 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
     subagentsToday,
     memoryEntries,
     memoryFiles,
+    burnRateUsdPerHour,
   };
 }
 
@@ -313,6 +389,13 @@ function liveHtml(webview: vscode.Webview): string {
   @keyframes pulseDot { 0% { box-shadow: 0 0 0 0 rgba(240,160,80,0.7); } 70% { box-shadow: 0 0 0 8px rgba(240,160,80,0); } 100% { box-shadow: 0 0 0 0 rgba(240,160,80,0); } }
   .now.idle { background: rgba(160, 160, 160, 0.15); color: var(--vscode-descriptionForeground); border: 1px solid rgba(160, 160, 160, 0.4); }
   .card .row { display: flex; gap: 10px; font-size: 11px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+  .card .ctx { display: none; align-items: center; gap: 8px; margin-top: 8px; font-size: 10px; color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
+  .card .ctx.on { display: flex; }
+  .card .ctx .bar { flex: 1; height: 4px; border-radius: 2px; background: rgba(160,160,160,0.18); overflow: hidden; }
+  .card .ctx .fill { height: 100%; border-radius: 2px; background: #3ecf8e; }
+  .card .ctx .fill.mid { background: #e5b567; }
+  .card .ctx .fill.high { background: #e06c75; }
+  .card .ctx .pct.high { color: #e06c75; font-weight: 600; }
   .card .row .pill { background: rgba(160,160,160,0.12); padding: 2px 8px; border-radius: 10px; }
   .empty { padding: 32px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 13px; border: 1px dashed var(--vscode-panel-border); border-radius: 8px; }
   .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3ecf8e; margin-right: 6px; vertical-align: 1px; animation: pulse 1.4s infinite ease-in-out; }
@@ -326,6 +409,7 @@ function liveHtml(webview: vscode.Webview): string {
   <div class="stat"><span class="label">Tokens today</span><span class="value" id="vTokens">0</span></div>
   <div class="stat"><span class="label">Subagents today</span><span class="value" id="vAgents">0</span></div>
   <div class="stat"><span class="label">Cost today</span><span class="value" id="vCost">$0</span></div>
+  <div class="stat" title="Cost today divided by hours elapsed since today's first session activity (shown after 30 min of activity)."><span class="label">Burn rate</span><span class="value" id="vBurn">—</span></div>
   <div class="stat" title="Total memory entries discovered across CLAUDE.md / AGENTS.md / MEMORY.md / ~/.claude / ~/.codex sources. Open the Memory tab in the sidebar for per-source breakdown."><span class="label">Memory</span><span class="value" id="vMem">0</span></div>
   <div class="stat"><span class="label">Last update</span><span class="value" id="vClock">—</span></div>
 </div>
@@ -343,6 +427,7 @@ function liveHtml(webview: vscode.Webview): string {
   const vTokens = document.getElementById('vTokens');
   const vAgents = document.getElementById('vAgents');
   const vCost = document.getElementById('vCost');
+  const vBurn = document.getElementById('vBurn');
   const vMem = document.getElementById('vMem');
   const vClock = document.getElementById('vClock');
 
@@ -378,6 +463,11 @@ function liveHtml(webview: vscode.Webview): string {
     vTokens.textContent = fmtTok(payload.tokensToday);
     vAgents.textContent = String(payload.subagentsToday);
     vCost.textContent = '$' + payload.costToday.toFixed(2);
+    if (vBurn) {
+      vBurn.textContent = payload.burnRateUsdPerHour != null
+        ? '$' + payload.burnRateUsdPerHour.toFixed(2) + '/hr'
+        : '—';
+    }
     if (vMem) {
       const entries = payload.memoryEntries || 0;
       const files = payload.memoryFiles || 0;
@@ -418,7 +508,7 @@ function liveHtml(webview: vscode.Webview): string {
         el = document.createElement('div');
         el.className = 'card';
         el.dataset.id = c.session_id;
-        el.innerHTML = '<div class="title"></div><div class="sub"></div><div class="now"></div><div class="row"></div>';
+        el.innerHTML = '<div class="title"></div><div class="sub"></div><div class="now"></div><div class="row"></div><div class="ctx"><span>ctx</span><div class="bar"><div class="fill"></div></div><span class="pct"></span></div>';
         cardsEl.appendChild(el);
       }
       el.classList.toggle('awaiting', c.now.kind === 'awaiting_user');
@@ -446,6 +536,20 @@ function liveHtml(webview: vscode.Webview): string {
         span.className = 'pill';
         span.textContent = p;
         row.appendChild(span);
+      }
+      // Context-window gauge: green < 50%, yellow 50–79%, red ≥ 80%.
+      const ctxEl = el.querySelector('.ctx');
+      if (c.contextPct == null) {
+        ctxEl.classList.remove('on');
+      } else {
+        ctxEl.classList.add('on');
+        const level = c.contextPct >= 80 ? 'high' : c.contextPct >= 50 ? 'mid' : '';
+        const fill = ctxEl.querySelector('.fill');
+        fill.className = 'fill' + (level ? ' ' + level : '');
+        fill.style.width = Math.min(100, c.contextPct) + '%';
+        const pctEl = ctxEl.querySelector('.pct');
+        pctEl.className = 'pct' + (level === 'high' ? ' high' : '');
+        pctEl.textContent = c.contextPct + '% · ' + fmtTok(c.contextTokens) + '/' + fmtTok(c.contextLimit);
       }
     }
     // Remove cards that vanished

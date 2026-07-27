@@ -8,6 +8,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { preferredEditorColumn } from "./editorColumn";
 import { ParsedConversation, parseConversation, ToolCall, Turn } from "./conversationParser";
+import { parseGrokConversationAsParsed, parserKindForSource } from "./grokConversationParser";
 import { SessionStore } from "./db";
 import { classifySession } from "./topicClassifier";
 import { locateStoreTurns, turnsToConversation } from "./storeTranscript";
@@ -351,13 +352,18 @@ export function openConversationViewer(
   );
   const render = () => {
     try {
+      // Route to the source-appropriate parser: grok chat_history.jsonl has a
+      // different line shape (top-level content + tool_calls) and renders as
+      // blank turn bodies through the claude parser.
+      const row = store ? store.getById(sessionId) : null;
       const parsed = storeRef
         ? turnsToConversation(storeRef, sessionId, title)
-        : parseConversation(jsonlPath as string);
+        : parserKindForSource(row?.source, jsonlPath) === "grok"
+          ? parseGrokConversationAsParsed(jsonlPath as string)
+          : parseConversation(jsonlPath as string);
       if (!parsed.title) parsed.title = title;
       if (!parsed.sessionId) parsed.sessionId = sessionId;
       const topics = store && !storeRef ? store.topicsForSession(parsed.sessionId) : undefined;
-      const row = store ? store.getById(parsed.sessionId) : null;
       const project = row ? { id: row.project_id, path: row.project_path } : undefined;
       panel.webview.html = renderHtml(parsed, jsonlPath ?? "", topics, project, row, {
         fromStore: !!storeRef,

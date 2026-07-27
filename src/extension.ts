@@ -12,6 +12,7 @@ import { registerPlanning, setSessionProvider } from "./planning";
 import { SessionStore } from "./db";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
+import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
 import { StoreSyncManager, setSyncBridge, type SyncStatus } from "./storeSync";
 import { classifySession } from "./topicClassifier";
@@ -105,8 +106,11 @@ function createCostBudgetTile(
       return;
     }
     let costToday = 0;
+    let burnRate: number | null = null;
     try {
-      costToday = buildUpdate(store).costToday;
+      const up = buildUpdate(store);
+      costToday = up.costToday;
+      burnRate = up.burnRateUsdPerHour;
     } catch {
       item.hide();
       return;
@@ -121,10 +125,12 @@ function createCostBudgetTile(
       icon = "$(warning)";
       item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
     }
-    item.text = `${icon} \\$${costToday.toFixed(2)} / \\$${budget.toFixed(0)} (${pct}%)`;
+    const burnStr = burnRate != null ? ` · \\$${burnRate.toFixed(2)}/hr` : "";
+    item.text = `${icon} \\$${costToday.toFixed(2)} / \\$${budget.toFixed(0)} (${pct}%)${burnStr}`;
     const md = new vscode.MarkdownString();
     md.appendMarkdown(`**Claude — today**\n\n`);
     md.appendMarkdown(`Spend: **\\$${costToday.toFixed(2)}**\n\n`);
+    if (burnRate != null) md.appendMarkdown(`Burn rate: **\\$${burnRate.toFixed(2)}/hr** _(since today's first activity)_\n\n`);
     md.appendMarkdown(`Daily budget: \\$${budget.toFixed(2)}\n\n`);
     md.appendMarkdown(`Used: **${pct}%** of budget\n\n`);
     if (pct >= 100) md.appendMarkdown(`⚠ **Over budget.** Click for Insights.`);
@@ -164,10 +170,11 @@ function createLiveStatusBar(
     md.isTrusted = true;
     md.supportThemeIcons = true;
     md.appendMarkdown(`**AI Agents · Live** &nbsp; *(updated ${new Date().toLocaleTimeString()})*\n\n`);
+    const burnStr = p.burnRateUsdPerHour != null ? ` · $(flame) **\\$${p.burnRateUsdPerHour.toFixed(2)}/hr**` : "";
     md.appendMarkdown(
       `$(pulse) **${p.activeCount}** active · $(tools) **${p.toolsPerMin}** tools/min · ` +
         `$(symbol-numeric) **${fmtTok(p.tokensToday)}** tokens · $(rocket) **${p.subagentsToday}** subagents · ` +
-        `$(credit-card) **\\$${p.costToday.toFixed(2)}** today\n\n`,
+        `$(credit-card) **\\$${p.costToday.toFixed(2)}** today${burnStr}\n\n`,
     );
     if (p.cards.length === 0) {
       md.appendMarkdown("_No active sessions in the last 2 minutes._\n");
@@ -190,11 +197,17 @@ function createLiveStatusBar(
           cacheTot ? `cache ${fmtTok(cacheTot)}` : null,
         ].filter(Boolean).join(" · ");
         const subagentStr = c.subagents > 0 ? ` · 🪄 ${c.subagents}` : "";
+        const ctxStr =
+          c.contextPct == null
+            ? ""
+            : c.contextPct >= 80
+              ? ` · $(warning) **ctx ${c.contextPct}%**`
+              : ` · ctx ${c.contextPct}%`;
         md.appendMarkdown(
           `**${escapeMd(title)}** &nbsp; \`${escapeMd(proj)}\`\n\n` +
             `${status} · 💬 ${c.messages} · 🔧 ${c.tools}${subagentStr} · ` +
             `🔢 ${fmtTok(c.totalTokens)}${tokDetail ? ` _(${tokDetail})_` : ""} · ` +
-            `\\$${c.cost_usd.toFixed(2)}\n\n`,
+            `\\$${c.cost_usd.toFixed(2)}${ctxStr}\n\n`,
         );
       }
       if (p.cards.length > 8) {
@@ -225,11 +238,18 @@ function createLiveStatusBar(
       const payload = buildUpdate(store);
       const awaiting = payload.cards.filter((c) => c.now.kind === "awaiting_user");
       if (payload.activeCount > 0) {
+        // Highest context-window usage across active sessions; surfaced in the
+        // label only when a session is near the limit (≥ 80%).
+        let maxCtxPct = 0;
+        for (const c of payload.cards) {
+          if (c.contextPct != null && c.contextPct > maxCtxPct) maxCtxPct = c.contextPct;
+        }
+        const ctxSuffix = maxCtxPct >= 80 ? ` · $(warning) ctx ${maxCtxPct}%` : "";
         if (awaiting.length > 0) {
           // Prefer the awaiting session in the status-bar label.
           const a = awaiting[0];
           const lbl = a.now.detail === "ExitPlanMode" ? "awaiting plan" : "awaiting answer";
-          item.text = `$(warning) AI Agents · ${awaiting.length} ${lbl}`;
+          item.text = `$(warning) AI Agents · ${awaiting.length} ${lbl}${ctxSuffix}`;
           item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
         } else {
           const top = payload.cards[0];
@@ -239,7 +259,7 @@ function createLiveStatusBar(
               : top.now.kind === "responding"
                 ? "responding"
                 : "idle";
-          item.text = `$(pulse) AI Agents · ${payload.activeCount} active · ${tag}`;
+          item.text = `$(pulse) AI Agents · ${payload.activeCount} active · ${tag}${ctxSuffix}`;
           item.backgroundColor = undefined;
         }
       } else {
@@ -373,7 +393,7 @@ function escapeMd(s: string): string {
 // --------------------------------------------------------------------------- //
 
 interface SessionRow {
-  source: "claude" | "grok" | "git";
+  source: "claude" | "grok" | "codex" | "git";
   /** Dominant / last-seen model id from the JSONL (`claude-opus-4-7`,
    * `grok-build`, etc.). Null if the indexer hasn't pinned one yet. */
   model: string | null;
@@ -673,11 +693,25 @@ function buildCostBreakdown(row: SessionRow): string[] {
   return lines;
 }
 
+/** Hostname comparison key: macOS reports the same machine as both
+ * `foo` and `foo.local` (and mDNS setups add `.lan`), and case varies. */
+function normalizeHost(h: string): string {
+  return h.toLowerCase().replace(/\.(local|lan)$/, "");
+}
+
 class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChange.event;
   private rows: SessionRow[] = [];
   private lastError: string | null = null;
+
+  /** Per-window scope-filter overrides, persisted in workspaceState by
+   * activate(). null = follow the settings default (current workspace
+   * folder / this host); "*" = axis off (show everything on that axis);
+   * any other value = an explicit folder path or host name picked from
+   * the "Filter sessions" QuickPick. */
+  folderOverride: string | null = null;
+  hostOverride: string | null = null;
 
   constructor(private readonly store: SessionStore | null) {}
 
@@ -764,14 +798,46 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     return el;
   }
 
-  /** Returns the absolute path to the workspace's first folder when the
-   * "filter by current workspace" setting is on, else null. */
+  /** Effective folder filter: an override picked in the QuickPick wins;
+   * otherwise the workspace's first folder when the "filter by current
+   * workspace" setting is on; null = no folder filtering. */
   private workspaceFilter(): string | null {
+    if (this.folderOverride === "*") return null;
+    if (this.folderOverride) return path.resolve(this.folderOverride);
     const cfg = vscode.workspace.getConfiguration("codeSessions");
     if (!cfg.get<boolean>("filterByCurrentWorkspace", true)) return null;
     const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!folder) return null;
     return path.resolve(folder);
+  }
+
+  /** Effective host filter (normalized), or null when host filtering is
+   * off. Default: this machine — native transcripts are always local, and
+   * git-store imports carry their origin host in extras_json.host. */
+  private hostFilter(): string | null {
+    if (this.hostOverride === "*") return null;
+    if (this.hostOverride) return normalizeHost(this.hostOverride);
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
+    if (!cfg.get<boolean>("filterByCurrentHost", true)) return null;
+    return normalizeHost(os.hostname());
+  }
+
+  /** The host a session ran on, or null when it ran on this machine
+   * (native transcripts don't record a host; only git-store imports do,
+   * in extras_json.host). */
+  static sessionHost(row: SessionRow): string | null {
+    if (!row.extras_json) return null;
+    try {
+      const h = JSON.parse(row.extras_json)?.host;
+      return typeof h === "string" && h ? h : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private static sessionOnHost(row: SessionRow, hostNorm: string): boolean {
+    const h = SessionsProvider.sessionHost(row) ?? os.hostname();
+    return normalizeHost(h) === hostNorm;
   }
 
   /** Decode the dash-encoded `~/.claude/projects/-Users-...` directory back
@@ -821,15 +887,34 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
    * "today" bucket with sessions where the agent didn't actually do any
    * work. */
   private filterVisible(rows: SessionRow[]): SessionRow[] {
+    return this.filterCandidates(rows).filter((r) => this.inScope(r));
+  }
+
+  /** All filters EXCEPT the folder/host scoping — the pool the
+   * "Filter sessions" QuickPick counts folders and hosts over. */
+  private filterCandidates(rows: SessionRow[]): SessionRow[] {
     const cfg = vscode.workspace.getConfiguration("codeSessions");
     const showAutomated = cfg.get<boolean>("showAutomated", false);
     const showHidden = cfg.get<boolean>("showHidden", false);
-    const wsFilter = this.workspaceFilter();
     return rows
       .filter((r) => showAutomated || !r.is_automated)
       .filter((r) => showHidden || !r.is_hidden)
-      .filter((r) => (r.last_response_epoch ?? 0) > 0)
-      .filter((r) => !wsFilter || SessionsProvider.sessionInWorkspace(r.project_path, wsFilter));
+      .filter((r) => (r.last_response_epoch ?? 0) > 0);
+  }
+
+  /** The folder + host scope predicate under the current filters. */
+  private inScope(r: SessionRow): boolean {
+    const wsFilter = this.workspaceFilter();
+    const hostFilter = this.hostFilter();
+    return (
+      (!wsFilter || SessionsProvider.sessionInWorkspace(r.project_path, wsFilter))
+      && (!hostFilter || SessionsProvider.sessionOnHost(r, hostFilter))
+    );
+  }
+
+  /** Rows the QuickPick should offer folders/hosts from (scope-unfiltered). */
+  candidateRows(): SessionRow[] {
+    return this.filterCandidates(this.rows);
   }
 
   /** Returns the epoch-second timestamp we treat as the session's
@@ -931,6 +1016,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     const showAutomated = cfg.get<boolean>("showAutomated", false);
     const showHidden = cfg.get<boolean>("showHidden", false);
     const wsFilter = this.workspaceFilter();
+    const hostFilter = this.hostFilter();
 
     const allRows = this.rows;
     const visibleRows = this.filterVisible(allRows);
@@ -941,31 +1027,43 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     // numbers instead of cumulative hides.
     const automatedCount = showAutomated ? 0 :
       allRows.filter((r) => r.is_automated && (showHidden || !r.is_hidden)
-        && (!wsFilter || SessionsProvider.sessionInWorkspace(r.project_path, wsFilter))).length;
+        && this.inScope(r)).length;
     const hiddenCount = showHidden ? 0 :
       allRows.filter((r) => r.is_hidden && (showAutomated || !r.is_automated)
-        && (!wsFilter || SessionsProvider.sessionInWorkspace(r.project_path, wsFilter))).length;
+        && this.inScope(r)).length;
 
     const out: vscode.TreeItem[] = [];
 
-    if (wsFilter) {
-      const hiddenByWs = allRows.filter((r) => (showAutomated || !r.is_automated)
+    if (wsFilter || hostFilter) {
+      const hiddenByScope = allRows.filter((r) => (showAutomated || !r.is_automated)
         && (showHidden || !r.is_hidden)
-        && !SessionsProvider.sessionInWorkspace(r.project_path, wsFilter)).length;
-      if (hiddenByWs > 0) {
+        && (r.last_response_epoch ?? 0) > 0
+        && !this.inScope(r)).length;
+      // Always render the banner when a non-default filter is picked (so
+      // there's a way back even when it hides nothing); otherwise only
+      // when the default filters are actually hiding sessions.
+      if (hiddenByScope > 0 || this.folderOverride || this.hostOverride) {
+        const parts = [
+          wsFilter ? path.basename(wsFilter) : null,
+          hostFilter ? `host ${hostFilter}` : null,
+        ].filter(Boolean);
         const tip = new vscode.TreeItem(
-          `Filtered to ${path.basename(wsFilter)} — ${hiddenByWs} sessions from other folders hidden`,
+          `Filtered to ${parts.join(" · ")} — ${hiddenByScope} sessions hidden`,
           vscode.TreeItemCollapsibleState.None,
         );
         tip.iconPath = new vscode.ThemeIcon("filter");
         tip.tooltip = new vscode.MarkdownString(
-          `Showing only sessions whose project path is **${wsFilter}** (or a subfolder).\n\nToggle **Settings → Code Sessions: Filter By Current Workspace** to see everything.`,
+          [
+            wsFilter ? `Folder: **${wsFilter}** (or a subfolder)` : "Folder: all",
+            hostFilter ? `Host: **${hostFilter}**` : "Host: all",
+            "",
+            "Click to pick a different folder or host (or show everything).",
+          ].join("\n\n"),
         );
         tip.contextValue = "workspaceFilterTip";
         tip.command = {
-          command: "workbench.action.openSettings",
-          title: "Open setting",
-          arguments: ["@ext:zhirafovod.code-sessions filterByCurrentWorkspace"],
+          command: "codeSessions.chooseFilter",
+          title: "Filter sessions",
         };
         out.push(tip);
       }
@@ -1096,7 +1194,7 @@ class BucketItem extends vscode.TreeItem {
     /** Optional source filter — set when the bucket sits under a
      * SourceBucketItem so child expansion restricts to that source. Undefined
      * for kb/project buckets which are claude-only today. */
-    public readonly source?: "claude" | "grok" | "git",
+    public readonly source?: "claude" | "grok" | "codex" | "git",
   ) {
     let label = BUCKET_LABEL[bucket];
     if (kind === "session" && totals) {
@@ -1134,8 +1232,9 @@ class SessionItem extends vscode.TreeItem {
     const ago = formatAgoFixed(responseEpoch);
     const titleText = row.title || row.session;
     // Source marker — always visible regardless of state. Prefix the label
-    // so it lines up with the ago column. [C] = Claude, [G] = Grok.
-    const sourceMarker = row.source === "grok" ? "[G]" : row.source === "git" ? "[S]" : "[C]";
+    // so it lines up with the ago column. [C] = Claude, [G] = Grok, [X] = Codex.
+    const sourceMarker =
+      row.source === "grok" ? "[G]" : row.source === "codex" ? "[X]" : row.source === "git" ? "[S]" : "[C]";
     super(
       `${sourceMarker} ${ago}  ·  ${titleText}`,
       // Always collapse by default — the user opens children on demand instead
@@ -1177,7 +1276,7 @@ class SessionItem extends vscode.TreeItem {
         `**${row.title || "(no title)"}**`,
         ``,
         `\`${row.session}\``,
-        `Source: ${row.source === "grok" ? "Grok Build" : "Claude Code"}` +
+        `Source: ${row.source === "grok" ? "Grok Build" : row.source === "codex" ? "Codex CLI" : "Claude Code"}` +
           (row.model ? `  ·  Model: \`${row.model}\`` : ""),
         `Modified: ${row.modified}`,
         `Messages: ${row.messages}  ·  Subagents: ${row.subagents}`,
@@ -1206,7 +1305,9 @@ class SessionItem extends vscode.TreeItem {
               ? "pulse"
               : row.source === "grok"
                 ? "rocket"
-                : "comment-discussion",
+                : row.source === "codex"
+                  ? "terminal"
+                  : "comment-discussion",
     );
     const base = row.is_automated ? "sessionAutomated" : "session";
     const starred = row.is_starred ? `${base}-starred` : base;
@@ -1244,7 +1345,7 @@ class SessionItem extends vscode.TreeItem {
       [
         `**${r.title || "(no title)"}**`,
         ``,
-        `Source: ${r.source === "grok" ? "Grok Build" : "Claude Code"}` +
+        `Source: ${r.source === "grok" ? "Grok Build" : r.source === "codex" ? "Codex CLI" : "Claude Code"}` +
           (r.model ? `  ·  Model: \`${r.model}\`` : ""),
         ...buildCostBreakdown(r),
       ].join("\n"),
@@ -2058,6 +2159,12 @@ export function activate(ctx: vscode.ExtensionContext) {
   }
 
   const sessions = new SessionsProvider(store);
+  // Restore per-window folder/host filter overrides (picked via the
+  // "Filter sessions" QuickPick) before the first paint.
+  const FOLDER_OVERRIDE_KEY = "codeSessions.folderFilterOverride";
+  const HOST_OVERRIDE_KEY = "codeSessions.hostFilterOverride";
+  sessions.folderOverride = ctx.workspaceState.get<string | null>(FOLDER_OVERRIDE_KEY, null);
+  sessions.hostOverride = ctx.workspaceState.get<string | null>(HOST_OVERRIDE_KEY, null);
   // Feed the planning dashboard's Sessions view from the CS index (recent + rich);
   // it falls back to the ~/.sessions git store when the cache is disabled.
   setSessionProvider(() => (store ? (store.listRecent(500, true) as unknown as never[]) : null));
@@ -2094,6 +2201,14 @@ export function activate(ctx: vscode.ExtensionContext) {
           console.log(`[code-sessions] grok sync: ${JSON.stringify(grokStats)}`);
         } catch (e: any) {
           console.error("[code-sessions] grok sync failed:", e);
+        }
+      }
+      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
+        try {
+          const codexStats = syncCodexToStore(s);
+          console.log(`[code-sessions] codex sync: ${JSON.stringify(codexStats)}`);
+        } catch (e: any) {
+          console.error("[code-sessions] codex sync failed:", e);
         }
       }
       if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("git.enabled", true)) {
@@ -2257,6 +2372,93 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
     }),
 
+    vscode.commands.registerCommand("codeSessions.chooseFilter", async () => {
+      type FilterPick = vscode.QuickPickItem & {
+        axis?: "folder" | "host";
+        value?: string | null; // null = default, "*" = all, else explicit
+      };
+      const localHost = os.hostname();
+      const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      const home = os.homedir();
+      const tilde = (p: string) =>
+        p.startsWith(home + path.sep) || p === home ? p.replace(home, "~") : p;
+
+      // Count sessions per folder (decoded cwd) and per host over the
+      // scope-unfiltered pool, so every choice shows what it would surface.
+      const cand = sessions.candidateRows();
+      const folderCounts = new Map<string, number>();
+      const hostCounts = new Map<string, { display: string; n: number }>();
+      for (const r of cand) {
+        const cwd = SessionsProvider.sessionCwd(r);
+        if (cwd) folderCounts.set(cwd, (folderCounts.get(cwd) ?? 0) + 1);
+        const h = SessionsProvider.sessionHost(r) ?? localHost;
+        const key = normalizeHost(h);
+        const e = hostCounts.get(key);
+        if (e) e.n++;
+        else hostCounts.set(key, { display: h, n: 1 });
+      }
+
+      const activeMark = (isActive: boolean) => (isActive ? " — ✓ current" : "");
+      const fo = sessions.folderOverride;
+      const ho = sessions.hostOverride;
+      const items: FilterPick[] = [
+        { label: "Folder", kind: vscode.QuickPickItemKind.Separator },
+        {
+          axis: "folder", value: null,
+          label: "$(root-folder) Current workspace",
+          description: (wsFolder ? tilde(wsFolder) : "no folder open") + activeMark(fo == null),
+        },
+        {
+          axis: "folder", value: "*",
+          label: "$(globe) All folders",
+          description: `${cand.length} sessions` + activeMark(fo === "*"),
+        },
+        ...[...folderCounts.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([cwd, n]): FilterPick => ({
+            axis: "folder", value: cwd,
+            label: `$(folder) ${tilde(cwd)}`,
+            description: `${n} session${n === 1 ? "" : "s"}` + activeMark(fo === cwd),
+          })),
+        { label: "Host", kind: vscode.QuickPickItemKind.Separator },
+        {
+          axis: "host", value: null,
+          label: `$(vm) This host (${localHost})`,
+          description: `${hostCounts.get(normalizeHost(localHost))?.n ?? 0} sessions`
+            + activeMark(ho == null),
+        },
+        {
+          axis: "host", value: "*",
+          label: "$(globe) All hosts",
+          description: `${cand.length} sessions` + activeMark(ho === "*"),
+        },
+        ...[...hostCounts.entries()]
+          .filter(([key]) => key !== normalizeHost(localHost))
+          .sort((a, b) => b[1].n - a[1].n)
+          .map(([key, e]): FilterPick => ({
+            axis: "host", value: e.display,
+            label: `$(server) ${e.display}`,
+            description: `${e.n} session${e.n === 1 ? "" : "s"}`
+              + activeMark(ho != null && normalizeHost(ho) === key),
+          })),
+      ];
+      const pick = await vscode.window.showQuickPick(items, {
+        title: "Filter sessions — pick a folder or a host",
+        placeHolder:
+          "Defaults: current workspace + this host. Pick again to change the other axis.",
+        matchOnDescription: true,
+      });
+      if (!pick || !pick.axis) return;
+      if (pick.axis === "folder") {
+        sessions.folderOverride = pick.value ?? null;
+        await ctx.workspaceState.update(FOLDER_OVERRIDE_KEY, sessions.folderOverride);
+      } else {
+        sessions.hostOverride = pick.value ?? null;
+        await ctx.workspaceState.update(HOST_OVERRIDE_KEY, sessions.hostOverride);
+      }
+      sessions.refresh();
+    }),
+
     vscode.commands.registerCommand("codeSessions.refresh", async () => {
       // Incremental sync from disk + force re-parse the top-N most-recent
       // sessions. The forced top-N catches on-disk edits that don't reliably
@@ -2275,6 +2477,13 @@ export function activate(ctx: vscode.ExtensionContext) {
             syncGrokToStore(store, recent > 0 ? { forceRecentN: recent } : {});
           } catch (e) {
             console.error("[code-sessions] refresh grok sync failed", e);
+          }
+        }
+        if (cfg.get<boolean>("codex.enabled", true)) {
+          try {
+            syncCodexToStore(store, recent > 0 ? { forceRecentN: recent } : {});
+          } catch (e) {
+            console.error("[code-sessions] refresh codex sync failed", e);
           }
         }
         if (cfg.get<boolean>("git.enabled", true)) {
@@ -2332,8 +2541,16 @@ export function activate(ctx: vscode.ExtensionContext) {
             });
             grokParsed = grokStats.parsed;
           }
+          let codexParsed = 0;
+          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
+            const codexStats = syncCodexToStore(s, {
+              force: true,
+              onProgress: (done, total) => progress.report({ message: `codex ${done}/${total}` }),
+            });
+            codexParsed = codexStats.parsed;
+          }
           vscode.window.setStatusBarMessage(
-            `Rescanned ${stats.parsed + grokParsed} session(s) in ${Math.round(stats.elapsed_ms / 1000)}s`,
+            `Rescanned ${stats.parsed + grokParsed + codexParsed} session(s) in ${Math.round(stats.elapsed_ms / 1000)}s`,
             4000,
           );
         },
@@ -2621,7 +2838,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (!row?.session) return;
       const current = row.title || "";
       const input = await vscode.window.showInputBox({
-        prompt: `Rename ${row.source === "grok" ? "Grok" : "Claude"} session — writes to the source-of-truth file so the native CLI sees the new name on its next --resume listing.`,
+        prompt: `Rename ${row.source === "grok" ? "Grok" : row.source === "codex" ? "Codex" : "Claude"} session — writes to the source-of-truth file so the native CLI sees the new name on its next --resume listing.`,
         value: current,
         placeHolder: "New session title",
         validateInput: (v) => v.trim().length === 0 ? "Title cannot be empty (cancel with Esc to keep current)" : null,
@@ -2667,6 +2884,9 @@ export function activate(ctx: vscode.ExtensionContext) {
           syncToStore(store);
           if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
             syncGrokToStore(store);
+          }
+          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
+            syncCodexToStore(store);
           }
         } catch (e: any) {
           console.error("[code-sessions] sync failed in watcher:", e);
@@ -2829,6 +3049,9 @@ export function activate(ctx: vscode.ExtensionContext) {
       try { syncToStore(store); } catch { /* swallow; next tick retries */ }
       if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
         try { syncGrokToStore(store); } catch { /* swallow; next tick retries */ }
+      }
+      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
+        try { syncCodexToStore(store); } catch { /* swallow; next tick retries */ }
       }
     }
     sessions.refresh();
@@ -2997,6 +3220,21 @@ async function resumeInNative(row: SessionRow): Promise<void> {
     );
     return;
   }
+  if (row.source === "codex") {
+    // No codex VS Code surface to hand off to — resume in a terminal, which
+    // is codex's native flow (`codex resume <id>` reopens the rollout).
+    const term = vscode.window.createTerminal({
+      name: `codex:${row.session.slice(0, 8)}`,
+      cwd,
+    });
+    term.show();
+    term.sendText(`codex resume ${row.session}`);
+    vscode.window.setStatusBarMessage(
+      `Launched codex CLI resuming session ${row.session.slice(0, 8)}.`,
+      6000,
+    );
+    return;
+  }
   // Claude — anthropic.claude-code truly resumes by session id.
   const candidates = [
     "claude-vscode.primaryEditor.open",
@@ -3053,6 +3291,11 @@ async function renameSessionFile(
   }
   if (row.source === "grok") {
     return renameGrokSession(row, text);
+  }
+  if (row.source === "codex") {
+    // Guard: codex rollouts have no rename affordance yet, and falling through
+    // to the claude rewriter would inject claude-shaped lines into a rollout.
+    return { ok: false, error: "Codex sessions can't be renamed yet — the title comes from the first user message in the rollout." };
   }
   return renameClaudeSession(row, text);
 }
