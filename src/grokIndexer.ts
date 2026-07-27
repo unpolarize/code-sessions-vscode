@@ -21,6 +21,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { SessionStore, SessionRow, TurnRow } from "./db";
+import { GrokTurn, parseGrokConversation } from "./grokConversationParser";
 
 const GROK_SESSIONS_ROOT = path.join(os.homedir(), ".grok", "sessions");
 
@@ -183,39 +184,6 @@ function tsToMs(s: string | undefined): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
-function extractText(content: any): string {
-  if (content == null) return "";
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((b: any) => {
-        if (typeof b === "string") return b;
-        if (b && b.type === "text") return String(b.text ?? "");
-        return "";
-      })
-      .filter(Boolean)
-      .join("\n\n");
-  }
-  return "";
-}
-
-/** Try to extract a file path from a frontend tool_call's arguments. Grok
- * uses `file_path` for search_replace and `filePath` for write (inconsistent
- * key naming verified across multiple sessions). Returns null if the call
- * is read-only (read_file / list_dir / grep) or if arguments are unparseable. */
-function fileEditPathFromToolCall(tc: { name?: string; arguments?: string }): string | null {
-  if (!tc?.name) return null;
-  if (tc.name !== "search_replace" && tc.name !== "write") return null;
-  if (typeof tc.arguments !== "string") return null;
-  try {
-    const args = JSON.parse(tc.arguments);
-    const p = tc.name === "search_replace" ? args?.file_path : args?.filePath;
-    return typeof p === "string" && p.length > 0 ? p : null;
-  } catch {
-    return null;
-  }
-}
-
 /** projects_touched derivation for grok turns: collect file paths from
  * frontend file-edit tool calls and map them to project ids exactly like
  * the claude indexer does. */
@@ -239,101 +207,6 @@ function projectsTouchedFromGrokTurns(turns: GrokTurn[]): string[] {
     }
   }
   return Array.from(set).sort();
-}
-
-interface GrokTurn {
-  index: number;
-  userText: string;
-  assistantText: string;
-  toolNames: string[];
-  fileEdits: string[];
-  isSubagent: boolean;
-}
-
-interface ParsedGrokSession {
-  turns: GrokTurn[];
-  totalTools: number;
-  rawMessageCount: number;
-}
-
-/** Pure parser: grok chat_history.jsonl → conversation turns. Mirrors the
- * "turn = user message + everything until the next user message" convention
- * used by the claude conversationParser, so downstream code (classifier,
- * KB rollup) sees comparable structure. */
-function parseGrokConversation(chatPath: string): ParsedGrokSession {
-  let raw = "";
-  try {
-    raw = fs.readFileSync(chatPath, "utf-8");
-  } catch {
-    return { turns: [], totalTools: 0, rawMessageCount: 0 };
-  }
-  const lines = raw.split("\n").filter(Boolean);
-
-  const turns: GrokTurn[] = [];
-  let current: GrokTurn | null = null;
-  let totalTools = 0;
-  let rawMessageCount = 0;
-
-  for (const ln of lines) {
-    let obj: any;
-    try {
-      obj = JSON.parse(ln);
-    } catch {
-      continue;
-    }
-    const type = obj?.type;
-
-    if (type === "user") {
-      // Real user message — start a new turn.
-      const userText = extractText(obj.content);
-      rawMessageCount += 1;
-      current = {
-        index: turns.length,
-        userText,
-        assistantText: "",
-        toolNames: [],
-        fileEdits: [],
-        isSubagent: false,
-      };
-      turns.push(current);
-      continue;
-    }
-
-    if (!current) {
-      // Stray events before the first user message (e.g. system prompt).
-      // System prompts dominate text but don't belong to any turn; skip.
-      continue;
-    }
-
-    if (type === "assistant") {
-      rawMessageCount += 1;
-      const text = extractText(obj.content);
-      if (text) {
-        current.assistantText = current.assistantText
-          ? `${current.assistantText}\n\n${text}`
-          : text;
-      }
-      const tcs: any[] = Array.isArray(obj.tool_calls) ? obj.tool_calls : [];
-      for (const tc of tcs) {
-        const name = typeof tc?.name === "string" ? tc.name : null;
-        if (!name) continue;
-        current.toolNames.push(name);
-        totalTools += 1;
-        // Grok has no sub-agent equivalent in v1; we deliberately leave
-        // isSubagent false for every turn. spawn_subagent / use_tool would
-        // surface here if a future grok release records them.
-        const fp = fileEditPathFromToolCall({ name, arguments: tc.arguments });
-        if (fp) current.fileEdits.push(fp);
-      }
-      continue;
-    }
-
-    // backend_tool_call / tool_result / system: ignored. backend tool calls
-    // in observed sessions are web_search and similar — not editor-side
-    // activity the user cares to surface in this view.
-  }
-
-  return { turns, totalTools, rawMessageCount };
 }
 
 /** Build the SessionRow + TurnRow pair for a single grok session, ready to

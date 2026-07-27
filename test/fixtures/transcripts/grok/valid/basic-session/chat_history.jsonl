@@ -1,0 +1,8 @@
+{"type":"system","content":"You are Grok. System prompt text that must not leak into any turn."}
+{"type":"user","content":"add a health endpoint"}
+{"type":"assistant","content":[{"type":"text","text":"Sure — I'll add /health to the server."}],"tool_calls":[{"name":"read_file","arguments":"{\"file_path\":\"/Users/tester/projects/demo/src/server.ts\"}"},{"name":"search_replace","arguments":"{\"file_path\":\"/Users/tester/projects/demo/src/server.ts\",\"old_str\":\"x\",\"new_str\":\"y\"}"}]}
+{"type":"tool_result","content":"ok"}
+{"type":"assistant","content":[{"type":"text","text":"Done. The endpoint returns 200."}]}
+this line is not json and must be skipped without dropping the rest
+{"type":"user","content":[{"type":"text","text":"now write a test for it"}]}
+{"type":"assistant","content":"Added server.test.ts covering /health.","tool_calls":[{"name":"write","arguments":"{\"filePath\":\"/Users/tester/projects/demo/src/server.test.ts\",\"content\":\"...\"}"}]}
