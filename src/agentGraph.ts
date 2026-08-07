@@ -10,7 +10,7 @@ import * as vscode from "vscode";
 import { preferredEditorColumn } from "./editorColumn";
 import { UMAP } from "umap-js";
 import { SessionStore, SessionRow } from "./db";
-import { embedMany, EmbedConfig } from "./embedding";
+import { embedMany, EmbedConfig, filterSameDimEmbeddings } from "./embedding";
 import { classifySession } from "./topicClassifier";
 
 interface GraphPoint {
@@ -206,9 +206,15 @@ async function buildLayout(
   }
 
   // Try Ollama-or-fallback on the first session so we get the model id.
+  // Seed may be skipped (per-item Ollama failure) — leave unembedded and
+  // return empty this pass so the next open retries; never store a mixed-dim
+  // fallback under an ollama/* model tag.
   progress.report({ message: "Probing embedder…" });
   const seed = await embedMany([{ session_id: allSessions[0].session_id, text: embedInput(allSessions[0]) }], cfg);
   const modelId = seed.model;
+  if (seed.results.length === 0) {
+    return { points: [], embeddingModel: modelId, clusterLabels: [], clusterMethod: "none" };
+  }
   store.upsertEmbedding(seed.results[0].session_id, seed.results[0].embedding, modelId);
 
   // Find which other sessions still need embedding under this model.
@@ -222,16 +228,24 @@ async function buildLayout(
         message: `Embedding ${done}/${total} (${modelId})`,
       });
     });
+    // Only successful embeddings are returned; skipped items stay missing.
     for (const r of results) store.upsertEmbedding(r.session_id, r.embedding, modelId);
   }
 
-  // Pull every embedding back and project to 2D.
+  // Pull every embedding back and project to 2D. Drop mixed-dimension rows
+  // (legacy poison from pre-fix fallback-under-ollama) so UMAP gets a rectangle.
   progress.report({ message: "Fitting 2D layout (UMAP)…" });
   const all = store.embeddingsByModel(modelId);
-  if (all.length === 0) return { points: [], embeddingModel: modelId, clusterLabels: [], clusterMethod: "none" };
+  const { kept, dropped } = filterSameDimEmbeddings(all);
+  if (dropped.length > 0) {
+    console.warn(
+      `[code-sessions] agent graph: dropping ${dropped.length} embedding(s) with non-modal dimension under ${modelId}`,
+    );
+  }
+  if (kept.length === 0) return { points: [], embeddingModel: modelId, clusterLabels: [], clusterMethod: "none" };
 
-  const ids = all.map((e) => e.session_id);
-  const vectors = all.map((e) => Array.from(e.embedding));
+  const ids = kept.map((e) => e.session_id);
+  const vectors = kept.map((e) => Array.from(e.embedding));
 
   // UMAP needs at least n_neighbors+1 rows. Below that just lay them on a
   // line — the graph still works.

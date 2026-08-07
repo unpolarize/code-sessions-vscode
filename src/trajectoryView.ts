@@ -6,7 +6,7 @@ import * as vscode from "vscode";
 import { preferredEditorColumn } from "./editorColumn";
 import { UMAP } from "umap-js";
 import { SessionStore, TurnRow } from "./db";
-import { embedMany, EmbedConfig } from "./embedding";
+import { embedMany, EmbedConfig, filterSameDimEmbeddings } from "./embedding";
 
 interface TrajPoint {
   turn_uuid: string;
@@ -88,10 +88,14 @@ async function buildTrajectory(
   }
 
   // Probe once via a single embed so we know which model id to query against.
+  // If the seed is skipped (Ollama per-item failure), leave turns unembedded
+  // for the next pass — never store a mixed-dim fallback under ollama/*.
   progress.report({ message: "Probing embedder…" });
   const seed = await embedMany([{ session_id: eligible[0].turn_uuid, text: topicEmbedInput(eligible[0]) }], cfg);
   const model = seed.model;
-  store.upsertTurnEmbeddings([{ turn_uuid: seed.results[0].session_id, embedding: seed.results[0].embedding, model }]);
+  if (seed.results.length > 0) {
+    store.upsertTurnEmbeddings([{ turn_uuid: seed.results[0].session_id, embedding: seed.results[0].embedding, model }]);
+  }
 
   // Find which turns are already embedded under that model
   const existing = store.turnEmbeddingsForSession(sessionId, model);
@@ -105,11 +109,12 @@ async function buildTrajectory(
     store.upsertTurnEmbeddings(results.map((r) => ({ turn_uuid: r.session_id, embedding: r.embedding, model })));
   }
 
-  // Pull all back, in turn-index order
+  // Pull all back, in turn-index order; drop mixed-dim vectors before UMAP.
   const refreshed = store.turnEmbeddingsForSession(sessionId, model);
-  const inOrder = eligible
-    .map((t) => ({ turn: t, vec: refreshed.get(t.turn_uuid) }))
-    .filter((p): p is { turn: TurnRow; vec: Float32Array } => p.vec !== undefined);
+  const withVec = eligible
+    .map((t) => ({ turn: t, embedding: refreshed.get(t.turn_uuid) }))
+    .filter((p): p is { turn: TurnRow; embedding: Float32Array } => p.embedding !== undefined);
+  const { kept: inOrder } = filterSameDimEmbeddings(withVec);
 
   if (inOrder.length === 0) {
     return { points: [], segments: [], model, title: "" };
@@ -126,7 +131,7 @@ async function buildTrajectory(
       minDist: 0.1,
       nComponents: 2,
     });
-    coords = umap.fit(inOrder.map((r) => Array.from(r.vec)));
+    coords = umap.fit(inOrder.map((r) => Array.from(r.embedding)));
   }
 
   // Topics
@@ -144,7 +149,7 @@ async function buildTrajectory(
   // Drift: cosine distance between consecutive embeddings, mark above p90
   const dists: number[] = [];
   for (let i = 1; i < inOrder.length; i++) {
-    dists.push(cosineDist(inOrder[i - 1].vec, inOrder[i].vec));
+    dists.push(cosineDist(inOrder[i - 1].embedding, inOrder[i].embedding));
   }
   const driftThreshold = percentile(dists, driftPercentile);
   const segments: TrajSegment[] = dists.map((d, i) => ({

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.32.1 — 2026-08-07
+
+### Embeddings: never poison the agent graph with mixed-dimension vectors
+
+- **Per-item Ollama failures** in an `ollama/*` batch are retried (short exponential backoff, max 2) then **skipped** — the session stays unembedded so the next pass retries. Previously a failed item was replaced with the 256-dim hash-BoW fallback under the same `ollama/<model>` id, which made `umap.fit` see a jagged matrix and NaN geometry for the whole graph.
+- **Defensive dim filter** before UMAP in the agent graph and trajectory views: drop non-modal-dimension rows (legacy poison) and warn; layout only runs on a rectangular matrix.
+- Hash-BoW fallback still used only when the whole batch falls back (`preferred` not ollama, or probe fails) under `fallback/hash-bow-256`.
+
+PATCH.
+
 ## 1.32.0 — 2026-07-25
 
 ### Sessions tree: folder + host scope filters with a QuickPick switcher

@@ -4,6 +4,11 @@
 // We deliberately do NOT pull in Transformers.js here — that would bloat the
 // extension by ~80 MB on first run. The fallback is good enough for clustering
 // by project name + tool mix + simple keyword overlap.
+//
+// Invariant: never persist a vector under a model id whose dimension differs
+// from that model's native size. Per-item Ollama failures are retried then
+// skipped (left unembedded for the next pass) — never replaced with the
+// 256-dim hash-BoW under an `ollama/*` tag (that poisons UMAP geometry).
 
 import * as http from "http";
 
@@ -19,6 +24,11 @@ export interface EmbedResult {
 }
 
 const FALLBACK_DIM = 256;
+
+/** Max retries after the first failed Ollama call for one item (total attempts = 1 + max). */
+const OLLAMA_MAX_RETRIES = 2;
+/** Base backoff between Ollama retries (ms); doubles each attempt. */
+const OLLAMA_RETRY_BASE_MS = 200;
 
 /**
  * Probe the Ollama daemon, return true if reachable AND the requested model is
@@ -146,35 +156,116 @@ export interface EmbedRequest {
   text: string;
 }
 
+/** Injectable seams for unit tests (default = real HTTP + setTimeout). */
+export interface EmbedManyDeps {
+  probe?: (cfg: EmbedConfig) => Promise<boolean>;
+  embedOllama?: (text: string, cfg: EmbedConfig) => Promise<Float32Array>;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Call Ollama for one text with short exponential backoff. Returns null after
+ * the final failure so the caller can skip (never substitute a different dim).
+ */
+async function embedOllamaWithRetry(
+  text: string,
+  cfg: EmbedConfig,
+  embedOne: (text: string, cfg: EmbedConfig) => Promise<Float32Array>,
+  sleep: (ms: number) => Promise<void>,
+): Promise<Float32Array | null> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= OLLAMA_MAX_RETRIES; attempt++) {
+    try {
+      return await embedOne(text, cfg);
+    } catch (e) {
+      lastErr = e;
+      if (attempt < OLLAMA_MAX_RETRIES) {
+        await sleep(OLLAMA_RETRY_BASE_MS * 2 ** attempt);
+      }
+    }
+  }
+  void lastErr;
+  return null;
+}
+
+/**
+ * Keep rows whose embedding length equals the modal dimension in the batch.
+ * Mixed-dim rows (e.g. legacy 256-dim poison under an ollama model tag) are
+ * dropped so UMAP always receives a rectangular matrix.
+ */
+export function filterSameDimEmbeddings<T extends { embedding: Float32Array }>(
+  rows: T[],
+): { kept: T[]; dropped: T[]; dim: number | null } {
+  if (rows.length === 0) return { kept: [], dropped: [], dim: null };
+  const counts = new Map<number, number>();
+  for (const r of rows) {
+    const d = r.embedding.length;
+    counts.set(d, (counts.get(d) ?? 0) + 1);
+  }
+  let dim = 0;
+  let best = -1;
+  for (const [d, n] of counts) {
+    if (n > best || (n === best && d > dim)) {
+      best = n;
+      dim = d;
+    }
+  }
+  const kept: T[] = [];
+  const dropped: T[] = [];
+  for (const r of rows) {
+    if (r.embedding.length === dim) kept.push(r);
+    else dropped.push(r);
+  }
+  return { kept, dropped, dim };
+}
+
 /**
  * Embed many sessions. Tries Ollama first if preferred==='ollama' and probe
  * succeeded; otherwise uses the deterministic fallback. The actual model id
  * is returned so we can persist it.
+ *
+ * When the batch is Ollama-tagged, per-item failures are retried then **skipped**
+ * (omitted from `results`, listed in `skipped`) so a different-dimension
+ * fallback vector is never stored under `ollama/*`. Callers leave those
+ * sessions unembedded so `sessionsMissingEmbedding` retries next pass.
  */
 export async function embedMany(
   reqs: EmbedRequest[],
   cfg: EmbedConfig,
   onProgress?: (done: number, total: number) => void,
-): Promise<{ model: string; results: Array<{ session_id: string; embedding: Float32Array }> }> {
-  const useOllama = cfg.preferred === "ollama" && (await probeOllama(cfg));
+  deps: EmbedManyDeps = {},
+): Promise<{
+  model: string;
+  results: Array<{ session_id: string; embedding: Float32Array }>;
+  skipped: string[];
+}> {
+  const probe = deps.probe ?? probeOllama;
+  const embedOne = deps.embedOllama ?? embedOllamaOne;
+  const sleep = deps.sleep ?? defaultSleep;
+
+  const useOllama = cfg.preferred === "ollama" && (await probe(cfg));
   const model = useOllama ? `ollama/${cfg.ollamaModel}` : `fallback/hash-bow-${FALLBACK_DIM}`;
   const results: Array<{ session_id: string; embedding: Float32Array }> = [];
+  const skipped: string[] = [];
+
   for (let i = 0; i < reqs.length; i++) {
     const r = reqs[i];
-    let embedding: Float32Array;
     if (useOllama) {
-      try {
-        embedding = await embedOllamaOne(r.text, cfg);
-      } catch {
-        // First failure: drop to fallback for THIS item to avoid stalling the
-        // whole pass. Real fix is to surface the error and retry.
-        embedding = fallbackEmbed(r.text);
+      const embedding = await embedOllamaWithRetry(r.text, cfg, embedOne, sleep);
+      if (embedding) {
+        results.push({ session_id: r.session_id, embedding });
+      } else {
+        // Leave unembedded under this model id so the next index pass retries.
+        skipped.push(r.session_id);
       }
     } else {
-      embedding = fallbackEmbed(r.text);
+      results.push({ session_id: r.session_id, embedding: fallbackEmbed(r.text) });
     }
-    results.push({ session_id: r.session_id, embedding });
     if (onProgress) onProgress(i + 1, reqs.length);
   }
-  return { model, results };
+  return { model, results, skipped };
 }
