@@ -30,10 +30,12 @@ describe("StoreSyncManager push-failed handling", () => {
     const warn = vi.spyOn(vscode.window, "showWarningMessage");
     const m = manager([
       { status: "push-failed", detail: "push failed: auth" },
+      { status: "skipped", detail: "fetch failed: offline" }, // no push attempted → streak survives
       { status: "push-failed", detail: "push failed: auth" },
       { status: "unchanged" }, // push works again → streak over
       { status: "push-failed", detail: "push failed: auth" }, // new streak → warn again
     ]);
+    await m.syncNow();
     await m.syncNow();
     await m.syncNow();
     expect(warn).toHaveBeenCalledTimes(1);

@@ -243,8 +243,10 @@ export class StoreSyncManager {
         if (res.status === "conflict") this.warnConflictOnce(repo, res.detail ?? "");
         else if (res.status === "push-failed") this.warnPushFailOnce(repo, res.detail ?? "");
         else {
-          // any pass where this repo's push didn't fail ends its failure streak
-          this.warnedPushFail.delete(repo);
+          // a healthy pass (push worked or nothing to push) ends the failure
+          // streak; offline/skipped/conflict passes never attempted a push,
+          // so they neither warn nor reset
+          if (res.status === "ok" || res.status === "unchanged") this.warnedPushFail.delete(repo);
           if (res.detail && res.status !== "unchanged" && res.status !== "ok")
             this.log(`${path.basename(repo)}: ${res.status} — ${res.detail}`);
         }

@@ -49,7 +49,9 @@ export async function rebaseInProgress(dir: string, git: GitRunner = runGit): Pr
 
 /** Pull one repo onto its remote, recovering (not wedging) on conflict, and
  * optionally push local commits after rebasing. Returns "ok" only when HEAD
- * advanced (the caller should reload views). Never throws. */
+ * advanced (the caller should reload views); a failed push returns
+ * "push-failed" with `changed` set when the pull still advanced HEAD.
+ * Never throws. */
 export async function syncRepoOnce(
   dir: string,
   opts: { push: boolean; git?: GitRunner },
