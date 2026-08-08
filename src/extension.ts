@@ -3000,7 +3000,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     const icon =
       s.status === "syncing"
         ? "$(sync~spin)"
-        : s.status === "conflict" || s.status === "error"
+        : s.status === "conflict" || s.status === "error" || s.status === "push-failed"
           ? "$(warning)"
           : s.status === "offline"
             ? "$(cloud-offline)"

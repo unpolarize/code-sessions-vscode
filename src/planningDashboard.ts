@@ -520,7 +520,7 @@ let syncState=null;
 function agoStr(t){ if(!t)return 'never'; const s=Math.round((Date.now()-t)/1000);
   return s<60?s+'s ago':s<3600?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago'; }
 function renderSyncPill(s){ if(s)syncState=s; s=syncState; const p=$('#syncPill'); if(!p||!s)return;
-  const cls=s.status==='syncing'?'syncing':(s.status==='conflict'||s.status==='error'||s.status==='offline')?'warn':'ok';
+  const cls=s.status==='syncing'?'syncing':(s.status==='conflict'||s.status==='error'||s.status==='offline'||s.status==='push-failed')?'warn':'ok';
   p.className='syncpill '+cls+(s.active?' active':'');
   const icon=s.status==='syncing'?'⟳':(cls==='warn'?'⚠':'☁');
   p.textContent=icon+' '+(s.status==='syncing'?'syncing…':agoStr(s.lastSyncAt))+(s.active?' ⚡':'');

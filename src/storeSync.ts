@@ -25,10 +25,20 @@ export interface StoreSyncOptions {
   /** Called after a sync pass that changed any repo's HEAD, so views reload. */
   onChanged: (changedRepos: string[]) => void;
   log?: vscode.OutputChannel;
+  /** Per-repo sync implementation — injectable for unit tests (defaults to syncRepoOnce). */
+  syncRepo?: typeof syncRepoOnce;
 }
 
 /** Overall state of the most recent (or in-flight) sync pass, for status UI. */
-export type SyncPassStatus = "idle" | "syncing" | "ok" | "unchanged" | "conflict" | "error" | "offline";
+export type SyncPassStatus =
+  | "idle"
+  | "syncing"
+  | "ok"
+  | "unchanged"
+  | "conflict"
+  | "push-failed"
+  | "error"
+  | "offline";
 
 export interface SyncStatus {
   /** Current/last overall status. */
@@ -70,6 +80,7 @@ export class StoreSyncManager {
   private queued = false;
   private disposed = false;
   private warnedConflict = new Set<string>();
+  private warnedPushFail = new Set<string>();
   private activeUntil = 0; // epoch ms — aggressive polling armed until this time
 
   private readonly _onDidSync = new vscode.EventEmitter<SyncStatus>();
@@ -216,25 +227,40 @@ export class StoreSyncManager {
       const push = this.cfg().get<boolean>("push", true);
       const changed: string[] = [];
       let worst: SyncPassStatus = "unchanged";
-      const rank: Record<string, number> = { unchanged: 0, ok: 1, offline: 2, conflict: 3, error: 4 };
+      const rank: Record<string, number> = {
+        unchanged: 0,
+        ok: 1,
+        offline: 2,
+        "push-failed": 3,
+        conflict: 4,
+        error: 5,
+      };
       let detail: string | undefined;
       for (const repo of this.opts.repos()) {
         if (this.disposed) break;
-        const res = await syncRepoOnce(repo, { push });
-        if (res.status === "ok") changed.push(repo);
-        else if (res.status === "conflict") this.warnConflictOnce(repo, res.detail ?? "");
-        else if (res.detail && res.status !== "unchanged") this.log(`${path.basename(repo)}: ${res.status} — ${res.detail}`);
+        const res = await (this.opts.syncRepo ?? syncRepoOnce)(repo, { push });
+        if (res.status === "ok" || (res.status === "push-failed" && res.changed)) changed.push(repo);
+        if (res.status === "conflict") this.warnConflictOnce(repo, res.detail ?? "");
+        else if (res.status === "push-failed") this.warnPushFailOnce(repo, res.detail ?? "");
+        else {
+          // any pass where this repo's push didn't fail ends its failure streak
+          this.warnedPushFail.delete(repo);
+          if (res.detail && res.status !== "unchanged" && res.status !== "ok")
+            this.log(`${path.basename(repo)}: ${res.status} — ${res.detail}`);
+        }
         // map a per-repo result into the overall pass status
         const mapped: SyncPassStatus =
           res.status === "ok"
             ? "ok"
             : res.status === "conflict"
               ? "conflict"
-              : res.status === "error"
-                ? "error"
-                : res.status === "skipped" && /fetch failed|offline/i.test(res.detail ?? "")
-                  ? "offline"
-                  : "unchanged";
+              : res.status === "push-failed"
+                ? "push-failed"
+                : res.status === "error"
+                  ? "error"
+                  : res.status === "skipped" && /fetch failed|offline/i.test(res.detail ?? "")
+                    ? "offline"
+                    : "unchanged";
         if ((rank[mapped] ?? 0) >= (rank[worst] ?? 0)) {
           worst = mapped;
           if (mapped !== "ok" && mapped !== "unchanged") detail = res.detail;
@@ -259,6 +285,19 @@ export class StoreSyncManager {
         this.queued = false;
         void this.sync("coalesced");
       }
+    }
+  }
+
+  private warnPushFailOnce(dir: string, detail: string): void {
+    const name = path.basename(dir);
+    this.log(`${name}: ${detail.split("\n")[0]}`);
+    if (!this.warnedPushFail.has(dir)) {
+      this.warnedPushFail.add(dir);
+      void vscode.window.showWarningMessage(
+        `Code Sessions: ${name} pulled fine but couldn't push local commits — ` +
+          `they'll keep piling up locally until the push works (check auth/upstream). ` +
+          `${detail.split("\n")[0]}`,
+      );
     }
   }
 

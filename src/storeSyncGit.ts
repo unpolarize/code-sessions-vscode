@@ -11,12 +11,14 @@ import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
-export type RepoSyncStatus = "ok" | "unchanged" | "skipped" | "conflict" | "error";
+export type RepoSyncStatus = "ok" | "unchanged" | "skipped" | "conflict" | "push-failed" | "error";
 
 export interface RepoSyncResult {
   status: RepoSyncStatus;
   /** Human-readable detail for logging / warnings (conflict stderr, error). */
   detail?: string;
+  /** For "push-failed" only: the pull still advanced HEAD, so views must reload. */
+  changed?: boolean;
 }
 
 export type GitRunner = (dir: string, args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
@@ -80,7 +82,14 @@ export async function syncRepoOnce(
       const ahead = await git(dir, ["rev-list", "--count", `origin/${branch}..HEAD`]);
       if (ahead.code === 0 && Number(ahead.stdout) > 0) {
         const p = await git(dir, ["push", "origin", branch]);
-        if (p.code !== 0) return { status: "ok", detail: `pulled ok; push failed: ${firstLine(p.stderr)}` };
+        if (p.code !== 0) {
+          const after = (await git(dir, ["rev-parse", "HEAD"])).stdout;
+          return {
+            status: "push-failed",
+            detail: `pulled ok; push failed: ${firstLine(p.stderr)}`,
+            changed: after !== before,
+          };
+        }
       }
     }
 

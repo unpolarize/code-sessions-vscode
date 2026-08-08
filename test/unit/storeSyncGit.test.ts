@@ -98,7 +98,7 @@ describe("syncRepoOnce", () => {
     expect(calls).toContain("rebase --abort");
   });
 
-  it("keeps status ok but reports detail when the push fails", async () => {
+  it("reports push-failed (not ok) when the push fails", async () => {
     const { git } = scriptedGit({
       ...BASE,
       "rev-parse HEAD": { stdout: "aaa111" },
@@ -106,8 +106,42 @@ describe("syncRepoOnce", () => {
       "push origin main": { code: 1, stderr: "remote: permission denied\nfatal: unable to push" },
     });
     const r = await syncRepoOnce(dir, { push: true, git });
-    expect(r.status).toBe("ok");
+    expect(r.status).toBe("push-failed");
     expect(r.detail).toBe("pulled ok; push failed: remote: permission denied");
+    expect(r.changed).toBe(false); // HEAD never moved — nothing to reload
+  });
+
+  it("push-failed still flags changed when the pull advanced HEAD", async () => {
+    let head = "aaa111";
+    const script = scriptedGit({
+      ...BASE,
+      "rev-list --count origin/main..HEAD": { stdout: "2" },
+      "push origin main": { code: 1, stderr: "fatal: could not read from remote" },
+    });
+    const moving: GitRunner = async (d, args) => {
+      const key = args.join(" ");
+      if (key === "rev-parse HEAD") {
+        const out = { stdout: head, stderr: "", code: 0 };
+        head = "bbb222"; // pull advances HEAD between rev-parse calls
+        return out;
+      }
+      return script.git(d, args);
+    };
+    const r = await syncRepoOnce(dir, { push: true, git: moving });
+    expect(r.status).toBe("push-failed");
+    expect(r.changed).toBe(true);
+  });
+
+  it("successful push still returns unchanged/ok (regression)", async () => {
+    const { git, calls } = scriptedGit({
+      ...BASE,
+      "rev-parse HEAD": { stdout: "aaa111" },
+      "rev-list --count origin/main..HEAD": { stdout: "2" },
+      "push origin main": { code: 0 },
+    });
+    const r = await syncRepoOnce(dir, { push: true, git });
+    expect(r.status).toBe("unchanged");
+    expect(calls).toContain("push origin main");
   });
 });
 

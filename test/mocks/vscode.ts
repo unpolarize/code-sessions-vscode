@@ -17,7 +17,10 @@ export const window = {
 };
 
 export const workspace = {
-  getConfiguration: () => ({ get: () => undefined, update: async () => {} }),
+  getConfiguration: () => ({
+    get: (_key: string, defaultValue?: unknown) => defaultValue,
+    update: async () => {},
+  }),
   workspaceFolders: undefined as undefined,
 };
 
