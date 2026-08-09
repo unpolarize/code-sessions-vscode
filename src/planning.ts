@@ -14,6 +14,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
 import { KpClient, type KpResult } from "./kpClient";
+import { ReloadGate } from "./reloadGate";
 import { syncBridge } from "./storeSync";
 
 interface SessionInfo {
@@ -275,22 +276,37 @@ function resolveNode(): string {
 /** One serialized CLI queue for the whole extension — created at registration. */
 let kpClient: KpClient | undefined;
 
+/** KP's own default store root is generic; this extension's store lives in the KB. */
+function storeRoot(): string {
+  return planningConfig().get<string>("storeRoot") || path.join(os.homedir(), "docs", "planning");
+}
+
 function kpInvocation(): { node: string; cli: string; env: Record<string, string> } {
   const cfg = planningConfig();
   const node = resolveNode();
   const cli = cfg.get<string>("cliPath") || defaultCli();
-  // KP's own default store root is generic; this extension's store lives in the KB.
-  const root = cfg.get<string>("storeRoot") || path.join(os.homedir(), "docs", "planning");
   const env = { ...process.env } as Record<string, string>;
   // ensure common bin dirs are on PATH for the child too
   env.PATH = `/opt/homebrew/bin:/usr/local/bin:${env.PATH || ""}`;
-  env.KP_ROOT = root;
+  env.KP_ROOT = storeRoot();
   return { node, cli, env };
 }
 
+/** Mutes fs-watcher reloads while our own CLI writes the store — set in registerPlanning. */
+let reloadGate: ReloadGate | undefined;
+
+/** kp subcommands that never write the store (everything else counts as a mutation). */
+const KP_READ_CMDS = new Set(["export", "show"]);
+
 async function runKp(args: string[], input?: string): Promise<KpResult> {
   if (!kpClient) kpClient = new KpClient({ resolve: kpInvocation });
-  return kpClient.run(args, input);
+  const mutating = !KP_READ_CMDS.has(args[0]);
+  if (mutating) reloadGate?.noteMutationStart();
+  try {
+    return await kpClient.run(args, input);
+  } finally {
+    if (mutating) reloadGate?.noteMutationEnd();
+  }
 }
 
 /** Shared snapshot, reloaded on refresh and consumed by every provider/view.
@@ -1500,6 +1516,49 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   } catch (e) {
     log?.appendLine(`[planning] autonomous watcher unavailable: ${String(e)}`);
   }
+
+  // ── KP-store watcher: external mutations (kp capture in a terminal, /planning-*
+  // skills run by a local Claude session) refresh the trees/dashboard without a
+  // manual reload. The watcher is a dirty bit through ReloadGate: rapid events
+  // debounce into one reload (model.reload then coalesces exports), and events
+  // from our own CLI writes are muted — every mutation call site already does an
+  // explicit post-mutation reload. ──
+  reloadGate = new ReloadGate({
+    debounceMs: () => planningConfig().get<number>("reloadDebounceMs", 800),
+    fire: () => void model.reload(log),
+    log: (l) => log?.appendLine(l),
+  });
+  let storeWatcher: vscode.FileSystemWatcher | undefined;
+  const bindStoreWatcher = () => {
+    storeWatcher?.dispose();
+    storeWatcher = undefined;
+    const root = storeRoot();
+    if (!existsSync(root)) {
+      log?.appendLine(`[planning] store watcher off — no store at ${root}`);
+      return;
+    }
+    try {
+      const w = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(root), "**/*.md"));
+      const onEvent = () => void reloadGate?.fsEvent();
+      w.onDidChange(onEvent);
+      w.onDidCreate(onEvent);
+      w.onDidDelete(onEvent);
+      storeWatcher = w;
+    } catch (e) {
+      log?.appendLine(`[planning] store watcher unavailable: ${String(e)}`);
+    }
+  };
+  bindStoreWatcher();
+  ctx.subscriptions.push(
+    new vscode.Disposable(() => {
+      storeWatcher?.dispose();
+      reloadGate?.dispose();
+      reloadGate = undefined;
+    }),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("codeSessions.planning.storeRoot")) bindStoreWatcher();
+    }),
+  );
 
   void model.reload(log);
   log?.appendLine("[planning] registered Planning mode");

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.34.0 — 2026-08-09
+
+### Planning: KP-store watcher — external captures show up without a manual refresh
+
+- **FileSystemWatcher on the planning store root** (`**/*.md`): a `kp capture` in a terminal, a `/planning-*` skill run by a local Claude session, or a git pull of the store now refreshes Today/Inbox/Projects and an open dashboard automatically.
+- **`ReloadGate` (new `src/reloadGate.ts`)** — the watcher is a dirty bit, not a direct re-export trigger: rapid fs events collapse into one trailing debounced reload (new setting `codeSessions.planning.reloadDebounceMs`, default 800ms, clamped 100–10000), which then goes through `PlanningModel.reload()`'s existing coalescer (≤2 exports for any burst).
+- **Self-write suppression.** Events caused by our own kp CLI mutations are muted while the mutation is in flight plus a 500ms grace after — the explicit post-mutation reload each call site already does stays the single repaint; no feedback loop, no double exports.
+- **storeRoot rebind.** Changing `codeSessions.planning.storeRoot` re-creates the watcher on the new root; watcher, gate, and pending timers are disposed with the extension.
+- Manual escape hatch unchanged: `Planning: Refresh` still forces a reload.
+
+MINOR.
+
 ## 1.33.0 — 2026-08-09
 
 ### Planning: async kp CLI — the extension host no longer freezes on every planning action
