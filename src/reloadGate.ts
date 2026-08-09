@@ -48,16 +48,30 @@ export class ReloadGate {
   /** One fs event. Returns true if it (re)armed the debounce, false if muted. */
   fsEvent(): boolean {
     if (this.disposed || this.suppressed) return false;
+    this.arm(this.debounce());
+    return true;
+  }
+
+  private debounce(): number {
+    const ms = this.opts.debounceMs();
+    return Number.isFinite(ms) ? Math.min(10_000, Math.max(100, ms)) : 800;
+  }
+
+  private arm(ms: number): void {
     if (this.timer) clearTimeout(this.timer);
-    const ms = Math.min(10_000, Math.max(100, this.opts.debounceMs()));
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      // re-check: a mutation may have started while the debounce was pending
-      if (this.disposed || this.suppressed) return;
+      if (this.disposed) return;
+      if (this.suppressed) {
+        // A mutation started while the debounce was pending. The external change
+        // that armed us must not be lost: retry once the grace can have passed.
+        // Loop-free — self-write events never arm (fsEvent mutes them).
+        this.arm((this.opts.graceMs ?? 500) + this.debounce());
+        return;
+      }
       this.opts.log?.("[planning] reload source=fs");
       this.opts.fire();
     }, ms);
-    return true;
   }
 
   dispose(): void {

@@ -1533,10 +1533,8 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     storeWatcher?.dispose();
     storeWatcher = undefined;
     const root = storeRoot();
-    if (!existsSync(root)) {
-      log?.appendLine(`[planning] store watcher off — no store at ${root}`);
-      return;
-    }
+    // bind even if the root doesn't exist yet (kp init later) — a watcher on a
+    // missing dir is harmless
     try {
       const w = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(root), "**/*.md"));
       const onEvent = () => void reloadGate?.fsEvent();

@@ -40,14 +40,26 @@ describe("ReloadGate", () => {
     expect(fire).toHaveBeenCalledTimes(1);
   });
 
-  it("drops a pending debounce if a mutation starts before it fires", () => {
+  it("defers a pending debounce across a mutation instead of dropping it", () => {
     const fire = vi.fn();
-    const g = gate(fire);
-    g.fsEvent();
+    const g = gate(fire, { grace: 500 });
+    g.fsEvent(); // external change armed us
     g.noteMutationStart();
-    vi.advanceTimersByTime(2000);
+    vi.advanceTimersByTime(2000); // timer fires mid-mutation → re-arms, no fire
     expect(fire).not.toHaveBeenCalled();
     g.noteMutationEnd();
+    vi.advanceTimersByTime(5000); // retries re-arm until past the grace, then fire once
+    expect(fire).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the default debounce when the setting is NaN", () => {
+    const fire = vi.fn();
+    const g = new ReloadGate({ debounceMs: () => NaN, fire });
+    g.fsEvent();
+    vi.advanceTimersByTime(799);
+    expect(fire).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(fire).toHaveBeenCalledTimes(1);
   });
 
   it("nested mutations suppress until the last one ends", () => {
