@@ -302,7 +302,7 @@ async function runKp(args: string[], input?: string): Promise<KpResult> {
 class PlanningModel {
   private snap: Snapshot | null = null;
   readonly onDidChange = new vscode.EventEmitter<void>();
-  private inFlight = false;
+  private inFlight: Promise<boolean> | null = null;
   private pending = false;
   private appliedGen = 0;
   private nextGen = 0;
@@ -310,35 +310,40 @@ class PlanningModel {
 
   async reload(log?: vscode.OutputChannel): Promise<boolean> {
     if (this.inFlight) {
+      // Coalesce onto the in-flight run: the trailing export it triggers runs
+      // after this caller's (already-completed) mutation on the same CLI queue,
+      // so awaiting the shared promise means "my change is painted".
       this.pending = true;
-      return this.lastOk;
+      return this.inFlight;
     }
-    this.inFlight = true;
-    try {
-      do {
-        this.pending = false;
-        const gen = ++this.nextGen;
-        const res = await runKp(["export", "--date", "today"]);
-        if (gen <= this.appliedGen) continue; // a newer export already painted
-        this.appliedGen = gen;
-        if (!res.ok) {
-          log?.appendLine(`[planning] kp export failed (kept last snapshot): ${res.stderr}`);
-          this.lastOk = false;
-        } else {
-          try {
-            this.snap = JSON.parse(res.stdout) as Snapshot;
-            this.lastOk = true;
-          } catch (e) {
-            log?.appendLine(`[planning] kp export parse error (kept last snapshot): ${(e as Error).message}`);
+    this.inFlight = (async () => {
+      try {
+        do {
+          this.pending = false;
+          const gen = ++this.nextGen;
+          const res = await runKp(["export", "--date", "today"]);
+          if (gen <= this.appliedGen) continue; // a newer export already painted
+          this.appliedGen = gen;
+          if (!res.ok) {
+            log?.appendLine(`[planning] kp export failed (kept last snapshot): ${res.stderr}`);
             this.lastOk = false;
+          } else {
+            try {
+              this.snap = JSON.parse(res.stdout) as Snapshot;
+              this.lastOk = true;
+            } catch (e) {
+              log?.appendLine(`[planning] kp export parse error (kept last snapshot): ${(e as Error).message}`);
+              this.lastOk = false;
+            }
           }
-        }
-        this.onDidChange.fire();
-      } while (this.pending);
-    } finally {
-      this.inFlight = false;
-    }
-    return this.lastOk;
+          this.onDidChange.fire();
+        } while (this.pending);
+      } finally {
+        this.inFlight = null;
+      }
+      return this.lastOk;
+    })();
+    return this.inFlight;
   }
   get(): Snapshot | null {
     return this.snap;
