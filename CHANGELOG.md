@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.33.0 — 2026-08-09
+
+### Planning: async kp CLI — the extension host no longer freezes on every planning action
+
+- **`KpClient` (new `src/kpClient.ts`)** — one serialized promise-chain queue over async `execFile` replaces all 44 `spawnSync` kp CLI calls in `planning.ts` / `planningDashboard.ts`. Mutations run in submit order and never interleave; the extension-host thread stays responsive while exports run. Stdin piping for `kp edit --body -` is preserved (explicit write+end, UTF-8), a 60s timeout SIGKILLs a hung child so it can't wedge the queue, and dispose (deactivate/reload-window) kills any in-flight child and refuses new work.
+- **Coalesced reload.** `PlanningModel.reload()` is async with a dirty-bit: N rapid reload requests while an export is in flight collapse to one trailing export (≤2 total). A generation counter makes a slow export result unable to overwrite a newer snapshot.
+- **Keep last-good snapshot.** A failed or unparsable `kp export` now logs and keeps the previous snapshot instead of blanking the Today/Inbox/Projects trees (previous behavior nulled it).
+- `DashboardDeps.runKp`/`reload` are now async (dashboard message handlers await mutation → reload → repaint in order).
+- Not yet in this slice (tracked in kp `tasks/csv-async-runkp…`): KP-store FileSystemWatcher with debounce setting + self-write suppression.
+
+MINOR.
+
 ## 1.32.1 — 2026-08-07
 
 ### Embeddings: never poison the agent graph with mixed-dimension vectors

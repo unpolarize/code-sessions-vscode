@@ -11,11 +11,11 @@ import * as vscode from "vscode";
 
 export interface DashboardDeps {
   getSnapshot: () => unknown | null;
-  reload: () => boolean;
+  reload: () => Promise<boolean>;
   onChange: vscode.Event<void>;
-  runKp: (args: string[]) => { ok: boolean; stdout: string; stderr: string };
+  runKp: (args: string[], input?: string) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
   /** delegate open-file / agent actions to the host (needs vscode + terminals) */
-  onAction: (msg: { type: string; [k: string]: unknown }) => void;
+  onAction: (msg: { type: string; [k: string]: unknown }) => void | Promise<void>;
   /** rich session list from the ~/.sessions git store, for the Sessions view */
   listSessions?: () => unknown[];
   /** the user is interacting with the board — arm aggressive store polling */
@@ -59,7 +59,7 @@ export class DashboardPanel {
       retainContextWhenHidden: true,
     });
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-    this.panel.webview.onDidReceiveMessage((m) => this.onMessage(m), null, this.disposables);
+    this.panel.webview.onDidReceiveMessage((m) => void this.onMessage(m), null, this.disposables);
     this.deps.onChange(() => this.pushSnapshot(), null, this.disposables);
     // Store-sync status → header indicator; arm aggressive polling when the panel
     // has focus (a pull that advances HEAD reloads the snapshot via onChange).
@@ -76,7 +76,7 @@ export class DashboardPanel {
     this.panel.webview.postMessage({ type: "snapshot", data: this.deps.getSnapshot() });
   }
 
-  private onMessage(m: { type: string; [k: string]: unknown }): void {
+  private async onMessage(m: { type: string; [k: string]: unknown }): Promise<void> {
     switch (m.type) {
       case "ready":
         this.pushSnapshot();
@@ -95,11 +95,11 @@ export class DashboardPanel {
         void vscode.commands.executeCommand("codeSessions.syncStoresNow");
         break;
       case "refresh":
-        this.deps.reload();
+        await this.deps.reload();
         this.pushSnapshot();
         break;
       case "show": {
-        const res = this.deps.runKp(["show", String(m.id)]);
+        const res = await this.deps.runKp(["show", String(m.id)]);
         if (res.ok) {
           try {
             this.panel.webview.postMessage({ type: "detail", data: JSON.parse(res.stdout) });
@@ -110,43 +110,43 @@ export class DashboardPanel {
         break;
       }
       case "setStatus":
-        this.deps.runKp(["set-status", String(m.id), String(m.status)]);
-        this.deps.reload();
+        await this.deps.runKp(["set-status", String(m.id), String(m.status)]);
+        await this.deps.reload();
         this.pushSnapshot();
         // refresh the open drawer
-        if (m.id) this.onMessage({ type: "show", id: m.id });
+        if (m.id) await this.onMessage({ type: "show", id: m.id });
         break;
       case "setStatusApply": {
         // closing move with an optional resolution note (from the modal)
         const args = ["set-status", String(m.id), String(m.status)];
         const note = String(m.note ?? "").trim();
         if (note) args.push("--note", note);
-        this.deps.runKp(args);
-        this.deps.reload();
+        await this.deps.runKp(args);
+        await this.deps.reload();
         this.pushSnapshot();
-        if (m.id) this.onMessage({ type: "show", id: m.id });
+        if (m.id) await this.onMessage({ type: "show", id: m.id });
         break;
       }
       case "setDue":
-        this.deps.runKp(["set-due", String(m.id), String(m.due || "-")]);
-        this.deps.reload();
+        await this.deps.runKp(["set-due", String(m.id), String(m.due || "-")]);
+        await this.deps.reload();
         this.pushSnapshot();
-        if (m.id) this.onMessage({ type: "show", id: m.id });
+        if (m.id) await this.onMessage({ type: "show", id: m.id });
         break;
       case "setPriority":
-        this.deps.runKp(["set-priority", String(m.id), String(m.priority || "-")]);
-        this.deps.reload();
+        await this.deps.runKp(["set-priority", String(m.id), String(m.priority || "-")]);
+        await this.deps.reload();
         this.pushSnapshot();
-        if (m.id) this.onMessage({ type: "show", id: m.id });
+        if (m.id) await this.onMessage({ type: "show", id: m.id });
         break;
       case "setProject":
-        this.deps.runKp(["set-project", String(m.id), String(m.project || "-")]);
-        this.deps.reload();
+        await this.deps.runKp(["set-project", String(m.id), String(m.project || "-")]);
+        await this.deps.reload();
         this.pushSnapshot();
-        if (m.id) this.onMessage({ type: "show", id: m.id });
+        if (m.id) await this.onMessage({ type: "show", id: m.id });
         break;
       default:
-        this.deps.onAction(m); // open / action (agent, CB, promote, link, capture)
+        await this.deps.onAction(m); // open / action (agent, CB, promote, link, capture)
     }
   }
 

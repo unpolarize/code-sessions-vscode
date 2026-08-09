@@ -8,11 +8,12 @@
 // Projects trees, a kanban board webview, an interactive graph webview, and a status bar.
 
 import * as vscode from "vscode";
-import { spawnSync, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync, unlinkSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
+import { KpClient, type KpResult } from "./kpClient";
 import { syncBridge } from "./storeSync";
 
 interface SessionInfo {
@@ -271,7 +272,10 @@ function resolveNode(): string {
   return configured || "node";
 }
 
-function runKp(args: string[], input?: string): { ok: boolean; stdout: string; stderr: string } {
+/** One serialized CLI queue for the whole extension — created at registration. */
+let kpClient: KpClient | undefined;
+
+function kpInvocation(): { node: string; cli: string; env: Record<string, string> } {
   const cfg = planningConfig();
   const node = resolveNode();
   const cli = cfg.get<string>("cliPath") || defaultCli();
@@ -281,40 +285,60 @@ function runKp(args: string[], input?: string): { ok: boolean; stdout: string; s
   // ensure common bin dirs are on PATH for the child too
   env.PATH = `/opt/homebrew/bin:/usr/local/bin:${env.PATH || ""}`;
   env.KP_ROOT = root;
-  const res = spawnSync(node, [cli, ...args], {
-    encoding: "utf8",
-    env,
-    maxBuffer: 32 * 1024 * 1024,
-    ...(input !== undefined ? { input } : {}),
-  });
-  return {
-    ok: res.status === 0,
-    stdout: res.stdout || "",
-    stderr: res.stderr || (res.error ? res.error.message : ""),
-  };
+  return { node, cli, env };
 }
 
-/** Shared snapshot, reloaded on refresh and consumed by every provider/view. */
+async function runKp(args: string[], input?: string): Promise<KpResult> {
+  if (!kpClient) kpClient = new KpClient({ resolve: kpInvocation });
+  return kpClient.run(args, input);
+}
+
+/** Shared snapshot, reloaded on refresh and consumed by every provider/view.
+ *
+ * reload() coalesces: while an export is in flight, further requests set a
+ * dirty bit and are satisfied by one trailing export (N rapid requests → ≤2
+ * exports). A generation counter guards stale paints, and a failed export
+ * keeps the last-good snapshot instead of blanking the trees. */
 class PlanningModel {
   private snap: Snapshot | null = null;
   readonly onDidChange = new vscode.EventEmitter<void>();
+  private inFlight = false;
+  private pending = false;
+  private appliedGen = 0;
+  private nextGen = 0;
+  private lastOk = false;
 
-  reload(log?: vscode.OutputChannel): boolean {
-    const res = runKp(["export", "--date", "today"]);
-    if (!res.ok) {
-      log?.appendLine(`[planning] kp export failed: ${res.stderr}`);
-      this.snap = null;
-      this.onDidChange.fire();
-      return false;
+  async reload(log?: vscode.OutputChannel): Promise<boolean> {
+    if (this.inFlight) {
+      this.pending = true;
+      return this.lastOk;
     }
+    this.inFlight = true;
     try {
-      this.snap = JSON.parse(res.stdout) as Snapshot;
-    } catch (e) {
-      log?.appendLine(`[planning] kp export parse error: ${(e as Error).message}`);
-      this.snap = null;
+      do {
+        this.pending = false;
+        const gen = ++this.nextGen;
+        const res = await runKp(["export", "--date", "today"]);
+        if (gen <= this.appliedGen) continue; // a newer export already painted
+        this.appliedGen = gen;
+        if (!res.ok) {
+          log?.appendLine(`[planning] kp export failed (kept last snapshot): ${res.stderr}`);
+          this.lastOk = false;
+        } else {
+          try {
+            this.snap = JSON.parse(res.stdout) as Snapshot;
+            this.lastOk = true;
+          } catch (e) {
+            log?.appendLine(`[planning] kp export parse error (kept last snapshot): ${(e as Error).message}`);
+            this.lastOk = false;
+          }
+        }
+        this.onDidChange.fire();
+      } while (this.pending);
+    } finally {
+      this.inFlight = false;
     }
-    this.onDidChange.fire();
-    return this.snap != null;
+    return this.lastOk;
   }
   get(): Snapshot | null {
     return this.snap;
@@ -672,6 +696,8 @@ class GraphPanel {
 
 export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.OutputChannel): void {
   extensionRoot = ctx.extensionUri.fsPath; // resolve the bundled kp CLI relative to here
+  kpClient = new KpClient({ resolve: kpInvocation, log: (l) => log?.appendLine(l) });
+  ctx.subscriptions.push(new vscode.Disposable(() => kpClient?.dispose()));
   const model = new PlanningModel();
   const today = new TodayProvider(model);
   const inbox = new InboxProvider(model);
@@ -713,19 +739,19 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   const idOf = (item: any): string | undefined =>
     item instanceof PlanningItem ? item.planningId : typeof item === "string" ? item : undefined;
 
-  const onWebviewAction = (msg: any) => {
+  const onWebviewAction = async (msg: any) => {
     if (!msg) return;
     if (msg.type === "open" && msg.path) void vscode.window.showTextDocument(vscode.Uri.file(msg.path), { preview: true });
     else if (msg.type === "setStatus" && msg.id && msg.status) {
-      runKp(["set-status", msg.id, msg.status]);
-      model.reload(log);
-    } else if (msg.type === "refresh") model.reload(log);
+      await runKp(["set-status", msg.id, msg.status]);
+      await model.reload(log);
+    } else if (msg.type === "refresh") await model.reload(log);
   };
 
   // --- Agent actions: build a context-rich prompt and launch an agent (item 4) ---
   const stateDir = path.join(os.homedir(), ".local/state/kp");
-  const detailOf = (id: string): any | null => {
-    const r = runKp(["show", id]);
+  const detailOf = async (id: string): Promise<any | null> => {
+    const r = await runKp(["show", id]);
     if (!r.ok) return null;
     try {
       return JSON.parse(r.stdout);
@@ -782,14 +808,14 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   // Build the prepopulated prompt and open it straight in Code Build (review/edit happens
   // in the CB composer before you send — no throwaway editor file).
   const reviewAndRun = async (action: string, id: string) => {
-    const d = detailOf(id);
+    const d = await detailOf(id);
     if (!d) {
       void vscode.window.showWarningMessage(`Planning: could not load ${id}`);
       return;
     }
     let prompt: string;
     if (action === "research") {
-      const r = runKp(["research", id]);
+      const r = await runKp(["research", id]);
       prompt = r.ok && r.stdout.trim() ? r.stdout : agentPrompt(action, d);
     } else {
       prompt = agentPrompt(action, d);
@@ -798,7 +824,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   };
 
   const openInCB = async (id: string) => {
-    const d = detailOf(id);
+    const d = await detailOf(id);
     const refs = linkedRefs(d);
     let seed = d ? agentPrompt("execute", d) : id;
     if (refs.length) {
@@ -813,19 +839,19 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   };
 
   const editItem = async (id: string) => {
-    const d = detailOf(id);
+    const d = await detailOf(id);
     if (!d) return;
     const title = await vscode.window.showInputBox({ prompt: "Title", value: d.title });
     if (title === undefined) return;
-    const r = runKp(["edit", id, "--title", title]);
+    const r = await runKp(["edit", id, "--title", title]);
     if (!r.ok) void vscode.window.showWarningMessage(`edit failed: ${r.stderr}`);
-    model.reload(log);
+    await model.reload(log);
   };
 
   // Create an item from the drawer's new-item editor (all fields at once).
   // The dashboard collects everything; here we run `kp create` for the fields it
   // supports, then follow-ups for lane/project/body, and open the result.
-  const createItemFromFields = (f: {
+  const createItemFromFields = async (f: {
     type?: string;
     title?: string;
     status?: string;
@@ -835,7 +861,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     due?: string;
     priority?: string;
     body?: string;
-  }): void => {
+  }): Promise<void> => {
     const title = (f.title ?? "").trim();
     if (!title) return;
     const type = f.type || "task";
@@ -844,23 +870,23 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     if (f.domain) args.push("--domain", f.domain);
     if (f.priority) args.push("--priority", f.priority);
     if (f.due && /^\d{4}-\d{2}-\d{2}$/.test(f.due)) args.push("--due", f.due);
-    const r = runKp(args);
+    const r = await runKp(args);
     if (!r.ok) {
       void vscode.window.showWarningMessage(`create failed: ${r.stderr}`);
       return;
     }
     const newId = /created\s+(\S+)/.exec(r.stdout)?.[1];
     if (newId) {
-      if (f.lane) runKp(["edit", newId, "--lane", f.lane]);
-      if (f.project) runKp(["set-project", newId, f.project]);
-      if (f.body && f.body.trim()) runKp(["edit", newId, "--body", "-"], f.body);
+      if (f.lane) await runKp(["edit", newId, "--lane", f.lane]);
+      if (f.project) await runKp(["set-project", newId, f.project]);
+      if (f.body && f.body.trim()) await runKp(["edit", newId, "--body", "-"], f.body);
     }
-    model.reload(log);
+    await model.reload(log);
     if (newId) DashboardPanel.current?.post({ type: "openItem", id: newId });
   };
 
   const recategorizeItem = async (id: string) => {
-    const d = detailOf(id);
+    const d = await detailOf(id);
     if (!d) return;
     const choice = await vscode.window.showQuickPick(
       ["Move to task", "Move to idea", "Move to plan", "Change domain…", "Set lane…"],
@@ -868,33 +894,33 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     );
     if (!choice) return;
     let r;
-    if (choice.startsWith("Move to ")) r = runKp(["recategorize", id, "--to-type", choice.replace("Move to ", "")]);
+    if (choice.startsWith("Move to ")) r = await runKp(["recategorize", id, "--to-type", choice.replace("Move to ", "")]);
     else if (choice.startsWith("Change domain")) {
       const dom = await vscode.window.showInputBox({ prompt: "Domain", value: d.domain });
       if (dom === undefined) return;
-      r = runKp(["recategorize", id, "--domain", dom]);
+      r = await runKp(["recategorize", id, "--domain", dom]);
     } else {
       const lane = await vscode.window.showInputBox({ prompt: "Lane", value: d.lane });
       if (lane === undefined) return;
-      r = runKp(["edit", id, "--lane", lane]);
+      r = await runKp(["edit", id, "--lane", lane]);
     }
     if (r && !r.ok) void vscode.window.showWarningMessage(`recategorize failed: ${r.stderr}`);
-    model.reload(log);
+    await model.reload(log);
   };
 
   const deleteItem = async (id: string) => {
     const yes = await vscode.window.showWarningMessage(`Delete ${id}? This removes its markdown file.`, { modal: true }, "Delete");
     if (yes !== "Delete") return;
-    const r = runKp(["delete", id]);
+    const r = await runKp(["delete", id]);
     if (!r.ok) void vscode.window.showWarningMessage(`delete failed: ${r.stderr}`);
-    model.reload(log);
+    await model.reload(log);
   };
 
   // Clone — kp create with the source's fields, then copy body/lane via kp edit.
   // A clone of a closed item restarts at the type's default open status. No title
   // prompt: the copy opens in the drawer, where the title is editable in place.
   const cloneItem = async (id: string) => {
-    const d = detailOf(id);
+    const d = await detailOf(id);
     if (!d) {
       void vscode.window.showWarningMessage(`Planning: could not load ${id}`);
       return;
@@ -909,22 +935,22 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     if (d.domain) args.push("--domain", String(d.domain));
     if (fm.priority) args.push("--priority", String(fm.priority));
     if (fm.due) args.push("--due", String(fm.due));
-    const r = runKp(args);
+    const r = await runKp(args);
     if (!r.ok) {
       void vscode.window.showWarningMessage(`clone failed: ${r.stderr}`);
       return;
     }
     const newId = /created\s+(\S+)/.exec(r.stdout)?.[1];
     if (newId) {
-      if (d.body && String(d.body).trim()) runKp(["edit", newId, "--body", "-"], String(d.body));
-      if (fm.lane) runKp(["edit", newId, "--lane", String(fm.lane)]);
+      if (d.body && String(d.body).trim()) await runKp(["edit", newId, "--body", "-"], String(d.body));
+      if (fm.lane) await runKp(["edit", newId, "--lane", String(fm.lane)]);
     }
-    model.reload(log);
+    await model.reload(log);
     if (newId) DashboardPanel.current?.post({ type: "openItem", id: newId });
     else void vscode.window.showInformationMessage(r.stdout.trim());
   };
 
-  const dashAction = (msg: any) => {
+  const dashAction = async (msg: any): Promise<void> => {
     if (!msg) return;
     const snap = model.get();
     if (msg.type === "open") {
@@ -939,22 +965,22 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     const id = msg.id as string;
     switch (msg.action) {
       case "createItem":
-        createItemFromFields((msg.fields as Record<string, string>) || {});
+        await createItemFromFields((msg.fields as Record<string, string>) || {});
         break;
       case "openFile":
-        dashAction({ type: "open", id });
+        await dashAction({ type: "open", id });
         break;
       case "promote": {
-        const r = runKp(["promote", id]);
+        const r = await runKp(["promote", id]);
         void vscode.window.showInformationMessage(r.ok ? r.stdout.trim() : `promote failed: ${r.stderr}`);
-        model.reload(log);
+        await model.reload(log);
         break;
       }
       case "toggleSocial": {
         // flag/unflag an item to polish into a social post (stored in the lane field)
-        runKp(["edit", id, "--lane", msg.on ? "social" : ""]);
-        model.reload(log);
-        const det = runKp(["show", id]);
+        await runKp(["edit", id, "--lane", msg.on ? "social" : ""]);
+        await model.reload(log);
+        const det = await runKp(["show", id]);
         if (det.ok) {
           try {
             DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) });
@@ -965,7 +991,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         break;
       }
       case "polishSocial": {
-        const d = detailOf(id);
+        const d = await detailOf(id);
         if (!d) {
           void vscode.window.showWarningMessage(`Planning: could not load ${id}`);
           break;
@@ -983,8 +1009,8 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       case "convertToIdea":
       case "convertToTask": {
         const toType = msg.action === "convertToTask" ? "task" : "idea";
-        const r = runKp(["recategorize", id, "--to-type", toType]);
-        model.reload(log);
+        const r = await runKp(["recategorize", id, "--to-type", toType]);
+        await model.reload(log);
         const newId = /→\s+(\S+)\s*$/.exec(r.stdout.trim())?.[1];
         if (r.ok && newId) DashboardPanel.current?.post({ type: "openItem", id: newId });
         else if (!r.ok) void vscode.window.showWarningMessage(`convert failed: ${r.stderr}`);
@@ -1039,13 +1065,13 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         } catch (e) {
           void vscode.window.showWarningMessage(`toggle failed: ${String(e)}`);
         }
-        model.reload(log);
+        await model.reload(log);
         break;
       }
       case "moveToTask": {
-        const r = runKp(["recategorize", id, "--to-type", "task"]);
+        const r = await runKp(["recategorize", id, "--to-type", "task"]);
         void vscode.window.showInformationMessage(r.ok ? r.stdout.trim() : `move failed: ${r.stderr}`);
-        model.reload(log);
+        await model.reload(log);
         break;
       }
       case "link":
@@ -1085,12 +1111,12 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
             { title: `Link session ${uuid.slice(0, 8)}… → planning`, placeHolder: "Search a task/idea/plan to link this session to", matchOnDescription: true },
           );
           if (!pick) return;
-          const r = runKp(["link-session", (pick as { id: string }).id, uuid]);
+          const r = await runKp(["link-session", (pick as { id: string }).id, uuid]);
           if (!r.ok) {
             void vscode.window.showWarningMessage(`link failed: ${r.stderr}`);
             return;
           }
-          model.reload(log);
+          await model.reload(log);
           DashboardPanel.current?.post({ type: "sessions", data: listSessionsRich() });
           void vscode.window.showInformationMessage(`Linked session → ${(pick as { id: string }).id}`);
         })();
@@ -1114,9 +1140,9 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         void deleteItem(id);
         break;
       case "setField": {
-        if (msg.field === "project") runKp(["set-project", id, String(msg.value ?? "") || "-"]);
-        else runKp(["edit", id, msg.field === "domain" ? "--domain" : "--lane", String(msg.value ?? "")]);
-        model.reload(log);
+        if (msg.field === "project") await runKp(["set-project", id, String(msg.value ?? "") || "-"]);
+        else await runKp(["edit", id, msg.field === "domain" ? "--domain" : "--lane", String(msg.value ?? "")]);
+        await model.reload(log);
         break;
       }
       case "autosaveField": {
@@ -1124,21 +1150,21 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         // the drawer alone so typing is never clobbered by a re-render
         const field = String(msg.field);
         const value = String(msg.value ?? "");
-        const r = field === "body" ? runKp(["edit", id, "--body", "-"], value) : runKp(["edit", id, "--" + field, value]);
+        const r = field === "body" ? await runKp(["edit", id, "--body", "-"], value) : await runKp(["edit", id, "--" + field, value]);
         if (!r.ok) void vscode.window.showWarningMessage(`autosave failed: ${r.stderr}`);
-        model.reload(log);
+        await model.reload(log);
         break;
       }
       case "updateField": {
         const field = String(msg.field);
         const value = String(msg.value ?? "");
         let r;
-        if (field === "status") r = runKp(["set-status", id, value]);
-        else if (field === "body") r = runKp(["edit", id, "--body", "-"], value);
-        else r = runKp(["edit", id, "--" + field, value]); // title / domain / lane
+        if (field === "status") r = await runKp(["set-status", id, value]);
+        else if (field === "body") r = await runKp(["edit", id, "--body", "-"], value);
+        else r = await runKp(["edit", id, "--" + field, value]); // title / domain / lane
         if (r && !r.ok) void vscode.window.showWarningMessage(`update failed: ${r.stderr}`);
-        model.reload(log);
-        const det = runKp(["show", id]); // refresh the open drawer with saved values
+        await model.reload(log);
+        const det = await runKp(["show", id]); // refresh the open drawer with saved values
         if (det.ok) {
           try {
             DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) });
@@ -1149,8 +1175,8 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         break;
       }
       case "setType": {
-        runKp(["recategorize", id, "--to-type", String(msg.toType)]);
-        model.reload(log);
+        await runKp(["recategorize", id, "--to-type", String(msg.toType)]);
+        await model.reload(log);
         break;
       }
       case "addLane":
@@ -1173,7 +1199,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     getSnapshot: () => model.get(),
     reload: () => model.reload(log),
     onChange: model.onDidChange.event,
-    runKp: (args) => runKp(args),
+    runKp: (args, input) => runKp(args, input),
     onAction: dashAction,
     listSessions: () => listSessionsRich(),
     noteActivity: () => syncBridge()?.noteActivity(),
@@ -1185,26 +1211,26 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   };
 
   ctx.subscriptions.push(
-    vscode.commands.registerCommand("codePlanning.refresh", () => {
-      if (!model.reload(log)) vscode.window.showWarningMessage("Planning: kp export failed — check codeSessions.planning settings.");
+    vscode.commands.registerCommand("codePlanning.refresh", async () => {
+      if (!(await model.reload(log))) vscode.window.showWarningMessage("Planning: kp export failed — check codeSessions.planning settings.");
     }),
     vscode.commands.registerCommand("codePlanning.openObject", openObject),
     vscode.commands.registerCommand("codePlanning.openInBoard", (item) => {
       const id = idOf(item);
       DashboardPanel.show(dashDeps, "board", id || undefined);
     }),
-    vscode.commands.registerCommand("codePlanning.accept", (item) => {
+    vscode.commands.registerCommand("codePlanning.accept", async (item) => {
       const id = idOf(item);
       if (!id) return;
-      runKp(["set-status", id, "accepted"]);
-      model.reload(log);
+      await runKp(["set-status", id, "accepted"]);
+      await model.reload(log);
     }),
-    vscode.commands.registerCommand("codePlanning.promote", (item) => {
+    vscode.commands.registerCommand("codePlanning.promote", async (item) => {
       const id = idOf(item);
       if (!id) return;
-      const res = runKp(["promote", id]);
+      const res = await runKp(["promote", id]);
       vscode.window.showInformationMessage(res.ok ? res.stdout.trim() : `promote failed: ${res.stderr}`);
-      model.reload(log);
+      await model.reload(log);
     }),
     vscode.commands.registerCommand("codePlanning.setStatus", async (item) => {
       const id = idOf(item);
@@ -1213,8 +1239,8 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         placeHolder: `New status for ${id}`,
       });
       if (status) {
-        runKp(["set-status", id, status]);
-        model.reload(log);
+        await runKp(["set-status", id, status]);
+        await model.reload(log);
       }
     }),
     vscode.commands.registerCommand("codePlanning.linkSession", async (item) => {
@@ -1244,9 +1270,9 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         uuid = await vscode.window.showInputBox({ prompt: `Session uuid to link to ${id}` });
       }
       if (!uuid) return;
-      const res = runKp(["link-session", id, uuid]);
+      const res = await runKp(["link-session", id, uuid]);
       vscode.window.showInformationMessage(res.ok ? res.stdout.trim() : `link failed: ${res.stderr}`);
-      model.reload(log);
+      await model.reload(log);
       if (res.ok) {
         const p = await vscode.window.showInformationMessage(`Linked session to ${id}.`, "Preview session");
         if (p === "Preview session") void vscode.commands.executeCommand("codeSessions.showTrajectory", uuid);
@@ -1284,7 +1310,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         void vscode.window.showWarningMessage("Planning: no session id on this item.");
         return;
       }
-      if (!model.get()) model.reload(log);
+      if (!model.get()) await model.reload(log);
       const objs = (model.get()?.objects ?? []) as (ObjRow & { linked_sessions?: string | null })[];
       const parseLS = (v: unknown): string[] => {
         try {
@@ -1320,12 +1346,12 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         { title: "Link session → planning", placeHolder: "No planning links yet — pick an item to link this session to (Esc = cancel)" },
       );
       if (!choice) return;
-      const r = runKp(["link-session", (choice as { id: string }).id, uuid]);
+      const r = await runKp(["link-session", (choice as { id: string }).id, uuid]);
       if (!r.ok) {
         void vscode.window.showWarningMessage(`link failed: ${r.stderr}`);
         return;
       }
-      model.reload(log);
+      await model.reload(log);
       openItem((choice as { id: string }).id);
     }),
     // Cmd+Ctrl+Shift+P — planning mode toggle: open the Planning sidebar + board
@@ -1394,7 +1420,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
               } else {
                 void vscode.window.showInformationMessage(`${script} ✓`);
               }
-              model.reload(log);
+              void model.reload(log);
               resolveP();
             });
           }),
@@ -1409,9 +1435,9 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     vscode.commands.registerCommand("codePlanning.capture", async () => {
       const text = await vscode.window.showInputBox({ prompt: "Capture an idea" });
       if (text) {
-        const res = runKp(["capture", text]);
+        const res = await runKp(["capture", text]);
         vscode.window.showInformationMessage(res.ok ? res.stdout.trim() : `capture failed: ${res.stderr}`);
-        model.reload(log);
+        await model.reload(log);
       }
     }),
   );
@@ -1438,7 +1464,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
           .showInformationMessage(`🤖 Ideation ready: ${n} idea(s)${cw.ideate.spec ? ` · spec ${cw.ideate.spec}` : ""} — review in the Auto view.`, openAuto, ...(cw.ideate.spec ? ["Open spec"] : []))
           .then((pick) => {
             if (pick === openAuto) DashboardPanel.show(dashDeps, "autonomous");
-            else if (pick === "Open spec") dashAction({ type: "action", action: "openSpec", spec: cw.ideate.spec });
+            else if (pick === "Open spec") void dashAction({ type: "action", action: "openSpec", spec: cw.ideate.spec });
           });
       }
     }
@@ -1450,7 +1476,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
           .showInformationMessage(`🤖 Implementation ${cw.implement.status || "done"}${cw.implement.report ? ` — report ready` : ""}.`, openAuto, ...(cw.implement.report ? ["Open report"] : []))
           .then((pick) => {
             if (pick === openAuto) DashboardPanel.show(dashDeps, "autonomous");
-            else if (pick === "Open report") dashAction({ type: "open", kbPath: cw.implement.report });
+            else if (pick === "Open report") void dashAction({ type: "open", kbPath: cw.implement.report });
           });
       }
     }
@@ -1470,6 +1496,6 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     log?.appendLine(`[planning] autonomous watcher unavailable: ${String(e)}`);
   }
 
-  model.reload(log);
+  void model.reload(log);
   log?.appendLine("[planning] registered Planning mode");
 }
