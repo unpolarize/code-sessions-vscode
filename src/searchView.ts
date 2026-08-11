@@ -132,10 +132,19 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   }
   function escRe(s) { return s.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&'); }
+  // Multi-word queries AND their tokens in the DB; highlight each token
+  // individually so "async runKp" marks both words (not only a contiguous phrase).
+  function queryTokens(q) {
+    return String(q || '').trim().split(/\\s+/).filter(Boolean);
+  }
   function highlight(text, q) {
     const safe = escHtml(text || '');
-    if (!q) return safe;
-    const re = new RegExp('(' + escRe(q) + ')', 'gi');
+    const toks = queryTokens(q);
+    if (!toks.length) return safe;
+    // Longer tokens first so a short token nested in a longer one doesn't
+    // split a match mid-way after the first replace (best-effort).
+    const ordered = toks.slice().sort((a, b) => b.length - a.length);
+    const re = new RegExp('(' + ordered.map(escRe).join('|') + ')', 'gi');
     return safe.replace(re, '<mark>$1</mark>');
   }
   function timeAgo(ts) {
@@ -146,13 +155,21 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
     if (s < 86400) return Math.floor(s/3600) + 'h ago';
     return Math.floor(s/86400) + 'd ago';
   }
+  // Client-side fallback when a result has no server-built snippet (topics,
+  // or older hosts). Windows on the earliest of any query token.
   function snippet(text, q, around) {
     if (!text) return '';
+    const toks = queryTokens(q);
     const lc = text.toLowerCase();
-    const i = lc.indexOf(q.toLowerCase());
-    if (i < 0) return text.length > around ? text.slice(0, around) + '…' : text;
-    const start = Math.max(0, i - Math.floor(around / 2));
-    const end = Math.min(text.length, start + around);
+    let best = -1;
+    for (const t of toks) {
+      const i = lc.indexOf(t.toLowerCase());
+      if (i >= 0 && (best < 0 || i < best)) best = i;
+    }
+    if (best < 0) return text.length > around ? text.slice(0, around) + '…' : text;
+    let start = Math.max(0, best - Math.floor(around / 2));
+    let end = Math.min(text.length, start + around);
+    if (end - start < around) start = Math.max(0, end - around);
     return (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
   }
 
@@ -176,9 +193,13 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
       const badge = which === 'user' ? '<span class="badge user">user</span>'
                   : which === 'assistant' ? '<span class="badge assistant">assistant</span>'
                   : '<span class="badge">both</span>';
-      const source = which === 'assistant' ? r.assistant_excerpt : r.user_text;
-      const fallback = source || r.assistant_excerpt || r.user_text || '';
-      const excerpt = snippet(fallback, q, 180);
+      // Prefer the server-built match-window (from assistant_full when needed)
+      // so deep hits still show the matched term. Fall back for older payloads.
+      const excerpt = (r.snippet && String(r.snippet)) || (() => {
+        const source = which === 'assistant' ? r.assistant_excerpt : r.user_text;
+        const fallback = source || r.assistant_excerpt || r.user_text || '';
+        return snippet(fallback, q, 180);
+      })();
       const proj = r.project_id ? '<span class="proj" title="' + escHtml(r.project_path || '') + '">' + escHtml(r.project_id) + '</span>' : '';
       return '<div class="row" data-sid="' + escHtml(r.session_id) + '">' +
         '<div>' + proj + '<span class="title">' + escHtml(r.title || r.session_id.slice(0,8)) + '</span>' + badge +

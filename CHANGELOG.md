@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.35.1 — 2026-08-11
+
+### Search: match-window snippet + multi-token highlight
+
+- **`searchTurns` returns a `snippet`** — ~180-char window centered on the earliest query-token hit, taken from `COALESCE(assistant_full, assistant_excerpt)` on the matched side. Deep assistant hits (term past the 1 KB excerpt) now render a snippet that actually contains the matched term instead of the head of the excerpt.
+- **Search webview** prefers the server `snippet` and highlights **each query token** (not only a contiguous phrase), so multi-word queries like "async runKp" mark both words in topics and conversation rows.
+- DB-level test extended for deep-hit snippet content, multi-word windows, and the pure `SessionStore.matchSnippet` helper.
+
+PATCH.
+
 ## 1.35.0 — 2026-08-11
 
 ### Search: multi-word queries + full assistant text

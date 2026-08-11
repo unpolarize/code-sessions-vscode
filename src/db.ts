@@ -1305,15 +1305,59 @@ export class SessionStore {
 
   // ---- search ----------------------------------------------------------- //
 
+  /** Tokenize a query on whitespace into lowercased bare tokens (no % wraps). */
+  private static queryTokens(query: string): string[] {
+    return String(query || "")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
   /** Tokenize a query on whitespace into lowercased `%tok%` LIKE patterns.
    * Multi-word queries match as an AND of per-token LIKEs (each word must
    * appear somewhere in the field, not the literal contiguous phrase). */
   private static likeTokens(query: string): string[] {
-    return String(query || "")
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((t) => "%" + t + "%");
+    return SessionStore.queryTokens(query).map((t) => "%" + t + "%");
+  }
+
+  /**
+   * Display window of ~`around` chars centered on the earliest occurrence of
+   * any query token in `text`. Used so deep hits in assistant_full (past the
+   * 1 KB excerpt) still render a snippet that contains the matched term.
+   * Multi-word queries window on the earliest of any token (not the full phrase).
+   */
+  static matchSnippet(
+    text: string | null | undefined,
+    query: string,
+    around = 180,
+  ): string {
+    if (!text) return "";
+    const tokens = SessionStore.queryTokens(query);
+    if (tokens.length === 0) {
+      return text.length > around ? text.slice(0, around) + "…" : text;
+    }
+    const lc = text.toLowerCase();
+    let best = -1;
+    for (const t of tokens) {
+      const i = lc.indexOf(t);
+      if (i >= 0 && (best < 0 || i < best)) best = i;
+    }
+    if (best < 0) {
+      return text.length > around ? text.slice(0, around) + "…" : text;
+    }
+    const half = Math.floor(around / 2);
+    let start = Math.max(0, best - half);
+    let end = Math.min(text.length, start + around);
+    // If we hit the end of the string, pull the window left so we still
+    // return ~around chars when possible.
+    if (end - start < around) {
+      start = Math.max(0, end - around);
+    }
+    return (
+      (start > 0 ? "…" : "") +
+      text.slice(start, end) +
+      (end < text.length ? "…" : "")
+    );
   }
 
   /** LIKE-based search over `turn_topic`. Returns one row per (session, topic_norm)
@@ -1368,8 +1412,8 @@ export class SessionStore {
    * (COALESCE(assistant_full, assistant_excerpt) — full text when the answer
    * exceeded the 1 KB excerpt cap). Multi-word queries AND their tokens
    * within a side, so "async runKp" matches a turn containing both words
-   * non-contiguously. Returns matching turns with enough context to render
-   * an excerpt. */
+   * non-contiguously. Returns matching turns with a match-window `snippet`
+   * (from full assistant text when needed) ready for the search webview. */
   searchTurns(
     query: string,
     limit = 200,
@@ -1383,6 +1427,10 @@ export class SessionStore {
     ts: number | null;
     user_text: string | null;
     assistant_excerpt: string | null;
+    /** ~180-char window around the earliest query-token hit on the matched side.
+     * For assistant hits this is taken from COALESCE(assistant_full, excerpt)
+     * so deep matches (past the 1 KB excerpt) still show the matched term. */
+    snippet: string;
     matched: "user" | "assistant" | "both";
   }> {
     const toks = SessionStore.likeTokens(query);
@@ -1401,6 +1449,7 @@ export class SessionStore {
         SELECT t.session_id, s.title, s.project_id, s.project_path,
                t.turn_uuid, t.turn_index, t.ended_at AS ts,
                t.user_text, t.assistant_excerpt,
+               COALESCE(t.assistant_full, t.assistant_excerpt) AS assistant_text,
                (${userExpr}) AS um,
                (${asstExpr}) AS am
         FROM turn t
@@ -1410,18 +1459,29 @@ export class SessionStore {
         LIMIT ?
       `)
       .all(...toks, ...toks, ...toks, ...toks, limit) as any[];
-    return rows.map((r) => ({
-      session_id: r.session_id,
-      title: r.title,
-      project_id: r.project_id ?? null,
-      project_path: r.project_path ?? null,
-      turn_uuid: r.turn_uuid,
-      turn_index: r.turn_index,
-      ts: r.ts ?? null,
-      user_text: r.user_text,
-      assistant_excerpt: r.assistant_excerpt,
-      matched: r.um && r.am ? "both" : r.um ? "user" : "assistant",
-    }));
+    return rows.map((r) => {
+      const matched: "user" | "assistant" | "both" =
+        r.um && r.am ? "both" : r.um ? "user" : "assistant";
+      // Prefer the matched side for the display window; for "both" keep the
+      // historical preference of user text (searchView used to do the same).
+      const source =
+        matched === "assistant"
+          ? (r.assistant_text as string | null)
+          : (r.user_text as string | null) || (r.assistant_text as string | null);
+      return {
+        session_id: r.session_id,
+        title: r.title,
+        project_id: r.project_id ?? null,
+        project_path: r.project_path ?? null,
+        turn_uuid: r.turn_uuid,
+        turn_index: r.turn_index,
+        ts: r.ts ?? null,
+        user_text: r.user_text,
+        assistant_excerpt: r.assistant_excerpt,
+        snippet: SessionStore.matchSnippet(source, query, 180),
+        matched,
+      };
+    });
   }
 
   // ---- starred sessions ------------------------------------------------- //

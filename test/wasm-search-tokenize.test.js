@@ -100,38 +100,78 @@ r = store.searchTurns("zanzibar");
 assert.strictEqual(r.length, 1, `deep assistant text: expected 1 hit, got ${r.length}`);
 assert.strictEqual(r[0].turn_uuid, "s1#2");
 assert.strictEqual(r[0].matched, "assistant");
+// Snippet must be a match-window over assistant_full, not the head of the
+// 1 KB excerpt (which is pure 'x' padding and never contains "zanzibar").
+assert.ok(
+  r[0].snippet && r[0].snippet.toLowerCase().includes("zanzibar"),
+  `deep hit snippet should contain the term, got: ${JSON.stringify(r[0].snippet)}`,
+);
+assert.ok(
+  r[0].snippet.length <= 185,
+  `snippet should be ~180 chars, got ${r[0].snippet.length}`,
+);
 
-// 3) Multi-word across deep assistant text.
+// 3) Multi-word across deep assistant text — snippet windows on earliest token.
 r = store.searchTurns("marker zanzibar");
 assert.strictEqual(r.length, 1, "multi-word AND within assistant_full");
+assert.ok(
+  r[0].snippet.toLowerCase().includes("zanzibar") &&
+    r[0].snippet.toLowerCase().includes("marker"),
+  "multi-word deep snippet should include both tokens when they sit near each other",
+);
 
 // 4) Single-word queries behave as before (excerpt fallback when full is NULL).
 r = store.searchTurns("quagga");
 assert.strictEqual(r.length, 1, "single word over excerpt-only row");
 assert.strictEqual(r[0].turn_uuid, "s1#3");
+assert.ok(
+  r[0].snippet.toLowerCase().includes("quagga"),
+  "excerpt-only row still yields a usable snippet",
+);
 
-// 5) Tokens must all match on one side: no turn has both words on the same side.
+// 5) User-side multi-word snippet includes a matched token (not a head slice
+//    of an unrelated field).
+r = store.searchTurns("async runKp");
+assert.strictEqual(r.length, 1);
+assert.ok(
+  /async/i.test(r[0].snippet) && /runkp/i.test(r[0].snippet),
+  `user multi-word snippet should include both tokens, got: ${JSON.stringify(r[0].snippet)}`,
+);
+
+// 6) Tokens must all match on one side: no turn has both words on the same side.
 r = store.searchTurns("quagga zanzibar");
 assert.strictEqual(r.length, 0, "AND semantics: words split across turns must not match");
 
-// 6) Empty / whitespace-only queries return empty.
+// 7) Empty / whitespace-only queries return empty.
 assert.strictEqual(store.searchTurns("").length, 0, "empty query");
 assert.strictEqual(store.searchTurns("   ").length, 0, "whitespace query");
 
-// 7) searchTopics tokenizes too: "refactor async" (reordered, non-contiguous).
+// 8) searchTopics tokenizes too: "refactor async" (reordered, non-contiguous).
 const topics = store.searchTopics("refactor async");
 assert.strictEqual(topics.length, 1, `topic multi-word: expected 1, got ${topics.length}`);
 assert.strictEqual(topics[0].topic, "Async KP Refactor");
 assert.strictEqual(store.searchTopics("refactor nomatch").length, 0, "topic AND semantics");
 
-// 8) Migration idempotency: reopen the existing store (migrate() runs again on
+// 9) matchSnippet pure helper: windows on earliest of multi-word tokens.
+{
+  const pad = "y".repeat(500);
+  const body = pad + "alpha" + " ".repeat(20) + "beta" + pad;
+  const snip = SessionStore.matchSnippet(body, "beta alpha", 80);
+  assert.ok(snip.includes("alpha"), "matchSnippet includes earliest token");
+  assert.ok(snip.startsWith("…") && snip.endsWith("…"), "matchSnippet ellipses both sides");
+  assert.strictEqual(SessionStore.matchSnippet(null, "x"), "", "null text → empty");
+  assert.strictEqual(SessionStore.matchSnippet("short", ""), "short", "empty query → head");
+}
+
+// 10) Migration idempotency: reopen the existing store (migrate() runs again on
 //    a DB already at the latest user_version) — must be a no-op, data intact.
 store.close();
 store = SessionStore.open(TMP_DIR);
 assert.strictEqual(store.count(), 1, "reopen: session survived");
 r = store.searchTurns("async runKp");
 assert.strictEqual(r.length, 1, "reopen: search still works");
+assert.ok(r[0].snippet && /async/i.test(r[0].snippet), "reopen: snippet still present");
 store.close();
 
 fs.rmSync(TMP_DIR, { recursive: true, force: true });
-console.log("PASS: tokenized search + assistant_full column");
+console.log("PASS: tokenized search + assistant_full + match-window snippet");
