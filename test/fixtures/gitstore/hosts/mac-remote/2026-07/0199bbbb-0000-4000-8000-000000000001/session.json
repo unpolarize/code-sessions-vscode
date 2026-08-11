@@ -1,0 +1,15 @@
+{
+  "session_id": "0199bbbb-0000-4000-8000-000000000001",
+  "host": "mac-remote",
+  "agent": "claude",
+  "project_path": "/Users/tester/projects/demo",
+  "model": "claude-sonnet-4-6",
+  "started_at": "2026-07-21T09:00:00Z",
+  "ended_at": "2026-07-21T09:10:00Z",
+  "turn_count": 4,
+  "tool_call_count": 3,
+  "totals": { "input_tokens": 1200, "output_tokens": 300, "cost_usd": 0.05 },
+  "title": "Fix the flaky retry test",
+  "labels": ["night"],
+  "native_ref": { "format": "claude-jsonl", "uuid": "0199bbbb-0000-4000-8000-000000000001" }
+}

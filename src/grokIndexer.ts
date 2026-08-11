@@ -116,18 +116,18 @@ function projectIdFromCwd(cwd: string): string | null {
  * chat_history.jsonl. Each grok session is a *directory* (uuid) under a
  * cwd-encoded parent; we key the cache by the chat_history.jsonl path so
  * mtime/size cache invalidation works exactly like the claude indexer. */
-export function listAllGrokSessions(): GrokSessionInfo[] {
-  if (!fs.existsSync(GROK_SESSIONS_ROOT)) return [];
+export function listAllGrokSessions(root = GROK_SESSIONS_ROOT): GrokSessionInfo[] {
+  if (!fs.existsSync(root)) return [];
   const out: GrokSessionInfo[] = [];
   let cwdDirs: fs.Dirent[];
   try {
-    cwdDirs = fs.readdirSync(GROK_SESSIONS_ROOT, { withFileTypes: true });
+    cwdDirs = fs.readdirSync(root, { withFileTypes: true });
   } catch {
     return [];
   }
   for (const cwdDir of cwdDirs) {
     if (!cwdDir.isDirectory()) continue;
-    const cwdPath = path.join(GROK_SESSIONS_ROOT, cwdDir.name);
+    const cwdPath = path.join(root, cwdDir.name);
     let sessionDirs: fs.Dirent[];
     try {
       sessionDirs = fs.readdirSync(cwdPath, { withFileTypes: true });
@@ -213,7 +213,7 @@ function projectsTouchedFromGrokTurns(turns: GrokTurn[]): string[] {
 
 /** Build the SessionRow + TurnRow pair for a single grok session, ready to
  * upsert into the shared SessionStore. */
-function buildRows(
+export function buildGrokRows(
   info: GrokSessionInfo,
 ): { session: SessionRow; turns: TurnRow[] } | null {
   const summary = readSummary(info.summaryPath);
@@ -435,7 +435,7 @@ export function syncGrokToStore(
   for (let i = 0; i < toParse.length; i++) {
     const info = toParse[i];
     try {
-      const rows = buildRows(info);
+      const rows = buildGrokRows(info);
       if (!rows) {
         // null return = legitimate skip (claude_import duplicate OR
         // stillborn <system-reminder>-only session). Also delete any

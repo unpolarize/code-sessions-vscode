@@ -1,0 +1,14 @@
+{
+  "session_id": "0199bbbb-0000-4000-8000-000000000003",
+  "host": "local-fixture-host",
+  "agent": "codex",
+  "project_path": "/Users/tester/projects/demo",
+  "model": "gpt-5.2-codex",
+  "started_at": "2026-07-22T20:00:00Z",
+  "ended_at": "2026-07-22T20:05:00Z",
+  "turn_count": 2,
+  "tool_call_count": 0,
+  "totals": { "input_tokens": 500, "output_tokens": 80, "cost_usd": 0.01 },
+  "title": "Codex rollout import",
+  "native_ref": { "format": "codex-rollout", "uuid": "0199bbbb-0000-4000-8000-000000000003" }
+}

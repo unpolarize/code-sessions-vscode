@@ -1,0 +1,14 @@
+{
+  "session_id": "0199bbbb-0000-4000-8000-000000000004",
+  "host": "local-fixture-host",
+  "agent": "claude",
+  "project_path": "/Users/tester/projects/demo",
+  "model": "claude-sonnet-4-6",
+  "started_at": "2026-07-22T21:00:00Z",
+  "ended_at": "2026-07-22T21:02:00Z",
+  "turn_count": 2,
+  "tool_call_count": 0,
+  "totals": { "input_tokens": 100, "output_tokens": 20, "cost_usd": 0.001 },
+  "title": "Native claude session on this host",
+  "native_ref": { "format": "claude-jsonl", "uuid": "0199bbbb-0000-4000-8000-000000000004" }
+}

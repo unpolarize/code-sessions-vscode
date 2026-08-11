@@ -1,0 +1,1 @@
+{"turn_index":1,"ts":"2026-07-21T09:01:00Z","role":"assistant","text":"Looking at the retry helper now.","tool_calls":[{"name":"Edit","input":{"file_path":"/Users/tester/projects/demo/src/retry.ts"}},{"name":"Bash","input":{"command":"npm test"}}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_read_tokens":50,"cache_write_tokens":25},"telemetry":{"cost_usd":0.03}}
