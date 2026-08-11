@@ -55,6 +55,7 @@ function turnRow(overrides: Partial<TurnRow> = {}): TurnRow {
     duration_ms: 7000,
     user_text: "list the files in src",
     assistant_excerpt: "There are two files",
+    assistant_full: null,
     tool_names_csv: "Bash",
     tool_count: 1,
     has_subagent: false,
