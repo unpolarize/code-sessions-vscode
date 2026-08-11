@@ -29,6 +29,8 @@ const DEFAULT_GIT_ROOT = path.join(os.homedir(), ".sessions");
 
 const USER_TEXT_MAX = 4096;
 const ASSISTANT_EXCERPT_MAX = 1024;
+// Full-text search column cap (migration v17); NULL when the excerpt holds it all.
+const ASSISTANT_FULL_MAX = 64 * 1024;
 
 export function gitSessionsRoot(): string {
   return process.env.CODE_SESSIONS_STORE || DEFAULT_GIT_ROOT;
@@ -300,6 +302,8 @@ export function buildGitRows(info: GitSessionInfo): { session: SessionRow; turns
     duration_ms: e.startMs != null && e.endMs != null ? Math.max(0, e.endMs - e.startMs) : null,
     user_text: e.userText.slice(0, USER_TEXT_MAX),
     assistant_excerpt: e.assistantText.slice(0, ASSISTANT_EXCERPT_MAX),
+    assistant_full:
+      e.assistantText.length > ASSISTANT_EXCERPT_MAX ? e.assistantText.slice(0, ASSISTANT_FULL_MAX) : null,
     tool_names_csv: e.toolNames.join(","),
     tool_count: e.toolNames.length,
     has_subagent: false,

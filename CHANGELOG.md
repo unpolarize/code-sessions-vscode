@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.35.0 — 2026-08-11
+
+### Search: multi-word queries + full assistant text
+
+- **Tokenized matching.** `searchTurns` / `searchTopics` split the query on whitespace and AND the per-token LIKEs, so "async runKp" now matches a turn containing both words non-contiguously (previously the whole query was one literal `%…%` substring). For `matched` attribution, all tokens must land on the same side (user or assistant). Empty/whitespace queries still return nothing.
+- **Schema migration v17** (`MIGRATIONS[16]`): adds `turn.assistant_full TEXT`. Only the first 1 KB of assistant answers was indexed (`assistant_excerpt`), so terms deeper in long answers were unsearchable. Indexers now store the full assistant text (capped at 64 KB) when it exceeds the excerpt — NULL otherwise, so short answers aren't stored twice. Search reads `COALESCE(assistant_full, assistant_excerpt)`. Pre-v17 rows stay NULL (excerpt-only) until their source file changes and re-parses.
+- All four indexers (claude jsonl, codex, grok, git) populate the new column; new DB-level test `test/wasm-search-tokenize.test.js` covers AND semantics, deep-text matches past char 2000, excerpt fallback, and reopen/migration idempotency.
+
 ## 1.34.0 — 2026-08-09
 
 ### Planning: KP-store watcher — external captures show up without a manual refresh

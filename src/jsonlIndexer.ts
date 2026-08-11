@@ -62,6 +62,9 @@ function ratesForModel(model: string | null | undefined): ModelRates {
 // Truncations for storage
 const USER_TEXT_MAX = 4096;
 const ASSISTANT_EXCERPT_MAX = 1024;
+// Full-text search column cap (migration v17): bounded so a pathological
+// answer can't bloat the row; NULL when the excerpt already holds it all.
+const ASSISTANT_FULL_MAX = 64 * 1024;
 
 interface JsonlInfo {
   jsonl_path: string;
@@ -438,6 +441,8 @@ function aggregateFromParsed(
       duration_ms: t.userTimestampMs && t.turnEndMs ? Math.max(0, t.turnEndMs - t.userTimestampMs) : null,
       user_text: t.userText.slice(0, USER_TEXT_MAX),
       assistant_excerpt: t.assistantText.slice(0, ASSISTANT_EXCERPT_MAX),
+      assistant_full:
+        t.assistantText.length > ASSISTANT_EXCERPT_MAX ? t.assistantText.slice(0, ASSISTANT_FULL_MAX) : null,
       tool_names_csv: t.toolCalls.map((tc) => tc.name).join(","),
       tool_count: t.toolCalls.length,
       has_subagent: t.toolCalls.some((tc) => tc.isSubagent),

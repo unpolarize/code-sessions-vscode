@@ -29,6 +29,8 @@ const GROK_SESSIONS_ROOT = path.join(os.homedir(), ".grok", "sessions");
 // comparable text lengths regardless of source.
 const USER_TEXT_MAX = 4096;
 const ASSISTANT_EXCERPT_MAX = 1024;
+// Full-text search column cap (migration v17); NULL when the excerpt holds it all.
+const ASSISTANT_FULL_MAX = 64 * 1024;
 
 interface GrokSessionInfo {
   /** Session folder, e.g. `<root>/%2FUsers%2Fyou%2Fproject/<uuid>/`. */
@@ -346,6 +348,8 @@ function buildRows(
       duration_ms: turnStart && turnEnd ? Math.max(0, turnEnd - turnStart) : null,
       user_text: t.userText.slice(0, USER_TEXT_MAX),
       assistant_excerpt: t.assistantText.slice(0, ASSISTANT_EXCERPT_MAX),
+      assistant_full:
+        t.assistantText.length > ASSISTANT_EXCERPT_MAX ? t.assistantText.slice(0, ASSISTANT_FULL_MAX) : null,
       tool_names_csv: t.toolNames.join(","),
       tool_count: t.toolNames.length,
       has_subagent: t.isSubagent,

@@ -273,6 +273,17 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_session_kind ON session(kind);
   CREATE INDEX idx_session_parent ON session(parent_session_id);
   `,
+
+  // v17 — full assistant text for search. assistant_excerpt is capped at
+  // 1 KB, so any term first appearing deeper in a long assistant answer was
+  // unsearchable. assistant_full stores the full assistant text (bounded at
+  // index time, and only when it exceeds the excerpt cap — otherwise NULL,
+  // so short answers aren't stored twice). searchTurns matches against
+  // COALESCE(assistant_full, assistant_excerpt). Rows indexed before this
+  // migration stay NULL until their source file changes and re-parses.
+  `
+  ALTER TABLE turn ADD COLUMN assistant_full TEXT;
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok" | "codex" | "git";
@@ -344,6 +355,10 @@ export interface TurnRow {
   duration_ms: number | null;
   user_text: string | null;
   assistant_excerpt: string | null;
+  /** Full assistant text (bounded at index time), only when longer than the
+   * 1 KB excerpt — NULL otherwise, and NULL for rows indexed before
+   * migration v17. Search reads COALESCE(assistant_full, assistant_excerpt). */
+  assistant_full: string | null;
   tool_names_csv: string;
   tool_count: number;
   has_subagent: boolean;
@@ -964,11 +979,11 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO turn (
         turn_uuid, session_id, turn_index, started_at, ended_at, duration_ms,
-        user_text, assistant_excerpt, tool_names_csv, tool_count, has_subagent,
+        user_text, assistant_excerpt, assistant_full, tool_names_csv, tool_count, has_subagent,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd
       ) VALUES (
         @turn_uuid, @session_id, @turn_index, @started_at, @ended_at, @duration_ms,
-        @user_text, @assistant_excerpt, @tool_names_csv, @tool_count, @has_subagent,
+        @user_text, @assistant_excerpt, @assistant_full, @tool_names_csv, @tool_count, @has_subagent,
         @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens, @cost_usd
       )
       ON CONFLICT(turn_uuid) DO UPDATE SET
@@ -978,6 +993,7 @@ export class SessionStore {
         duration_ms        = excluded.duration_ms,
         user_text          = excluded.user_text,
         assistant_excerpt  = excluded.assistant_excerpt,
+        assistant_full     = excluded.assistant_full,
         tool_names_csv     = excluded.tool_names_csv,
         tool_count         = excluded.tool_count,
         has_subagent       = excluded.has_subagent,
@@ -1289,6 +1305,17 @@ export class SessionStore {
 
   // ---- search ----------------------------------------------------------- //
 
+  /** Tokenize a query on whitespace into lowercased `%tok%` LIKE patterns.
+   * Multi-word queries match as an AND of per-token LIKEs (each word must
+   * appear somewhere in the field, not the literal contiguous phrase). */
+  private static likeTokens(query: string): string[] {
+    return String(query || "")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((t) => "%" + t + "%");
+  }
+
   /** LIKE-based search over `turn_topic`. Returns one row per (session, topic_norm)
    * with the count of matching turns. */
   searchTopics(
@@ -1304,9 +1331,12 @@ export class SessionStore {
     count: number;
     last_ts: number | null;
   }> {
-    const q = String(query || "").trim();
-    if (q.length === 0) return [];
-    const like = "%" + q.toLowerCase() + "%";
+    const toks = SessionStore.likeTokens(query);
+    if (toks.length === 0) return [];
+    // Every token must appear in the topic or its normalized form.
+    const tokenExpr = toks
+      .map(() => "(LOWER(tt.topic) LIKE ? OR LOWER(tt.topic_norm) LIKE ?)")
+      .join(" AND ");
     const rows = this.db
       .prepare(`
         SELECT s.session_id, s.title, s.project_id, s.project_path, tt.topic_norm,
@@ -1316,12 +1346,12 @@ export class SessionStore {
         FROM turn_topic tt
         JOIN turn t ON t.turn_uuid = tt.turn_uuid
         JOIN session s ON s.session_id = t.session_id
-        WHERE LOWER(tt.topic) LIKE ? OR LOWER(tt.topic_norm) LIKE ?
+        WHERE ${tokenExpr}
         GROUP BY s.session_id, tt.topic_norm
         ORDER BY last_ts DESC NULLS LAST, c DESC
         LIMIT ?
       `)
-      .all(like, like, limit) as any[];
+      .all(...toks.flatMap((t) => [t, t]), limit) as any[];
     return rows.map((r) => ({
       session_id: r.session_id,
       title: r.title,
@@ -1334,8 +1364,12 @@ export class SessionStore {
     }));
   }
 
-  /** LIKE-based search over `turn.user_text` and `turn.assistant_excerpt`. Returns
-   * matching turns with enough context to render an excerpt. */
+  /** LIKE-based search over `turn.user_text` and the assistant text
+   * (COALESCE(assistant_full, assistant_excerpt) — full text when the answer
+   * exceeded the 1 KB excerpt cap). Multi-word queries AND their tokens
+   * within a side, so "async runKp" matches a turn containing both words
+   * non-contiguously. Returns matching turns with enough context to render
+   * an excerpt. */
   searchTurns(
     query: string,
     limit = 200,
@@ -1351,24 +1385,31 @@ export class SessionStore {
     assistant_excerpt: string | null;
     matched: "user" | "assistant" | "both";
   }> {
-    const q = String(query || "").trim();
-    if (q.length === 0) return [];
-    const like = "%" + q.toLowerCase() + "%";
+    const toks = SessionStore.likeTokens(query);
+    if (toks.length === 0) return [];
+    // All tokens must appear on the same side (user or assistant) for that
+    // side to count as matched — mirrors the old single-LIKE semantics of
+    // `matched` while allowing the words to be non-contiguous.
+    const userExpr = toks
+      .map(() => "LOWER(COALESCE(t.user_text,'')) LIKE ?")
+      .join(" AND ");
+    const asstExpr = toks
+      .map(() => "LOWER(COALESCE(t.assistant_full, t.assistant_excerpt, '')) LIKE ?")
+      .join(" AND ");
     const rows = this.db
       .prepare(`
         SELECT t.session_id, s.title, s.project_id, s.project_path,
                t.turn_uuid, t.turn_index, t.ended_at AS ts,
                t.user_text, t.assistant_excerpt,
-               (LOWER(COALESCE(t.user_text,'')) LIKE ?) AS um,
-               (LOWER(COALESCE(t.assistant_excerpt,'')) LIKE ?) AS am
+               (${userExpr}) AS um,
+               (${asstExpr}) AS am
         FROM turn t
         JOIN session s ON s.session_id = t.session_id
-        WHERE LOWER(COALESCE(t.user_text,'')) LIKE ?
-           OR LOWER(COALESCE(t.assistant_excerpt,'')) LIKE ?
+        WHERE (${userExpr}) OR (${asstExpr})
         ORDER BY t.ended_at DESC NULLS LAST
         LIMIT ?
       `)
-      .all(like, like, like, like, limit) as any[];
+      .all(...toks, ...toks, ...toks, ...toks, limit) as any[];
     return rows.map((r) => ({
       session_id: r.session_id,
       title: r.title,

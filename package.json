@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.34.0",
+  "version": "1.35.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -944,7 +944,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js && node test/storeSyncGit.test.js && node test/codexIndexer.test.js && npm run test:unit",
+    "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js && node test/wasm-search-tokenize.test.js && node test/storeSyncGit.test.js && node test/codexIndexer.test.js && npm run test:unit",
     "test:unit": "vitest run",
     "package": "npm run compile && vsce package --allow-missing-repository",
     "vscode:prepublish": "npm run compile"

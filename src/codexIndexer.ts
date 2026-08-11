@@ -45,6 +45,8 @@ export function codexSessionsRoot(): string {
 // sees comparable text lengths regardless of source.
 const USER_TEXT_MAX = 4096;
 const ASSISTANT_EXCERPT_MAX = 1024;
+// Full-text search column cap (migration v17); NULL when the excerpt holds it all.
+const ASSISTANT_FULL_MAX = 64 * 1024;
 
 const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
@@ -399,6 +401,8 @@ export function buildCodexRows(info: CodexSessionInfo): { session: SessionRow; t
     duration_ms: t.startedAt != null && t.endedAt != null ? Math.max(0, t.endedAt - t.startedAt) : null,
     user_text: t.userText.slice(0, USER_TEXT_MAX),
     assistant_excerpt: t.assistantText.slice(0, ASSISTANT_EXCERPT_MAX),
+    assistant_full:
+      t.assistantText.length > ASSISTANT_EXCERPT_MAX ? t.assistantText.slice(0, ASSISTANT_FULL_MAX) : null,
     tool_names_csv: t.toolNames.join(","),
     tool_count: t.toolNames.length,
     has_subagent: false,
