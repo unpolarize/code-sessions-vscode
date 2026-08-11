@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.35.2 — 2026-08-11
+
+### Fixture tests for git + grok indexers
+
+- New vitest suites `test/unit/gitIndexer.test.ts` / `test/unit/grokIndexer.test.ts` run the git-store and grok indexers over synthetic fixture trees (`test/fixtures/gitstore`, `test/fixtures/grokstore`) — corrupted `session.json`/`summary.json` and truncated turn files are tolerated without dropping sibling sessions; local-host skip vs codex-rollout import and `syncGitToStore` error accounting are pinned down.
+- `grokIndexer`: `listAllGrokSessions` gains an injectable root (default unchanged, callers unaffected); `buildRows` exported as `buildGrokRows` for testability. No behavior change.
+
+PATCH.
+
 ## 1.35.1 — 2026-08-11
 
 ### Search: match-window snippet + multi-token highlight
