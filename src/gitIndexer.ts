@@ -317,12 +317,19 @@ export function buildGitRows(info: GitSessionInfo): { session: SessionRow; turns
   return { session, turns: turnRows };
 }
 
+export interface GitIndexErrorDetail {
+  path: string;
+  reason: string;
+}
+
 export interface GitSyncStats {
   total_on_disk: number;
   parsed: number;
   unchanged: number;
   removed: number;
   errors: number;
+  /** Per-file parse failures — empty when errors === 0. */
+  error_details: GitIndexErrorDetail[];
   /** Sessions skipped because their host matches this machine (already indexed
    * from native JSONL — see header note #1). */
   skipped_local_host: number;
@@ -398,6 +405,7 @@ export function syncGitToStore(
 
   let parsed = 0;
   let errors = 0;
+  const error_details: GitIndexErrorDetail[] = [];
   for (let i = 0; i < toParse.length; i++) {
     const info = toParse[i];
     try {
@@ -410,8 +418,12 @@ export function syncGitToStore(
       store.deleteTurnsForSession(rows.session.session_id);
       store.upsertTurns(rows.turns);
       parsed += 1;
-    } catch {
+    } catch (e: unknown) {
       errors += 1;
+      error_details.push({
+        path: info.sessionJsonPath,
+        reason: e instanceof Error ? e.message : String(e),
+      });
     }
     if (opts.onProgress) opts.onProgress(i + 1, toParse.length);
   }
@@ -424,6 +436,7 @@ export function syncGitToStore(
     unchanged: disk.length - toParse.length - skippedLocal,
     removed,
     errors,
+    error_details,
     skipped_local_host: skippedLocal,
     elapsed_ms: Date.now() - t0,
   };

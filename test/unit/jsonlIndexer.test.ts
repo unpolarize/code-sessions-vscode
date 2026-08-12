@@ -173,6 +173,10 @@ describe("syncToStore", () => {
     expect(stats.parsed).toBe(3);
     expect(sessions.has(S_MAIN)).toBe(true);
     expect(sessions.has(S_AUTO)).toBe(false);
+    // path + reason captured for Output-channel diagnostics
+    expect(stats.error_details).toHaveLength(1);
+    expect(stats.error_details[0].path).toContain(S_AUTO);
+    expect(stats.error_details[0].reason.length).toBeGreaterThan(0);
   });
 
   it("cached paths no longer on disk are removed", () => {

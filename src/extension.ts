@@ -14,6 +14,7 @@ import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
 import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
+import { IndexDiagnostics } from "./indexDiagnostics";
 import { StoreSyncManager, setSyncBridge, type SyncStatus } from "./storeSync";
 import { classifySession } from "./topicClassifier";
 import { openAgentGraph } from "./agentGraph";
@@ -2083,6 +2084,119 @@ export function activate(ctx: vscode.ExtensionContext) {
   ctx.subscriptions.push(log);
   log.appendLine(`[activate] code-sessions starting (VS Code ${vscode.version})`);
 
+  // Indexer failure surface: per-file path+reason on the channel, debounced
+  // toast once per changed error count (see indexDiagnostics.ts).
+  const indexDiag = new IndexDiagnostics(log, (msg, ...items) =>
+    vscode.window.showWarningMessage(msg, ...items),
+  );
+
+  // Declared early so runIndexSync can close over it; assigned when the cache opens.
+  let store: SessionStore | null = null;
+
+  /** Run all enabled indexers, log failures, toast if error count changed.
+   *  `includeGit` defaults true (activate/refresh/full); the 10s tick
+   *  passes false to match the pre-diagnostics quiet poll. */
+  function runIndexSync(opts: {
+    force?: boolean;
+    forceRecentN?: number;
+    includeGit?: boolean;
+    onClaudeProgress?: (done: number, total: number) => void;
+    onGrokProgress?: (done: number, total: number) => void;
+    onCodexProgress?: (done: number, total: number) => void;
+    onGitProgress?: (done: number, total: number) => void;
+  } = {}): { totalErrors: number; claudeParsed: number; grokParsed: number; codexParsed: number; gitParsed: number; elapsed_ms: number } {
+    if (!store) {
+      return { totalErrors: 0, claudeParsed: 0, grokParsed: 0, codexParsed: 0, gitParsed: 0, elapsed_ms: 0 };
+    }
+    const s = store;
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
+    const includeGit = opts.includeGit !== false;
+    const forceOpts = {
+      ...(opts.force ? { force: true as const } : {}),
+      ...(opts.forceRecentN && opts.forceRecentN > 0 ? { forceRecentN: opts.forceRecentN } : {}),
+    };
+    let totalErrors = 0;
+    let claudeParsed = 0;
+    let grokParsed = 0;
+    let codexParsed = 0;
+    let gitParsed = 0;
+    let elapsed_ms = 0;
+
+    try {
+      const stats = syncToStore(s, {
+        ...forceOpts,
+        onProgress: opts.onClaudeProgress,
+      });
+      claudeParsed = stats.parsed;
+      elapsed_ms = Math.max(elapsed_ms, stats.elapsed_ms);
+      totalErrors += indexDiag.reportSource("claude", stats);
+      console.log(`[code-sessions] claude sync: ${JSON.stringify({ errors: stats.errors, parsed: stats.parsed, elapsed_ms: stats.elapsed_ms })}`);
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      log.appendLine(`[index:claude] ERROR sync threw: ${reason}`);
+      totalErrors += 1;
+      console.error("[code-sessions] claude sync failed:", e);
+    }
+
+    if (cfg.get<boolean>("grok.enabled", true)) {
+      try {
+        const grokStats = syncGrokToStore(s, {
+          ...forceOpts,
+          onProgress: opts.onGrokProgress,
+        });
+        grokParsed = grokStats.parsed;
+        elapsed_ms = Math.max(elapsed_ms, grokStats.elapsed_ms);
+        totalErrors += indexDiag.reportSource("grok", grokStats);
+        console.log(`[code-sessions] grok sync: ${JSON.stringify({ errors: grokStats.errors, parsed: grokStats.parsed })}`);
+      } catch (e: unknown) {
+        const reason = e instanceof Error ? e.message : String(e);
+        log.appendLine(`[index:grok] ERROR sync threw: ${reason}`);
+        totalErrors += 1;
+        console.error("[code-sessions] grok sync failed:", e);
+      }
+    }
+
+    if (cfg.get<boolean>("codex.enabled", true)) {
+      try {
+        const codexStats = syncCodexToStore(s, {
+          ...forceOpts,
+          onProgress: opts.onCodexProgress,
+        });
+        codexParsed = codexStats.parsed;
+        elapsed_ms = Math.max(elapsed_ms, codexStats.elapsed_ms);
+        totalErrors += indexDiag.reportSource("codex", codexStats);
+        console.log(`[code-sessions] codex sync: ${JSON.stringify({ errors: codexStats.errors, parsed: codexStats.parsed })}`);
+      } catch (e: unknown) {
+        const reason = e instanceof Error ? e.message : String(e);
+        log.appendLine(`[index:codex] ERROR sync threw: ${reason}`);
+        totalErrors += 1;
+        console.error("[code-sessions] codex sync failed:", e);
+      }
+    }
+
+    if (includeGit && cfg.get<boolean>("git.enabled", true)) {
+      try {
+        const gitStats = syncGitToStore(s, {
+          includeLocalHost: cfg.get<boolean>("git.includeLocalHost", false),
+          ...forceOpts,
+          onProgress: opts.onGitProgress,
+        });
+        gitParsed = gitStats.parsed;
+        elapsed_ms = Math.max(elapsed_ms, gitStats.elapsed_ms);
+        totalErrors += indexDiag.reportSource("git", gitStats);
+        console.log(`[code-sessions] git store sync: ${JSON.stringify({ errors: gitStats.errors, parsed: gitStats.parsed })}`);
+      } catch (e: unknown) {
+        const reason = e instanceof Error ? e.message : String(e);
+        log.appendLine(`[index:git] ERROR sync threw: ${reason}`);
+        totalErrors += 1;
+        console.error("[code-sessions] git store sync failed:", e);
+      }
+    }
+
+    indexDiag.maybeToast(totalErrors);
+    return { totalErrors, claudeParsed, grokParsed, codexParsed, gitParsed, elapsed_ms };
+  }
+
   // Interactive Planning mode (knowledge-planning store via the `kp` CLI):
   // Today / Inbox / Projects trees, kanban board + graph webviews, status bar.
   registerPlanning(ctx, log);
@@ -2099,7 +2213,6 @@ export function activate(ctx: vscode.ExtensionContext) {
   // is what they used to do, and broke on every user's machine
   // other than the developer's — see notes in SessionsProvider.load
   // / openInsightsView).
-  let store: SessionStore | null = null;
   try {
     const cacheEnabled = vscode.workspace
       .getConfiguration("codeSessions")
@@ -2187,42 +2300,8 @@ export function activate(ctx: vscode.ExtensionContext) {
   // Initial background sync (incremental: mtime+size diff). First paint may
   // come from yesterday's cache while a fresh sync runs in parallel.
   if (store) {
-    const s = store;
     setTimeout(() => {
-      try {
-        const stats = syncToStore(s);
-        console.log(`[code-sessions] claude sync: ${JSON.stringify(stats)}`);
-      } catch (e: any) {
-        console.error("[code-sessions] claude sync failed:", e);
-      }
-      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
-        try {
-          const grokStats = syncGrokToStore(s);
-          console.log(`[code-sessions] grok sync: ${JSON.stringify(grokStats)}`);
-        } catch (e: any) {
-          console.error("[code-sessions] grok sync failed:", e);
-        }
-      }
-      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
-        try {
-          const codexStats = syncCodexToStore(s);
-          console.log(`[code-sessions] codex sync: ${JSON.stringify(codexStats)}`);
-        } catch (e: any) {
-          console.error("[code-sessions] codex sync failed:", e);
-        }
-      }
-      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("git.enabled", true)) {
-        try {
-          const gitStats = syncGitToStore(s, {
-            includeLocalHost: vscode.workspace
-              .getConfiguration("codeSessions")
-              .get<boolean>("git.includeLocalHost", false),
-          });
-          console.log(`[code-sessions] git store sync: ${JSON.stringify(gitStats)}`);
-        } catch (e: any) {
-          console.error("[code-sessions] git store sync failed:", e);
-        }
-      }
+      runIndexSync();
       // Refresh providers when all syncs finish so they see new rows.
       sessions.refresh();
     }, 200);
@@ -2465,37 +2544,11 @@ export function activate(ctx: vscode.ExtensionContext) {
       // bump mtime (most notably claude-code session renames, which sometimes
       // overwrite the JSONL in place at the same size).
       if (store) {
-        const cfg = vscode.workspace.getConfiguration("codeSessions");
-        const recent = Math.max(0, cfg.get<number>("refresh.forceRecent", 100));
-        try {
-          syncToStore(store, recent > 0 ? { forceRecentN: recent } : {});
-        } catch (e) {
-          console.error("[code-sessions] refresh sync failed", e);
-        }
-        if (cfg.get<boolean>("grok.enabled", true)) {
-          try {
-            syncGrokToStore(store, recent > 0 ? { forceRecentN: recent } : {});
-          } catch (e) {
-            console.error("[code-sessions] refresh grok sync failed", e);
-          }
-        }
-        if (cfg.get<boolean>("codex.enabled", true)) {
-          try {
-            syncCodexToStore(store, recent > 0 ? { forceRecentN: recent } : {});
-          } catch (e) {
-            console.error("[code-sessions] refresh codex sync failed", e);
-          }
-        }
-        if (cfg.get<boolean>("git.enabled", true)) {
-          try {
-            syncGitToStore(store, {
-              includeLocalHost: cfg.get<boolean>("git.includeLocalHost", false),
-              ...(recent > 0 ? { forceRecentN: recent } : {}),
-            });
-          } catch (e) {
-            console.error("[code-sessions] refresh git store sync failed", e);
-          }
-        }
+        const recent = Math.max(
+          0,
+          vscode.workspace.getConfiguration("codeSessions").get<number>("refresh.forceRecent", 100),
+        );
+        runIndexSync(recent > 0 ? { forceRecentN: recent } : {});
       }
       await sessions.refresh();
     }),
@@ -2525,32 +2578,20 @@ export function activate(ctx: vscode.ExtensionContext) {
         vscode.window.showWarningMessage("Full rescan requires the SQLite cache.");
         return;
       }
-      const s = store;
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: "Code Sessions: full rescan…" },
         async (progress) => {
-          const stats = syncToStore(s, {
+          const result = runIndexSync({
             force: true,
-            onProgress: (done, total) => progress.report({ message: `claude ${done}/${total}` }),
+            onClaudeProgress: (done, total) => progress.report({ message: `claude ${done}/${total}` }),
+            onGrokProgress: (done, total) => progress.report({ message: `grok ${done}/${total}` }),
+            onCodexProgress: (done, total) => progress.report({ message: `codex ${done}/${total}` }),
+            onGitProgress: (done, total) => progress.report({ message: `git ${done}/${total}` }),
           });
-          let grokParsed = 0;
-          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
-            const grokStats = syncGrokToStore(s, {
-              force: true,
-              onProgress: (done, total) => progress.report({ message: `grok ${done}/${total}` }),
-            });
-            grokParsed = grokStats.parsed;
-          }
-          let codexParsed = 0;
-          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
-            const codexStats = syncCodexToStore(s, {
-              force: true,
-              onProgress: (done, total) => progress.report({ message: `codex ${done}/${total}` }),
-            });
-            codexParsed = codexStats.parsed;
-          }
+          const total =
+            result.claudeParsed + result.grokParsed + result.codexParsed + result.gitParsed;
           vscode.window.setStatusBarMessage(
-            `Rescanned ${stats.parsed + grokParsed + codexParsed} session(s) in ${Math.round(stats.elapsed_ms / 1000)}s`,
+            `Rescanned ${total} session(s) in ${Math.round(result.elapsed_ms / 1000)}s`,
             4000,
           );
         },
@@ -3043,16 +3084,11 @@ export function activate(ctx: vscode.ExtensionContext) {
   // leading "time since last activity" column stays close to real-time.
   // syncToStore is incremental — it only re-parses JSONLs whose (mtime,size)
   // changed, so the cost when nothing has happened is essentially a stat()
-  // per known session.
+  // per known session. Failures go to the Output channel + debounced toast.
   const sessionsTimer = setInterval(() => {
     if (store) {
-      try { syncToStore(store); } catch { /* swallow; next tick retries */ }
-      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
-        try { syncGrokToStore(store); } catch { /* swallow; next tick retries */ }
-      }
-      if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
-        try { syncCodexToStore(store); } catch { /* swallow; next tick retries */ }
-      }
+      // Quiet poll: native indexers only (git store is heavier; refresh/full cover it).
+      runIndexSync({ includeGit: false });
     }
     sessions.refresh();
     // Give the background classifier a nudge so newly-detected turns get

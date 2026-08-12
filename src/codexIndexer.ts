@@ -418,12 +418,19 @@ export function buildCodexRows(info: CodexSessionInfo): { session: SessionRow; t
   return { session, turns };
 }
 
+export interface CodexIndexErrorDetail {
+  path: string;
+  reason: string;
+}
+
 export interface CodexSyncStats {
   total_on_disk: number;
   parsed: number;
   unchanged: number;
   removed: number;
   errors: number;
+  /** Per-file parse failures — empty when errors === 0. */
+  error_details: CodexIndexErrorDetail[];
   /** Meta-only / empty rollouts deliberately not surfaced. */
   skipped_empty: number;
   elapsed_ms: number;
@@ -478,6 +485,7 @@ export function syncCodexToStore(
 
   let parsed = 0;
   let errors = 0;
+  const error_details: CodexIndexErrorDetail[] = [];
   let skipped = 0;
   for (let i = 0; i < toParse.length; i++) {
     const info = toParse[i];
@@ -494,8 +502,12 @@ export function syncCodexToStore(
       store.deleteTurnsForSession(rows.session.session_id);
       store.upsertTurns(rows.turns);
       parsed += 1;
-    } catch {
+    } catch (e: unknown) {
       errors += 1;
+      error_details.push({
+        path: info.path,
+        reason: e instanceof Error ? e.message : String(e),
+      });
     }
     if (opts.onProgress) opts.onProgress(i + 1, toParse.length);
   }
@@ -508,6 +520,7 @@ export function syncCodexToStore(
     unchanged: disk.length - toParse.length,
     removed,
     errors,
+    error_details,
     skipped_empty: skipped,
     elapsed_ms: Date.now() - t0,
   };

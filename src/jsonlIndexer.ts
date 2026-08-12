@@ -457,12 +457,20 @@ function aggregateFromParsed(
   return { session, turns };
 }
 
+/** One per-file failure captured during a sync pass (path + reason for diagnostics). */
+export interface IndexErrorDetail {
+  path: string;
+  reason: string;
+}
+
 export interface SyncStats {
   total_on_disk: number;
   parsed: number;
   unchanged: number;
   removed: number;
   errors: number;
+  /** Per-file parse failures — empty when errors === 0. */
+  error_details: IndexErrorDetail[];
   elapsed_ms: number;
 }
 
@@ -514,6 +522,7 @@ export function syncToStore(
 
   let parsed = 0;
   let errors = 0;
+  const error_details: IndexErrorDetail[] = [];
   for (let i = 0; i < toParse.length; i++) {
     const info = toParse[i];
     // Find the encoded-cwd project bucket directly under the projects root.
@@ -530,8 +539,12 @@ export function syncToStore(
       store.deleteTurnsForSession(session.session_id);
       store.upsertTurns(turns);
       parsed += 1;
-    } catch {
+    } catch (e: unknown) {
       errors += 1;
+      error_details.push({
+        path: info.jsonl_path,
+        reason: e instanceof Error ? e.message : String(e),
+      });
     }
     if (opts.onProgress) opts.onProgress(i + 1, toParse.length);
   }
@@ -544,6 +557,7 @@ export function syncToStore(
     unchanged: disk.length - toParse.length,
     removed,
     errors,
+    error_details,
     elapsed_ms: Date.now() - t0,
   };
 }

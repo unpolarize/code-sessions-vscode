@@ -371,12 +371,19 @@ export function buildGrokRows(
   return { session, turns };
 }
 
+export interface GrokIndexErrorDetail {
+  path: string;
+  reason: string;
+}
+
 export interface GrokSyncStats {
   total_on_disk: number;
   parsed: number;
   unchanged: number;
   removed: number;
   errors: number;
+  /** Per-file parse failures — empty when errors === 0. */
+  error_details: GrokIndexErrorDetail[];
   /** Sessions deliberately skipped — `summary.session_kind === "claude_import"`
    * grok-side duplicates of authentic claude sessions, which the claude
    * indexer handles authoritatively. */
@@ -431,6 +438,7 @@ export function syncGrokToStore(
 
   let parsed = 0;
   let errors = 0;
+  const error_details: GrokIndexErrorDetail[] = [];
   let skipped = 0;
   for (let i = 0; i < toParse.length; i++) {
     const info = toParse[i];
@@ -450,8 +458,12 @@ export function syncGrokToStore(
       store.deleteTurnsForSession(rows.session.session_id);
       store.upsertTurns(rows.turns);
       parsed += 1;
-    } catch {
+    } catch (e: unknown) {
       errors += 1;
+      error_details.push({
+        path: info.chatPath,
+        reason: e instanceof Error ? e.message : String(e),
+      });
     }
     if (opts.onProgress) opts.onProgress(i + 1, toParse.length);
   }
@@ -464,6 +476,7 @@ export function syncGrokToStore(
     unchanged: disk.length - toParse.length,
     removed,
     errors,
+    error_details,
     skipped_claude_import: skipped,
     elapsed_ms: Date.now() - t0,
   };
