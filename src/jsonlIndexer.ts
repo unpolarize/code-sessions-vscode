@@ -257,11 +257,11 @@ function entrypointFromTurns(parsed: ParsedConversation): { entrypoint: string |
   return { entrypoint: null, isAutomated: false };
 }
 
-function findJsonlPathById(sessionId: string, root: string = DEFAULT_PROJECTS_ROOT): string | null {
+function findJsonlPathById(sessionId: string): string | null {
   if (!sessionId) return null;
-  for (const projectDir of fs.readdirSync(root, { withFileTypes: true })) {
+  for (const projectDir of fs.readdirSync(DEFAULT_PROJECTS_ROOT, { withFileTypes: true })) {
     if (!projectDir.isDirectory()) continue;
-    const candidate = path.join(root, projectDir.name, `${sessionId}.jsonl`);
+    const candidate = path.join(DEFAULT_PROJECTS_ROOT, projectDir.name, `${sessionId}.jsonl`);
     if (fs.existsSync(candidate)) return candidate;
   }
   return null;
