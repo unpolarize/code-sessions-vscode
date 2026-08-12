@@ -14,7 +14,7 @@ import * as path from "path";
 import { SessionStore, SessionRow, TurnRow } from "./db";
 import { parseConversation, ParsedConversation } from "./conversationParser";
 
-const PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
+export const DEFAULT_PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
 
 const COMMAND_WRAPPER_RE =
   /<(command-message|command-name|command-args|command-contents|system-reminder|local-command-stdout|local-command-stderr|command-output)>[\s\S]*?<\/\1>/gi;
@@ -148,20 +148,20 @@ function collectJsonlsUnder(dir: string, out: TranscriptInfo[], projectRootForPa
 
 /** Walk the projects root and collect (path, mtime, size, kind, parent) for every JSONL
  * including nested subagent and workflow child transcripts. */
-export function listAllTranscripts(): TranscriptInfo[] {
-  if (!fs.existsSync(PROJECTS_ROOT)) return [];
+export function listAllTranscripts(root: string = DEFAULT_PROJECTS_ROOT): TranscriptInfo[] {
+  if (!fs.existsSync(root)) return [];
   const out: TranscriptInfo[] = [];
-  for (const projectDir of fs.readdirSync(PROJECTS_ROOT, { withFileTypes: true })) {
+  for (const projectDir of fs.readdirSync(root, { withFileTypes: true })) {
     if (!projectDir.isDirectory()) continue;
-    const projectPath = path.join(PROJECTS_ROOT, projectDir.name);
+    const projectPath = path.join(root, projectDir.name);
     collectJsonlsUnder(projectPath, out, projectPath);
   }
   return out;
 }
 
 /** Legacy name kept for callers that only cared about flat list (tests, etc). Delegates. */
-export function listAllJsonls(): JsonlInfo[] {
-  return listAllTranscripts().filter(t => t.kind === 'session').map(t => ({ jsonl_path: t.jsonl_path, mtime_ns: t.mtime_ns, size_bytes: t.size_bytes }));
+export function listAllJsonls(root: string = DEFAULT_PROJECTS_ROOT): JsonlInfo[] {
+  return listAllTranscripts(root).filter(t => t.kind === 'session').map(t => ({ jsonl_path: t.jsonl_path, mtime_ns: t.mtime_ns, size_bytes: t.size_bytes }));
 }
 
 /** Decode the urlencoded-ish project dir name back to a usable label. */
@@ -257,11 +257,11 @@ function entrypointFromTurns(parsed: ParsedConversation): { entrypoint: string |
   return { entrypoint: null, isAutomated: false };
 }
 
-function findJsonlPathById(sessionId: string): string | null {
+function findJsonlPathById(sessionId: string, root: string = DEFAULT_PROJECTS_ROOT): string | null {
   if (!sessionId) return null;
-  for (const projectDir of fs.readdirSync(PROJECTS_ROOT, { withFileTypes: true })) {
+  for (const projectDir of fs.readdirSync(root, { withFileTypes: true })) {
     if (!projectDir.isDirectory()) continue;
-    const candidate = path.join(PROJECTS_ROOT, projectDir.name, `${sessionId}.jsonl`);
+    const candidate = path.join(root, projectDir.name, `${sessionId}.jsonl`);
     if (fs.existsSync(candidate)) return candidate;
   }
   return null;
@@ -481,10 +481,13 @@ export function syncToStore(
      * still incrementally checking the rest. Cheap way to catch on-disk edits
      * that don't reliably bump mtime (e.g. session renames in claude code). */
     forceRecentN?: number;
+    /** Override ~/.claude/projects — fixture trees in tests. */
+    projectsRoot?: string;
   } = {},
 ): SyncStats {
   const t0 = Date.now();
-  const disk = listAllTranscripts();
+  const projectsRoot = opts.projectsRoot ?? DEFAULT_PROJECTS_ROOT;
+  const disk = listAllTranscripts(projectsRoot);
   const known = store.knownPaths();
 
   // Build the "forced" set: top-N most-recent JSONLs if forceRecentN is set.
@@ -513,13 +516,13 @@ export function syncToStore(
   let errors = 0;
   for (let i = 0; i < toParse.length; i++) {
     const info = toParse[i];
-    // Find the encoded-cwd project bucket directly under PROJECTS_ROOT.
+    // Find the encoded-cwd project bucket directly under the projects root.
     // Works for both top-level <encoded>/<uuid>.jsonl and deep children.
     let p = path.dirname(info.jsonl_path);
-    while (p && p !== PROJECTS_ROOT && path.dirname(p) !== PROJECTS_ROOT) {
+    while (p && p !== projectsRoot && path.dirname(p) !== projectsRoot) {
       p = path.dirname(p);
     }
-    const projectPath = (path.dirname(p) === PROJECTS_ROOT) ? p : path.dirname(info.jsonl_path);
+    const projectPath = (path.dirname(p) === projectsRoot) ? p : path.dirname(info.jsonl_path);
     try {
       const conv = parseConversation(info.jsonl_path);
       const { session, turns } = aggregateFromParsed(conv, info, projectPath, info);
