@@ -5,6 +5,7 @@ import * as fs from "fs";
 import * as vscode from "vscode";
 import { preferredEditorColumn } from "./editorColumn";
 import { SessionStore, SessionRow } from "./db";
+import { nowStatusFromTail, type NowStatus } from "./nowStatus";
 
 const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 const POLL_INTERVAL_MS = 2000;
@@ -13,16 +14,6 @@ const TAIL_BYTES = 8192;
 // `message.usage` block for the context-window gauge. 64 KB comfortably
 // spans a few large tool results without re-reading the whole transcript.
 const CTX_TAIL_BYTES = 65536;
-
-interface NowStatus {
-  kind: "in_tool" | "responding" | "idle" | "awaiting_user";
-  detail: string;
-  ageSec: number;
-}
-
-/** Tools whose open (unanswered) state means the session is blocked on the
- * human, not on Claude or a shell command. */
-const AWAITS_USER_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 
 interface LiveCard {
   session_id: string;
@@ -93,73 +84,6 @@ function tailFile(path: string, bytes: number): string {
   } catch {
     return "";
   }
-}
-
-function nowStatusFromTail(tail: string, now: number): { status: NowStatus; toolsLast60s: number } {
-  const lines = tail.split("\n").filter(Boolean);
-  // Parse from latest backwards
-  const events: Array<{ ts: number; type: string; obj: any }> = [];
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const obj = JSON.parse(lines[i]);
-      const ts = obj.timestamp ? Date.parse(obj.timestamp) : 0;
-      events.unshift({ ts, type: obj.type || "?", obj });
-    } catch {
-      // skip
-    }
-  }
-  let toolsLast60s = 0;
-  // Track open tool_uses (id → name) and tool_results that close them
-  const openTools = new Map<string, { name: string; ts: number }>();
-  let lastAssistantText = 0;
-  for (const ev of events) {
-    if (ev.type === "assistant") {
-      const content = ev.obj?.message?.content;
-      if (Array.isArray(content)) {
-        for (const b of content) {
-          if (!b || typeof b !== "object") continue;
-          if (b.type === "tool_use") {
-            openTools.set(String(b.id), { name: String(b.name), ts: ev.ts });
-            if (now - ev.ts < 60_000) toolsLast60s += 1;
-          } else if (b.type === "text") {
-            lastAssistantText = Math.max(lastAssistantText, ev.ts);
-          }
-        }
-      }
-    } else if (ev.type === "user" && Array.isArray(ev.obj?.message?.content) && ev.obj.message.content[0]?.type === "tool_result") {
-      const id = String(ev.obj.message.content[0].tool_use_id);
-      openTools.delete(id);
-    }
-  }
-
-  // Decide status. An open AskUserQuestion / ExitPlanMode means the session
-  // is parked waiting on the human — surface that as its own status so the UI
-  // can highlight it. Otherwise fall back to the most-recent open tool.
-  let status: NowStatus = { kind: "idle", detail: "", ageSec: 0 };
-  if (openTools.size > 0) {
-    let awaitingTs = 0, awaitingName = "";
-    let bestTs = 0, bestName = "";
-    for (const v of openTools.values()) {
-      if (AWAITS_USER_TOOLS.has(v.name) && v.ts > awaitingTs) {
-        awaitingTs = v.ts;
-        awaitingName = v.name;
-      }
-      if (v.ts > bestTs) { bestTs = v.ts; bestName = v.name; }
-    }
-    if (awaitingTs > 0) {
-      status = { kind: "awaiting_user", detail: awaitingName, ageSec: Math.floor((now - awaitingTs) / 1000) };
-    } else {
-      status = { kind: "in_tool", detail: bestName, ageSec: Math.floor((now - bestTs) / 1000) };
-    }
-  } else if (lastAssistantText && now - lastAssistantText < 30_000) {
-    status = { kind: "responding", detail: "", ageSec: Math.floor((now - lastAssistantText) / 1000) };
-  } else {
-    // Most recent event of any kind
-    let last = 0;
-    for (const ev of events) if (ev.ts > last) last = ev.ts;
-    status = { kind: "idle", detail: "", ageSec: last ? Math.floor((now - last) / 1000) : 0 };
-  }
-  return { status, toolsLast60s };
 }
 
 /** Context-window size (tokens) for a model id. `[1m]`-suffixed Claude models

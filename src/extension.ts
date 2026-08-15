@@ -20,6 +20,7 @@ import { classifySession } from "./topicClassifier";
 import { openAgentGraph } from "./agentGraph";
 import { openTrajectoryView } from "./trajectoryView";
 import { openLiveMonitor, buildUpdate, UpdatePayload } from "./liveMonitor";
+import { tickFinished } from "./finishedNotify";
 import { openSearchView } from "./searchView";
 import { BackgroundClassifier } from "./backgroundClassifier";
 import { MemoryProvider, scanMemorySources, summariseSources } from "./memoryView";
@@ -224,13 +225,10 @@ function createLiveStatusBar(
   // Track which sessions we have already notified about so we don't fire a
   // toast every poll tick; clear an id once the session is no longer awaiting.
   const notifiedAwaiting = new Set<string>();
-  // session_id -> title for sessions that were active last tick (finished detection)
-  const prevActive = new Map<string, string>();
-  // session_id -> {title, idleSince} for sessions pending a "finished" toast.
-  // Held for a grace period so a transient idle tick (long tool call, model
-  // thinking, or the gap between turns) doesn't fire a false "finished"; cleared
-  // the instant the session is active again.
-  const pendingFinished = new Map<string, { title: string; idleSince: number }>();
+  // Cards currently on the live-monitor board (mtime inside the active window).
+  // Finished toasts fire only after a card *leaves the board*, not on idle status.
+  const prevCards = new Map<string, string>();
+  let pendingFinished = new Map<string, { title: string; leftAt: number }>();
   // session_ids we've already warned are stuck (cleared when they leave in_tool)
   const notifiedStuck = new Set<string>();
   const tick = () => {
@@ -301,28 +299,33 @@ function createLiveStatusBar(
           activeNow.set(c.session_id, c);
         }
       }
-      // finished: fire only after a session has been continuously inactive for
-      // the grace period. A single active->idle flip is usually a long tool call,
-      // model thinking, or the gap between turns — not a finished session.
-      // Re-activation cancels any pending toast.
-      for (const id of activeNow.keys()) pendingFinished.delete(id);
-      for (const [id, title] of prevActive) {
-        if (!activeNow.has(id) && !pendingFinished.has(id)) {
-          pendingFinished.set(id, { title, idleSince: now });
-        }
-      }
+      // finished: fire only after a session *leaves the live-monitor board*
+      // (mtime older than the active window). Idle-while-still-on-the-board
+      // is thinking / a long script / a gap between turns — not done.
+      const currentCards = new Map<string, string>();
+      for (const c of payload.cards) currentCards.set(c.session_id, c.title);
       if (ncfg.get<boolean>("notifications.finished", true)) {
-        const graceMs = Math.max(15, ncfg.get<number>("notifications.finishedSeconds", 90)) * 1000;
-        for (const [id, p] of [...pendingFinished]) {
-          if (now - p.idleSince < graceMs) continue;
-          pendingFinished.delete(id);
+        const graceMs = Math.max(15, ncfg.get<number>("notifications.finishedSeconds", 300)) * 1000;
+        const tick = tickFinished({
+          prevCards,
+          currentCards,
+          pending: pendingFinished,
+          now,
+          graceMs,
+        });
+        pendingFinished = tick.pending;
+        for (const p of tick.fire) {
           vscode.window
             .showInformationMessage(`Session "${p.title}" finished.`, "Open live monitor")
             .then((sel) => {
               if (sel === "Open live monitor") vscode.commands.executeCommand("codeSessions.openLiveMonitor");
             });
         }
+      } else {
+        pendingFinished.clear();
       }
+      prevCards.clear();
+      for (const [id, title] of currentCards) prevCards.set(id, title);
       // blocked/stuck: stuck in a tool call far longer than expected
       if (ncfg.get<boolean>("notifications.blocked", true)) {
         const stuckSeconds = Math.max(30, ncfg.get<number>("notifications.stuckSeconds", 180));
@@ -344,10 +347,6 @@ function createLiveStatusBar(
           if (!c || c.now.kind !== "in_tool") notifiedStuck.delete(id);
         }
       }
-      // remember the active set for next tick's finished detection
-      prevActive.clear();
-      for (const [id, c] of activeNow) prevActive.set(id, c.title);
-
       item.tooltip = tooltipFor(payload);
       // Schedule next poll based on activity
       if (timer) clearTimeout(timer);

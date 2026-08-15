@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.36.0 — 2026-08-14
+
+### Finished toasts no longer fire mid-session
+
+- "Session finished" now waits until the session *leaves the live-monitor board* (transcript no longer being written) and stays off it for `notifications.finishedSeconds` (default raised **90 → 300**). Idle-while-still-on-the-board (thinking, long scripts, gaps between turns) does not toast.
+- `now` chip treats thinking + any event in the last 90s as `responding` (was 30s of assistant text only).
+
 ## 1.35.2 — 2026-08-11
 
 ### Fixture tests for git + grok indexers
