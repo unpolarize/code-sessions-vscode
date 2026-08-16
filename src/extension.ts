@@ -10,6 +10,7 @@ import { openUsageView } from "./usageView";
 import { openSessionGraphView } from "./sessionGraphView";
 import { registerPlanning, setSessionProvider } from "./planning";
 import { SessionStore } from "./db";
+import { taggedEmbeddingModel } from "./embedText";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
 import { syncCodexToStore } from "./codexIndexer";
@@ -2763,8 +2764,12 @@ export function activate(ctx: vscode.ExtensionContext) {
         "Cancel",
       );
       if (choice !== "Drop all") return;
-      const keepModel = `ollama/${wantedOllama}`;
-      const dropped = store.deleteEmbeddingsExceptModel(keepModel) + store.deleteTurnEmbeddingsExceptModel(keepModel);
+      // Session embeddings live under the full recipe tag (ollama/<model>@v2);
+      // pinning the untagged id here would delete the fresh rows and keep stale
+      // ones. Turn embeddings still use the untagged model id.
+      const keepModel = taggedEmbeddingModel(`ollama/${wantedOllama}`);
+      const dropped =
+        store.deleteEmbeddingsExceptModel(keepModel) + store.deleteTurnEmbeddingsExceptModel(`ollama/${wantedOllama}`);
       vscode.window.showInformationMessage(
         `Dropped ${dropped} stale embedding row(s). Open the agent graph to re-embed.`,
       );

@@ -1,6 +1,16 @@
 # Changelog
 
-## 1.36.0 — 2026-08-14
+## 1.37.0 — 2026-08-16
+
+### Semantic search groundwork: shared v2 embed recipe + cosine ranking (PR1)
+
+- **New `src/embedText.ts`** — the single embed-text recipe for session vectors: `search_document: PROJECT/TITLE/TOPICS/TOOLS/FIRST USER` (empty sections omitted; ≤4096 chars with only FIRST USER truncated), `buildQueryEmbedText` (`search_query:` pairing), and `taggedEmbeddingModel` → `ollama/<model>@v2`. Bump `RECIPE_REV` whenever the text changes — the tag mismatch is what drives re-embeds.
+- **Agent graph embeds the enriched text** (was PROJECT+TITLE+FIRST USER only) and persists under the `@v2` tag; classified topics (≤20, freq-desc) and tool mix (≤30, freq-desc/alpha) now shape the vector space. Next graph open re-embeds under the new tag.
+- **`SessionStore.nearestSessions(query, model, limit=50, minScore=0.3)`** — brute-force in-process cosine over `session_embedding` (L2-normalize both sides, dot); mismatched-dimension rows are skipped + logged, never length-truncated. **`topToolsBySession`** aggregates `turn.tool_names_csv`; `topTopicsBySession` gains an alpha tiebreak for determinism.
+- **"Drop cached embeddings" pins the full `@v2` tag** for session rows (previously it would have deleted fresh tagged rows and kept stale untagged ones); turn embeddings keep the untagged id they're stored under.
+- Search-view Semantic toggle + Ollama query path land in the next slice (kp: tasks/csv-semantic-session-search-embed-the-query-cosi).
+
+
 
 ### Finished toasts no longer fire mid-session
 
