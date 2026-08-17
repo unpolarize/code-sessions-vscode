@@ -26,6 +26,12 @@ import { openSearchView } from "./searchView";
 import { BackgroundClassifier } from "./backgroundClassifier";
 import { MemoryProvider, scanMemorySources, summariseSources } from "./memoryView";
 import { preferredEditorColumn } from "./editorColumn";
+import { parseSessionUri } from "./sessionLink";
+import {
+  copySessionLinkToClipboard,
+  linkTargetFromArg,
+  openSessionFromLink,
+} from "./openSessionLink";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -2650,6 +2656,35 @@ export function activate(ctx: vscode.ExtensionContext) {
       await vscode.window.showTextDocument(doc);
     }),
 
+    vscode.commands.registerCommand("codeSessions.copySessionLink", async (arg: SessionRow | SessionItem | undefined) => {
+      const target = linkTargetFromArg(arg) || linkTargetFromArg(unwrapRow(arg));
+      if (!target) {
+        vscode.window.showWarningMessage("No session to copy a link for.");
+        return;
+      }
+      const uri = await copySessionLinkToClipboard(target);
+      vscode.window.setStatusBarMessage(`Copied session link ${uri}`, 4000);
+    }),
+    vscode.commands.registerCommand("codeSessions.chatSessionFile", async () => {
+      const commands = await vscode.commands.getCommands(true);
+      if (commands.includes("codeBuild.chatSessionFile")) {
+        const ext = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
+        if (ext && !ext.isActive) await ext.activate();
+        await vscode.commands.executeCommand("codeBuild.chatSessionFile");
+        return;
+      }
+      vscode.window.showWarningMessage("Chat Session File needs Code Build installed.");
+    }),
+    vscode.window.registerUriHandler({
+      async handleUri(uri: vscode.Uri) {
+        const link = parseSessionUri({ authority: uri.authority, path: uri.path, query: uri.query });
+        if (!link) {
+          vscode.window.showWarningMessage("Code Sessions: invalid session link.");
+          return;
+        }
+        await openSessionFromLink({ ctx, store, openViewerPanels, link });
+      },
+    }),
     vscode.commands.registerCommand("codeSessions.viewConversation", async (item: SessionItem) => {
       const jsonl = await locateSessionJsonl(item.row.session);
       // No native transcript here → the cross-device fallback (~/.sessions turns)
