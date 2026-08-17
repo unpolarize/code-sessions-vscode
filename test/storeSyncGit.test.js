@@ -147,6 +147,19 @@ async function t(name, fn) {
     assert.ok(remoteFiles.split("\n").includes("local.txt"), "local commit reached the remote");
   });
 
+  // 5b. Corrupt rebase-merge (no head-name) is deleted, not left wedged.
+  await t("corrupt rebase-merge (missing head-name) is cleared", async () => {
+    const { clone } = makeRepoPair();
+    const merge = path.join(clone, ".git", "rebase-merge");
+    fs.mkdirSync(merge);
+    // no head-name — the work-laptop / ~/docs wedge
+    const res = await syncRepoOnce(clone, { push: false });
+    assert.equal(res.status, "unchanged", res.detail);
+    assert.equal(await rebaseInProgress(clone), false, "corrupt marker must be gone");
+    assert.equal(fs.existsSync(merge), false);
+    assert.equal(git(clone, "status", "--porcelain"), "");
+  });
+
   // 6. Non-git / remoteless dirs are skipped, not errored.
   await t("non-git dir → skipped", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "css-nogit-"));

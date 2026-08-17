@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.38.1 — 2026-08-17
+
+### Store sync: multi-window lock, corrupt-rebase recovery, merge when far ahead
+
+- **Per-repo lock** (`.git/csv-sync.lock`) so N VS Code windows (one per project) no longer run `git pull --rebase` on `~/docs` / `~/.sessions` at the same time. Stale lock (>2 min) is stolen.
+- **Corrupt rebase-merge** (dir exists, `head-name` missing) is deleted instead of `rebase --abort`, which cannot succeed in that state. Same wedge as the work-laptop `~/.sessions` / `~/docs` incidents.
+- **Merge, don't rebase**, when the clone is more than 50 commits ahead of origin. Replaying thousands of unpushed session commits is what leaves the corrupt marker dir.
+
 ## 1.37.0 — 2026-08-16
 
 ### Semantic search groundwork: shared v2 embed recipe + cosine ranking (PR1)

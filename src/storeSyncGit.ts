@@ -1,11 +1,11 @@
 // Pure git reconciliation for one store — no vscode dependency, so it's unit
 // testable against real temp repos. StoreSyncManager (vscode-aware) drives it.
 //
-// Conflict philosophy: recover, never wedge. `pull --rebase --autostash` (git
-// re-applies the autostash on abort); a rebase already in progress — ours from
-// a crash or a cron's — is aborted back to a clean HEAD before we start; a pull
-// that conflicts is aborted (repo left clean) and reported, with no
-// marker-resolution loop or merge agent.
+// Conflict philosophy: recover, never wedge. Small local backlogs rebase;
+// a large ahead (session-store thousands-of-commits) merges instead.
+// A rebase already in progress is aborted; a corrupt rebase-merge (no
+// head-name) is deleted. N VS Code windows share a per-repo lock. A
+// conflicting pull is recovered (repo left clean) and reported.
 
 import { execFile } from "child_process";
 import * as fs from "fs";
@@ -35,16 +35,87 @@ export const runGit: GitRunner = (dir, args) =>
     });
   });
 
+/** Replay this many local commits with rebase; above this, merge (host-sharded
+ * session stores pile up thousands of unpushed commits — rebasing them wedges). */
+export const MERGE_AHEAD_THRESHOLD = 50;
+
+const SYNC_LOCK = "csv-sync.lock";
+const LOCK_STALE_MS = 120_000;
+
+function gitPath(dir: string, rel: string): string {
+  return path.isAbsolute(rel) ? rel : path.join(dir, rel);
+}
+
 /** True if a rebase (merge- or apply-backend) is currently in progress in `dir`. */
 export async function rebaseInProgress(dir: string, git: GitRunner = runGit): Promise<boolean> {
   for (const marker of ["rebase-merge", "rebase-apply"]) {
     const r = await git(dir, ["rev-parse", "--git-path", marker]);
     if (r.code === 0 && r.stdout) {
-      const p = path.isAbsolute(r.stdout) ? r.stdout : path.join(dir, r.stdout);
-      if (fs.existsSync(p)) return true;
+      if (fs.existsSync(gitPath(dir, r.stdout))) return true;
     }
   }
   return false;
+}
+
+/** Exclusive per-repo lock so N VS Code windows don't run git concurrently.
+ * mkdir is atomic on POSIX. A lock older than 2 min is treated as stale
+ * (crashed window) and stolen. */
+export function acquireSyncLock(dir: string, staleMs = LOCK_STALE_MS): boolean {
+  const lockDir = path.join(dir, ".git", SYNC_LOCK);
+  const tryOnce = (): boolean => {
+    try {
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(path.join(lockDir, "owner"), `${process.pid} ${Date.now()}\n`);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (tryOnce()) return true;
+  try {
+    const st = fs.statSync(lockDir);
+    if (Date.now() - st.mtimeMs > staleMs) {
+      fs.rmSync(lockDir, { recursive: true, force: true });
+      return tryOnce();
+    }
+  } catch {
+    /* lock vanished between mkdir-fail and stat */
+  }
+  return false;
+}
+
+export function releaseSyncLock(dir: string): void {
+  try {
+    fs.rmSync(path.join(dir, ".git", SYNC_LOCK), { recursive: true, force: true });
+  } catch {
+    /* already gone */
+  }
+}
+
+/** Abort a real rebase, or delete a corrupt marker dir (missing head-name)
+ * that makes both `rebase --continue` and `rebase --abort` fail. */
+export async function recoverRebase(dir: string, git: GitRunner = runGit): Promise<void> {
+  const mergeR = await git(dir, ["rev-parse", "--git-path", "rebase-merge"]);
+  const applyR = await git(dir, ["rev-parse", "--git-path", "rebase-apply"]);
+  const mergePath = mergeR.stdout ? gitPath(dir, mergeR.stdout) : "";
+  const applyPath = applyR.stdout ? gitPath(dir, applyR.stdout) : "";
+  const mergeExists = Boolean(mergePath && fs.existsSync(mergePath));
+  const applyExists = Boolean(applyPath && fs.existsSync(applyPath));
+  if (!mergeExists && !applyExists) return;
+
+  const corrupt = mergeExists && !fs.existsSync(path.join(mergePath, "head-name"));
+  if (corrupt) {
+    fs.rmSync(mergePath, { recursive: true, force: true });
+    if (applyExists) fs.rmSync(applyPath, { recursive: true, force: true });
+    const autoMerge = path.join(dir, ".git", "AUTO_MERGE");
+    if (fs.existsSync(autoMerge)) fs.rmSync(autoMerge);
+    return;
+  }
+
+  await git(dir, ["rebase", "--abort"]);
+  if (mergeExists && fs.existsSync(mergePath) && !fs.existsSync(path.join(mergePath, "head-name"))) {
+    fs.rmSync(mergePath, { recursive: true, force: true });
+  }
 }
 
 /** Pull one repo onto its remote, recovering (not wedging) on conflict, and
@@ -60,43 +131,53 @@ export async function syncRepoOnce(
   try {
     if (!fs.existsSync(path.join(dir, ".git"))) return { status: "skipped", detail: "not a git repo" };
 
-    // Recover a pre-existing wedged rebase BEFORE touching the remote.
-    if (await rebaseInProgress(dir, git)) {
-      await git(dir, ["rebase", "--abort"]);
-    }
+    if (!acquireSyncLock(dir)) return { status: "skipped", detail: "locked by another window" };
 
-    const branch = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout || "main";
-    const remote = (await git(dir, ["remote"])).stdout;
-    if (!remote) return { status: "skipped", detail: "no remote" };
+    try {
+      // Recover a pre-existing wedged/corrupt rebase BEFORE touching the remote.
+      await recoverRebase(dir, git);
 
-    const before = (await git(dir, ["rev-parse", "HEAD"])).stdout;
+      const branch = (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout || "main";
+      const remote = (await git(dir, ["remote"])).stdout;
+      if (!remote) return { status: "skipped", detail: "no remote" };
 
-    const fetch = await git(dir, ["fetch", "--quiet", "origin", branch]);
-    if (fetch.code !== 0) return { status: "skipped", detail: `fetch failed: ${firstLine(fetch.stderr)}` };
+      const before = (await git(dir, ["rev-parse", "HEAD"])).stdout;
 
-    const pull = await git(dir, ["pull", "--rebase", "--autostash", "origin", branch]);
-    if (pull.code !== 0) {
-      if (await rebaseInProgress(dir, git)) await git(dir, ["rebase", "--abort"]);
-      return { status: "conflict", detail: firstLine(pull.stderr || pull.stdout) };
-    }
+      const fetch = await git(dir, ["fetch", "--quiet", "origin", branch]);
+      if (fetch.code !== 0) return { status: "skipped", detail: `fetch failed: ${firstLine(fetch.stderr)}` };
 
-    if (opts.push) {
-      const ahead = await git(dir, ["rev-list", "--count", `origin/${branch}..HEAD`]);
-      if (ahead.code === 0 && Number(ahead.stdout) > 0) {
-        const p = await git(dir, ["push", "origin", branch]);
-        if (p.code !== 0) {
-          const after = (await git(dir, ["rev-parse", "HEAD"])).stdout;
-          return {
-            status: "push-failed",
-            detail: `pulled ok; push failed: ${firstLine(p.stderr)}`,
-            changed: after !== before,
-          };
+      const aheadR = await git(dir, ["rev-list", "--count", `origin/${branch}..HEAD`]);
+      const ahead = aheadR.code === 0 ? Number(aheadR.stdout) || 0 : 0;
+      const pullArgs =
+        ahead > MERGE_AHEAD_THRESHOLD
+          ? ["pull", "--no-rebase", "--autostash", "origin", branch]
+          : ["pull", "--rebase", "--autostash", "origin", branch];
+      const pull = await git(dir, pullArgs);
+      if (pull.code !== 0) {
+        await recoverRebase(dir, git);
+        return { status: "conflict", detail: firstLine(pull.stderr || pull.stdout) };
+      }
+
+      if (opts.push) {
+        const stillAhead = await git(dir, ["rev-list", "--count", `origin/${branch}..HEAD`]);
+        if (stillAhead.code === 0 && Number(stillAhead.stdout) > 0) {
+          const p = await git(dir, ["push", "origin", branch]);
+          if (p.code !== 0) {
+            const after = (await git(dir, ["rev-parse", "HEAD"])).stdout;
+            return {
+              status: "push-failed",
+              detail: `pulled ok; push failed: ${firstLine(p.stderr)}`,
+              changed: after !== before,
+            };
+          }
         }
       }
-    }
 
-    const after = (await git(dir, ["rev-parse", "HEAD"])).stdout;
-    return { status: after !== before ? "ok" : "unchanged" };
+      const after = (await git(dir, ["rev-parse", "HEAD"])).stdout;
+      return { status: after !== before ? "ok" : "unchanged" };
+    } finally {
+      releaseSyncLock(dir);
+    }
   } catch (e) {
     return { status: "error", detail: String(e) };
   }

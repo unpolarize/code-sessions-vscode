@@ -37,6 +37,7 @@ const BASE = {
   "rev-parse --abbrev-ref HEAD": { stdout: "main" },
   remote: { stdout: "origin" },
   "fetch --quiet origin main": {},
+  "rev-list --count origin/main..HEAD": { stdout: "0" },
   "pull --rebase --autostash origin main": { stdout: "Already up to date." },
 };
 
@@ -90,12 +91,49 @@ describe("syncRepoOnce", () => {
         stderr: "CONFLICT (content): Merge conflict in notes.md\nerror: could not apply abc123",
       },
     });
-    // after the failed pull, a rebase-merge dir exists → abort path
-    fs.mkdirSync(path.join(dir, ".git", "rebase-merge"));
+    // after the failed pull, a *valid* rebase-merge dir exists → abort path
+    const merge = path.join(dir, ".git", "rebase-merge");
+    fs.mkdirSync(merge);
+    fs.writeFileSync(path.join(merge, "head-name"), "refs/heads/main\n");
     const r = await syncRepoOnce(dir, { push: false, git });
     expect(r.status).toBe("conflict");
     expect(r.detail).toBe("CONFLICT (content): Merge conflict in notes.md"); // first line only
     expect(calls).toContain("rebase --abort");
+  });
+
+  it("deletes a corrupt rebase-merge (no head-name) instead of aborting", async () => {
+    const merge = path.join(dir, ".git", "rebase-merge");
+    fs.mkdirSync(merge);
+    const { git, calls } = scriptedGit({
+      ...BASE,
+      "rev-parse HEAD": { stdout: "aaa111" },
+    });
+    const r = await syncRepoOnce(dir, { push: false, git });
+    expect(r.status).toBe("unchanged");
+    expect(calls).not.toContain("rebase --abort");
+    expect(fs.existsSync(merge)).toBe(false);
+  });
+
+  it("skips when another window holds the sync lock", async () => {
+    fs.mkdirSync(path.join(dir, ".git", "csv-sync.lock"));
+    const { git, calls } = scriptedGit({ ...BASE, "rev-parse HEAD": { stdout: "aaa111" } });
+    const r = await syncRepoOnce(dir, { push: false, git });
+    expect(r.status).toBe("skipped");
+    expect(r.detail).toBe("locked by another window");
+    expect(calls).toEqual([]);
+  });
+
+  it("merges instead of rebasing when local is far ahead", async () => {
+    const { git, calls } = scriptedGit({
+      ...BASE,
+      "rev-parse HEAD": { stdout: "aaa111" },
+      "rev-list --count origin/main..HEAD": { stdout: "7809" },
+      "pull --no-rebase --autostash origin main": { stdout: "Merge made by the recursive strategy." },
+    });
+    const r = await syncRepoOnce(dir, { push: false, git });
+    expect(r.status).toBe("unchanged");
+    expect(calls).toContain("pull --no-rebase --autostash origin main");
+    expect(calls).not.toContain("pull --rebase --autostash origin main");
   });
 
   it("reports push-failed (not ok) when the push fails", async () => {

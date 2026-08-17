@@ -9,11 +9,14 @@
 // gated on the viewer being open, not an always-on daemon or cron.
 //
 // Conflict philosophy: recover, never wedge. We use `pull --rebase --autostash`
-// (git re-applies the autostash on abort), and if a rebase is already in
-// progress — ours or one a crashed cron left behind — we abort it back to a
-// clean HEAD and surface a warning rather than looping or invoking a merge
-// agent. A conflicted repo is left clean and untouched, and the next sync
-// retries once the remote/local diverge is resolved elsewhere.
+// when the local backlog is small; a large local ahead (session-store
+// thousands-of-commits case) merges instead — rebasing that backlog is what
+// leaves a corrupt `.git/rebase-merge` (missing head-name). A rebase already
+// in progress — ours or a crashed cron — is aborted, or the marker dir is
+// deleted if it is already corrupt. Multiple VS Code windows share a
+// per-repo lock so they never run git concurrently. A conflicted repo is
+// left clean and untouched, and the next sync retries once the diverge is
+// resolved elsewhere.
 
 import * as path from "path";
 import * as vscode from "vscode";
