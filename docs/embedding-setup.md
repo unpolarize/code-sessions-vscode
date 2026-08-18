@@ -74,10 +74,43 @@ All three settings live under `claudeSessions.embedding.*`:
 | `embedding.ollamaUrl` | `http://127.0.0.1:11434` | Change if you run Ollama on a different port or on a remote host |
 | `embedding.ollamaModel` | `nomic-embed-text` | Any Ollama embedding-capable model works. `bge-m3`, `mxbai-embed-large`, and `all-minilm` are all valid alternatives |
 
-The persisted embeddings are tagged with the model id (e.g.
-`ollama/nomic-embed-text` or `fallback/hash-bow-256`). If you switch models,
-the extension re-embeds every session under the new id on the next open of
-the graph — old embeddings stay in the DB but are unused.
+The persisted embeddings are tagged with the model id **plus the embed-recipe
+revision** (e.g. `ollama/nomic-embed-text@v2` or `fallback/hash-bow-256@v2`).
+If you switch models, the extension re-embeds every session under the new id
+on the next open of the graph — old embeddings stay in the DB but are unused.
+
+## Background re-embed job
+
+Session vectors are shared between the agent graph and the search view's
+Semantic toggle (one vector space, one tag). Any consumer that finds missing
+or stale vectors kicks **one** background re-embed job:
+
+- **Agent graph open** embeds missing/stale sessions inline as part of the
+  layout build (as before).
+- **Semantic search** over a partial corpus (`semantic over K/N`) or an empty
+  one fires a cancellable notification job that fills the gap; rerun the
+  search when it finishes.
+- Jobs are **single-flight** — a second trigger while one is running joins the
+  in-flight job instead of embedding twice. A failed Ollama probe is cached
+  for 60 s so debounced searches don't re-probe on every keystroke.
+
+**Staleness is hash-based.** Each vector stores a hash of the exact text it
+was embedded from. If the same recipe later produces different text for a
+session — topics classified after an early embed, new tool turns indexed —
+the hash mismatch marks the row stale and the next job (or graph open)
+re-embeds it, even though the `@v2` tag is unchanged.
+
+### Forcing a full refresh
+
+`Claude: Re-embed sessions` (Command Palette) now offers two modes:
+
+- **Drop stale** — deletes rows under other model tags only (the old
+  behavior). Current-tag rows are kept.
+- **Drop all + re-embed** — deletes *every* session and turn embedding row,
+  including current-tag ones, then immediately runs the background job under
+  the `@v2` tag. Use this when you want to rebuild vectors from scratch (e.g.
+  after a large classification backfill). Semantic search works again as soon
+  as the job reports `re-embedded N/N`.
 
 ## Troubleshooting
 

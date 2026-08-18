@@ -11,6 +11,8 @@ import { openSessionGraphView } from "./sessionGraphView";
 import { registerPlanning, setSessionProvider } from "./planning";
 import { SessionStore } from "./db";
 import { taggedEmbeddingModel } from "./embedText";
+import { kickReembed } from "./reembedJob";
+import type { EmbedConfig } from "./embedding";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
 import { syncCodexToStore } from "./codexIndexer";
@@ -2793,20 +2795,56 @@ export function activate(ctx: vscode.ExtensionContext) {
       const cfg = vscode.workspace.getConfiguration("codeSessions");
       const wantedOllama = cfg.get<string>("embedding.ollamaModel", "nomic-embed-text");
       const choice = await vscode.window.showInformationMessage(
-        `Drop cached embeddings and re-embed on next graph open?\nCurrent model: ollama/${wantedOllama}`,
+        `Drop cached embeddings?\nCurrent model: ollama/${wantedOllama}`,
         { modal: false },
-        "Drop all",
+        "Drop stale",
+        "Drop all + re-embed",
         "Cancel",
       );
-      if (choice !== "Drop all") return;
-      // Session embeddings live under the full recipe tag (ollama/<model>@v2);
-      // pinning the untagged id here would delete the fresh rows and keep stale
-      // ones. Turn embeddings still use the untagged model id.
-      const keepModel = taggedEmbeddingModel(`ollama/${wantedOllama}`);
-      const dropped =
-        store.deleteEmbeddingsExceptModel(keepModel) + store.deleteTurnEmbeddingsExceptModel(`ollama/${wantedOllama}`);
-      vscode.window.showInformationMessage(
-        `Dropped ${dropped} stale embedding row(s). Open the agent graph to re-embed.`,
+      if (choice === "Drop stale") {
+        // Session embeddings live under the full recipe tag (ollama/<model>@v2);
+        // pinning the untagged id here would delete the fresh rows and keep stale
+        // ones. Turn embeddings still use the untagged model id.
+        const keepModel = taggedEmbeddingModel(`ollama/${wantedOllama}`);
+        const dropped =
+          store.deleteEmbeddingsExceptModel(keepModel) + store.deleteTurnEmbeddingsExceptModel(`ollama/${wantedOllama}`);
+        vscode.window.showInformationMessage(
+          `Dropped ${dropped} stale embedding row(s). Open the agent graph to re-embed.`,
+        );
+        return;
+      }
+      if (choice !== "Drop all + re-embed") return;
+      // Force path: current-tag rows go too (dropping stale rows alone can't
+      // refresh vectors embedded from since-changed text under the same rev),
+      // then the shared background job rebuilds session vectors immediately.
+      const s = store;
+      const dropped = s.deleteAllSessionEmbeddings() + s.deleteAllTurnEmbeddings();
+      const embedCfg: EmbedConfig = {
+        preferred: cfg.get<"ollama" | "transformersjs" | "fallback">("embedding.preferred", "ollama"),
+        ollamaUrl: cfg.get<string>("embedding.ollamaUrl", "http://127.0.0.1:11434"),
+        ollamaModel: wantedOllama,
+      };
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Code Sessions: re-embedding all sessions",
+          cancellable: true,
+        },
+        async (progress, token) => {
+          const outcome = await kickReembed(s, embedCfg, {
+            isCancelled: () => token.isCancellationRequested,
+            onProgress: (done, total) => progress.report({ message: `${done}/${total}` }),
+          });
+          if (!outcome.ok) {
+            vscode.window.showWarningMessage(
+              `Dropped ${dropped} embedding row(s), but Ollama is unreachable — vectors will rebuild on the next graph open or semantic search.`,
+            );
+          } else {
+            vscode.window.showInformationMessage(
+              `Dropped ${dropped} row(s); re-embedded ${outcome.embedded}/${outcome.total} session(s)${outcome.cancelled ? " (cancelled)" : ""}.`,
+            );
+          }
+        },
       );
     }),
 

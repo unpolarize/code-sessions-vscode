@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.40.0 — 2026-08-18
+
+### Background re-embed job + hash-based staleness (semantic search PR3)
+
+- **New `src/reembedJob.ts`** — consumer-driven background re-embed job under the shared `ollama/<model>@v2` tag: single-flight (concurrent kicks join the in-flight run), cancellable between 25-session chunks, 60 s probe-fail cooldown so debounced searches don't re-probe per keystroke. `buildEmbedTexts` moved here from the agent graph (both consumers share it).
+- **Hash-based stale detection** (schema v18: `session_embedding.text_hash`): every upsert stores an FNV-1a hash of the exact embed text. Rows whose stored hash no longer matches the freshly built text — topics classified *after* an early embed, new tool turns, pre-v18 NULL hashes — are re-embedded on the next graph open or job kick, even though the `@v2` tag is unchanged.
+- **Semantic search kicks the job**: a query answered over a partial corpus (`semantic over K/N`) or none at all fires the background job with a cancellable notification, then hints to rerun the search.
+- **"Re-embed sessions" command gains a force path**: *Drop stale* (old behavior — other-tag rows only) or *Drop all + re-embed*, which clears current-tag session+turn rows too (previously impossible without a recipe-rev bump) and rebuilds immediately.
+- Old-DB rebuild copy for `session_embedding` now uses an explicit column list (`SELECT *` would have broken on the new column, same class of bug as the v11 turn-table incident).
+- Fully done: tasks/csv-semantic-session-search-embed-the-query-cosi (PR1 1.37.0, PR2 1.39.0, PR3 here).
+
 ## 1.39.0 — 2026-08-18
 
 ### Semantic session search in the search view (PR2)

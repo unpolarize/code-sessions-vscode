@@ -51,3 +51,18 @@ export function buildSessionEmbedText(s: SessionEmbedFields, topics: string[], t
 export function buildQueryEmbedText(query: string): string {
   return `search_query: ${query}`;
 }
+
+/**
+ * Deterministic FNV-1a hash of the embed text, persisted next to the vector.
+ * A stored hash that no longer matches the freshly built text marks the row
+ * stale (e.g. embedded before topic classification filled TOPICS) even though
+ * the recipe rev — and therefore the tag — is unchanged.
+ */
+export function embedTextHash(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}

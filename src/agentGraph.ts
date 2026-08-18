@@ -11,7 +11,8 @@ import { preferredEditorColumn } from "./editorColumn";
 import { UMAP } from "umap-js";
 import { SessionStore, SessionRow } from "./db";
 import { embedMany, EmbedConfig, filterSameDimEmbeddings } from "./embedding";
-import { buildSessionEmbedText, taggedEmbeddingModel } from "./embedText";
+import { embedTextHash, taggedEmbeddingModel } from "./embedText";
+import { buildEmbedTexts, selectReembedTargets } from "./reembedJob";
 import { classifySession } from "./topicClassifier";
 
 interface GraphPoint {
@@ -180,30 +181,6 @@ function dbscan2d(points: Array<{ x: number; y: number }>, eps: number, minPts: 
 }
 
 /**
- * Batch-build embed texts via the shared v2 recipe: enriched with classified
- * topics + tool mix pulled from the store in two aggregate queries.
- */
-function buildEmbedTexts(store: SessionStore, sessions: SessionRow[]): Map<string, string> {
-  const out = new Map<string, string>();
-  // Chunk the aggregate lookups — the IN(...) expansion hits sqlite-wasm's
-  // bind-variable ceiling on multi-thousand-session corpora.
-  const CHUNK = 400;
-  for (let i = 0; i < sessions.length; i += CHUNK) {
-    const chunk = sessions.slice(i, i + CHUNK);
-    const ids = chunk.map((s) => s.session_id);
-    const topics = store.topTopicsBySession(ids, 20);
-    const tools = store.topToolsBySession(ids, 30);
-    for (const s of chunk) {
-      out.set(
-        s.session_id,
-        buildSessionEmbedText(s, topics.get(s.session_id)?.top ?? [], tools.get(s.session_id) ?? []),
-      );
-    }
-  }
-  return out;
-}
-
-/**
  * Compute (or refresh) embeddings + UMAP coords for every non-automated
  * session, persist into `session_embedding`, return the layout.
  */
@@ -228,20 +205,24 @@ async function buildLayout(
   // return empty this pass so the next open retries; never store a mixed-dim
   // fallback under an ollama/* model tag.
   progress.report({ message: "Probing embedder…" });
-  const seedText = buildEmbedTexts(store, [allSessions[0]]).get(allSessions[0].session_id)!;
+  const texts = buildEmbedTexts(store, allSessions);
+  const seedText = texts.get(allSessions[0].session_id)!;
   const seed = await embedMany([{ session_id: allSessions[0].session_id, text: seedText }], cfg);
   const modelId = taggedEmbeddingModel(seed.model);
   if (seed.results.length === 0) {
     return { points: [], embeddingModel: modelId, clusterLabels: [], clusterMethod: "none" };
   }
-  store.upsertEmbedding(seed.results[0].session_id, seed.results[0].embedding, modelId);
+  store.upsertEmbedding(seed.results[0].session_id, seed.results[0].embedding, modelId, embedTextHash(seedText));
 
-  // Find which other sessions still need embedding under this model.
-  const missing = store.sessionsMissingEmbedding(modelId);
-  const toEmbed = missing.filter((s) => s.session_id !== seed.results[0].session_id);
+  // Sessions that still need embedding under this model: missing rows plus
+  // stale ones whose stored text_hash no longer matches the current recipe
+  // output (topics classified after an early embed, pre-v18 NULL hash).
+  const hashes = store.sessionEmbeddingHashes(modelId);
+  const toEmbed = selectReembedTargets(allSessions, texts, hashes).filter(
+    (s) => s.session_id !== seed.results[0].session_id,
+  );
   if (toEmbed.length > 0) {
     progress.report({ message: `Embedding ${toEmbed.length} sessions via ${modelId}…` });
-    const texts = buildEmbedTexts(store, toEmbed);
     const reqs = toEmbed.map((s) => ({ session_id: s.session_id, text: texts.get(s.session_id)! }));
     const { results } = await embedMany(reqs, cfg, (done, total) => {
       progress.report({
@@ -249,7 +230,9 @@ async function buildLayout(
       });
     });
     // Only successful embeddings are returned; skipped items stay missing.
-    for (const r of results) store.upsertEmbedding(r.session_id, r.embedding, modelId);
+    for (const r of results) {
+      store.upsertEmbedding(r.session_id, r.embedding, modelId, embedTextHash(texts.get(r.session_id)!));
+    }
   }
 
   // Pull every embedding back and project to 2D. Drop mixed-dimension rows

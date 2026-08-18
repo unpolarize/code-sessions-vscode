@@ -11,6 +11,51 @@ import { preferredEditorColumn } from "./editorColumn";
 import { SessionStore } from "./db";
 import { EmbedConfig } from "./embedding";
 import { buildSearchResults } from "./semanticSearch";
+import { kickReembed, reembedInFlight } from "./reembedJob";
+
+/**
+ * A semantic result over a partial (or empty) vector corpus kicks the shared
+ * background re-embed job — fire-and-forget with a cancellable notification.
+ * Single-flight lives in reembedJob; the extra guard here just avoids
+ * spawning a progress notification that would immediately join and exit.
+ */
+export function maybeKickReembed(
+  store: SessionStore,
+  cfg: EmbedConfig,
+  semantic: { available: true; status: string } | { available: false; reason: string } | undefined,
+): void {
+  if (!semantic) return;
+  const partial = semantic.available
+    ? semantic.status.startsWith("semantic over ")
+    : semantic.reason === "no-vectors";
+  if (!partial || reembedInFlight()) return;
+  void vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Code Sessions: embedding sessions for semantic search",
+      cancellable: true,
+    },
+    async (progress, token) => {
+      let last = 0;
+      const outcome = await kickReembed(store, cfg, {
+        isCancelled: () => token.isCancellationRequested,
+        onProgress: (done, total) => {
+          progress.report({
+            message: `${done}/${total}`,
+            increment: ((done - last) / total) * 100,
+          });
+          last = done;
+        },
+      });
+      if (outcome.ok && outcome.embedded > 0 && !outcome.cancelled) {
+        vscode.window.setStatusBarMessage(
+          `Code Sessions: embedded ${outcome.embedded} session(s) — rerun the search`,
+          5000,
+        );
+      }
+    },
+  );
+}
 
 function nonceStr(): string {
   let s = "";
@@ -47,6 +92,7 @@ export function openSearchView(
       // query (or a toggle flip) has already superseded — the semantic path
       // can take seconds while LIKE replies are instant.
       panel.webview.postMessage({ ...payload, seq: msg.seq });
+      maybeKickReembed(store, embedCfg, payload.semantic);
       return;
     }
     if (msg?.command === "open" && typeof msg.sessionId === "string") {

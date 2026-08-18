@@ -284,6 +284,16 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE turn ADD COLUMN assistant_full TEXT;
   `,
+
+  // v18 — embed-text hash on session_embedding. The tag (`<model>@<rev>`)
+  // only invalidates on recipe changes; the hash invalidates when the same
+  // recipe produces different text for a session (topics classified after an
+  // early embed, new tool turns indexed, title backfilled). Consumers compare
+  // the stored hash against freshly built embed text to find stale rows.
+  // NULL = pre-v18 row with unknown provenance, treated as stale.
+  `
+  ALTER TABLE session_embedding ADD COLUMN text_hash TEXT;
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok" | "codex" | "git";
@@ -748,15 +758,16 @@ export class SessionStore {
         this.db.exec(`INSERT OR IGNORE INTO turn_topic SELECT * FROM old.turn_topic`);
         this.db.exec(`INSERT OR IGNORE INTO classification_batch SELECT * FROM old.classification_batch`);
 
-        // session_embedding gained `cluster_id` at v4; old DBs through v3
-        // lack that column.
-        if (this.oldHasColumn("session_embedding", "cluster_id")) {
-          this.db.exec(`INSERT OR IGNORE INTO session_embedding SELECT * FROM old.session_embedding`);
-        } else if (this.oldHasTable("session_embedding")) {
+        // session_embedding gained `cluster_id` at v4 and `text_hash` at v18;
+        // copy with an explicit column list (SELECT * broke once already on
+        // the turn table — see above) and NULL the columns the old DB lacks.
+        if (this.oldHasTable("session_embedding")) {
+          const clusterCol = this.oldHasColumn("session_embedding", "cluster_id") ? "cluster_id" : "NULL";
+          const hashCol = this.oldHasColumn("session_embedding", "text_hash") ? "text_hash" : "NULL";
           this.db.exec(`
             INSERT OR IGNORE INTO session_embedding
-              (session_id, embedding, embedding_model, embedding_dim, computed_at, umap_x, umap_y, umap_fitted_at)
-            SELECT session_id, embedding, embedding_model, embedding_dim, computed_at, umap_x, umap_y, umap_fitted_at
+              (session_id, embedding, embedding_model, embedding_dim, computed_at, umap_x, umap_y, umap_fitted_at, cluster_id, text_hash)
+            SELECT session_id, embedding, embedding_model, embedding_dim, computed_at, umap_x, umap_y, umap_fitted_at, ${clusterCol}, ${hashCol}
             FROM old.session_embedding
           `);
         }
@@ -1112,16 +1123,29 @@ export class SessionStore {
 
   // ---- embedding queries (Phase 1C) ------------------------------------ //
 
-  upsertEmbedding(sessionId: string, embedding: Float32Array, model: string): void {
+  upsertEmbedding(sessionId: string, embedding: Float32Array, model: string, textHash: string | null = null): void {
     this.db.prepare(`
-      INSERT INTO session_embedding (session_id, embedding, embedding_model, embedding_dim, computed_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO session_embedding (session_id, embedding, embedding_model, embedding_dim, computed_at, text_hash)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         embedding = excluded.embedding,
         embedding_model = excluded.embedding_model,
         embedding_dim = excluded.embedding_dim,
-        computed_at = excluded.computed_at
-    `).run(sessionId, Buffer.from(embedding.buffer), model, embedding.length, Date.now());
+        computed_at = excluded.computed_at,
+        text_hash = excluded.text_hash
+    `).run(sessionId, Buffer.from(embedding.buffer), model, embedding.length, Date.now(), textHash);
+  }
+
+  /**
+   * session_id → stored embed-text hash for every row under one model tag.
+   * NULL hashes (pre-v18 rows) come back as null — callers treat those as
+   * stale since the text that produced the vector is unknown.
+   */
+  sessionEmbeddingHashes(model: string): Map<string, string | null> {
+    const rows = this.db
+      .prepare("SELECT session_id, text_hash FROM session_embedding WHERE embedding_model = ?")
+      .all(model) as any[];
+    return new Map(rows.map((r) => [r.session_id as string, (r.text_hash as string | null) ?? null]));
   }
 
   setUmapCoords(rows: Array<{ session_id: string; x: number; y: number }>, fittedAt: number): void {
@@ -1342,6 +1366,16 @@ export class SessionStore {
   /** Delete every session_embedding row whose model id is not `keepModel`. */
   deleteEmbeddingsExceptModel(keepModel: string): number {
     return this.db.prepare("DELETE FROM session_embedding WHERE embedding_model != ?").run(keepModel).changes;
+  }
+
+  /** Delete every session_embedding row — the force-refresh path. */
+  deleteAllSessionEmbeddings(): number {
+    return this.db.prepare("DELETE FROM session_embedding").run().changes;
+  }
+
+  /** Delete every turn_embedding row — the force-refresh path. */
+  deleteAllTurnEmbeddings(): number {
+    return this.db.prepare("DELETE FROM turn_embedding").run().changes;
   }
 
   /** Delete every turn_embedding row whose model id is not `keepModel`. */
