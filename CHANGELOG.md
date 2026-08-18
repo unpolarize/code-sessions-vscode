@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.39.0 — 2026-08-18
+
+### Semantic session search in the search view (PR2)
+
+- **"Semantic" toggle** in Claude · Search (default off, persisted in webview state, 300 ms debounce when on): probes Ollama, embeds the query as `search_query: <q>`, and cosine-ranks persisted `@v2` session vectors into a **Sessions (semantic)** pane (score to 2 dp, project chip, open/resume). LIKE topics/turns panes are unchanged and stay as secondary results.
+- **Exact fallback statuses**: probe fail / no vectors / embed error → LIKE only with `keyword (semantic unavailable)`; partially embedded corpus → `semantic over K/N` (new `SessionStore.sessionEmbeddingCoverage`).
+- Toggle off (or an empty query) produces the byte-identical pre-change payload and never touches Ollama — asserted by tests, incl. a paraphrase fixture where semantic finds the target and LIKE does not (`test/unit/semanticSearch.test.ts`).
+- `docs/semantic-search-smoke.md` — 5-query manual smoke template for local-Ollama verification.
+- Remaining slice (PR3): consumer-driven background re-embed job (kp: tasks/csv-semantic-session-search-embed-the-query-cosi).
+
 ## 1.38.1 — 2026-08-17
 
 ### Store sync: multi-window lock, corrupt-rebase recovery, merge when far ahead

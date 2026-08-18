@@ -1,10 +1,16 @@
 // Search webview: topic full-text + conversation full-text search over the
 // SQLite cache. LIKE-based; fast enough for tens of thousands of turns. The
 // excerpt is rendered with the matched span highlighted.
+//
+// A "Semantic" toggle (default off, persisted in webview state) adds a
+// cosine-ranked session pane on top; when Ollama or the vectors are missing
+// the view stays on LIKE and says so via the status string.
 
 import * as vscode from "vscode";
 import { preferredEditorColumn } from "./editorColumn";
 import { SessionStore } from "./db";
+import { EmbedConfig } from "./embedding";
+import { buildSearchResults } from "./semanticSearch";
 
 function nonceStr(): string {
   let s = "";
@@ -27,17 +33,17 @@ export function openSearchView(
   );
   panel.webview.html = renderHtml(panel.webview, initialQuery);
 
+  const cfg = vscode.workspace.getConfiguration("codeSessions");
+  const embedCfg: EmbedConfig = {
+    preferred: cfg.get<"ollama" | "transformersjs" | "fallback">("embedding.preferred", "ollama"),
+    ollamaUrl: cfg.get<string>("embedding.ollamaUrl", "http://127.0.0.1:11434"),
+    ollamaModel: cfg.get<string>("embedding.ollamaModel", "nomic-embed-text"),
+  };
+
   panel.webview.onDidReceiveMessage(async (msg) => {
     if (msg?.command === "query" && typeof msg.q === "string") {
-      const q: string = msg.q;
-      const topics = q.trim().length > 0 ? store.searchTopics(q, 200) : [];
-      const conversations = q.trim().length > 0 ? store.searchTurns(q, 200) : [];
-      panel.webview.postMessage({
-        command: "results",
-        q,
-        topics,
-        conversations,
-      });
+      const payload = await buildSearchResults(msg.q, msg.semantic === true, store, embedCfg);
+      panel.webview.postMessage(payload);
       return;
     }
     if (msg?.command === "open" && typeof msg.sessionId === "string") {
@@ -100,13 +106,21 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
   .badge.assistant { background: rgba(62, 207, 142, 0.20); color: #3ecf8e; }
   mark { background: var(--vscode-editor-findMatchHighlightBackground, rgba(240,160,80,0.4)); color: inherit; padding: 0 1px; border-radius: 2px; }
   .empty { color: var(--vscode-descriptionForeground); font-style: italic; padding: 4px 0; }
+  .semtoggle { display: flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer; user-select: none; }
+  .sempane { margin-bottom: 14px; }
+  .score { display: inline-block; min-width: 34px; font-size: 10.5px; font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-descriptionForeground); margin-right: 6px; }
 </style>
 </head><body>
 <h1>Search Claude history</h1>
 <div class="searchbar">
   <input id="q" type="search" placeholder="Search topics and conversations…" autofocus>
+  <label class="meta semtoggle"><input id="sem" type="checkbox"> Semantic</label>
   <span class="meta" id="status">Type to search</span>
 </div>
+<section class="panel sempane" id="semPane" style="display:none">
+  <h2>Sessions (semantic)</h2>
+  <div id="semBody"></div>
+</section>
 <div class="grid">
   <section class="panel">
     <h2>Topics</h2>
@@ -124,9 +138,13 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
   const statusEl = document.getElementById('status');
   const topicsBody = document.getElementById('topicsBody');
   const convBody = document.getElementById('convBody');
+  const semEl = document.getElementById('sem');
+  const semPane = document.getElementById('semPane');
+  const semBody = document.getElementById('semBody');
 
   const initial = ${seed};
   if (initial) { qEl.value = initial; }
+  semEl.checked = !!(vscode.getState() || {}).semantic;
 
   function escHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -210,17 +228,37 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
     }).join('');
   }
 
-  // Debounced query
+  function renderSemantic(sem, q) {
+    if (!semEl.checked || !sem) { semPane.style.display = 'none'; semBody.innerHTML = ''; return; }
+    semPane.style.display = '';
+    if (!sem.available) { semBody.innerHTML = '<div class="empty">' + escHtml(sem.status) + '</div>'; return; }
+    if (sem.rows.length === 0) { semBody.innerHTML = '<div class="empty">No sessions above the score floor.</div>'; return; }
+    semBody.innerHTML = sem.rows.map(r => {
+      const proj = r.project_id ? '<span class="proj">' + escHtml(r.project_id) + '</span>' : '';
+      return '<div class="row" data-sid="' + escHtml(r.session_id) + '">' +
+        '<div><span class="score">' + r.score.toFixed(2) + '</span>' + proj +
+          '<span class="title">' + escHtml(r.title || r.session_id.slice(0,8)) + '</span></div>' +
+        '<span class="resume" data-resume="' + escHtml(r.session_id) + '" title="Continue in Claude">▶</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  // Debounced query — semantic queries hit Ollama, so they debounce longer.
   let timer = null;
   function fireQuery() {
     clearTimeout(timer);
     timer = setTimeout(() => {
       const q = qEl.value;
       statusEl.textContent = q.trim() ? 'Searching…' : 'Type to search';
-      vscode.postMessage({ command: 'query', q });
-    }, 180);
+      vscode.postMessage({ command: 'query', q, semantic: semEl.checked });
+    }, semEl.checked ? 300 : 180);
   }
   qEl.addEventListener('input', fireQuery);
+  semEl.addEventListener('change', () => {
+    vscode.setState(Object.assign({}, vscode.getState() || {}, { semantic: semEl.checked }));
+    if (!semEl.checked) renderSemantic(null, '');
+    fireQuery();
+  });
 
   // Click delegation
   function onRowClick(ev) {
@@ -239,6 +277,7 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
   }
   topicsBody.addEventListener('click', onRowClick);
   convBody.addEventListener('click', onRowClick);
+  semBody.addEventListener('click', onRowClick);
 
   window.addEventListener('message', (ev) => {
     const m = ev.data;
@@ -246,8 +285,10 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
     if (m.command === 'results') {
       renderTopics(m.topics || [], m.q);
       renderConversations(m.conversations || [], m.q);
+      renderSemantic(m.q.trim() ? m.semantic : null, m.q);
       const total = (m.topics?.length || 0) + (m.conversations?.length || 0);
-      statusEl.textContent = m.q.trim() ? (total + ' match' + (total === 1 ? '' : 'es')) : 'Type to search';
+      const counts = m.q.trim() ? (total + ' match' + (total === 1 ? '' : 'es')) : 'Type to search';
+      statusEl.textContent = m.semantic ? counts + ' · ' + m.semantic.status : counts;
     } else if (m.command === 'prefill') {
       qEl.value = m.q;
       fireQuery();

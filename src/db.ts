@@ -1313,6 +1313,21 @@ export class SessionStore {
     return scored.slice(0, limit);
   }
 
+  /**
+   * Vector coverage under one model tag: how many sessions carry an embedding
+   * vs the non-automated corpus (the denominator embedding passes work from).
+   */
+  sessionEmbeddingCoverage(model: string): { embedded: number; total: number } {
+    const row = this.db
+      .prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM session_embedding WHERE embedding_model = ?) AS embedded,
+          (SELECT COUNT(*) FROM session WHERE is_automated = 0) AS total
+      `)
+      .get(model) as any;
+    return { embedded: Number(row.embedded), total: Number(row.total) };
+  }
+
   sessionsMissingEmbedding(model: string): SessionRow[] {
     const rows = this.db
       .prepare(`
