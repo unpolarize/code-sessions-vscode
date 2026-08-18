@@ -43,7 +43,10 @@ export function openSearchView(
   panel.webview.onDidReceiveMessage(async (msg) => {
     if (msg?.command === "query" && typeof msg.q === "string") {
       const payload = await buildSearchResults(msg.q, msg.semantic === true, store, embedCfg);
-      panel.webview.postMessage(payload);
+      // Echo the request seq so the webview can drop replies that a newer
+      // query (or a toggle flip) has already superseded — the semantic path
+      // can take seconds while LIKE replies are instant.
+      panel.webview.postMessage({ ...payload, seq: msg.seq });
       return;
     }
     if (msg?.command === "open" && typeof msg.sessionId === "string") {
@@ -244,13 +247,15 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
   }
 
   // Debounced query — semantic queries hit Ollama, so they debounce longer.
+  // seq lets the results handler drop replies a newer query superseded.
   let timer = null;
+  let seq = 0;
   function fireQuery() {
     clearTimeout(timer);
     timer = setTimeout(() => {
       const q = qEl.value;
       statusEl.textContent = q.trim() ? 'Searching…' : 'Type to search';
-      vscode.postMessage({ command: 'query', q, semantic: semEl.checked });
+      vscode.postMessage({ command: 'query', q, semantic: semEl.checked, seq: ++seq });
     }, semEl.checked ? 300 : 180);
   }
   qEl.addEventListener('input', fireQuery);
@@ -283,12 +288,13 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
     const m = ev.data;
     if (!m) return;
     if (m.command === 'results') {
+      if (typeof m.seq === 'number' && m.seq !== seq) return; // superseded reply
       renderTopics(m.topics || [], m.q);
       renderConversations(m.conversations || [], m.q);
       renderSemantic(m.q.trim() ? m.semantic : null, m.q);
       const total = (m.topics?.length || 0) + (m.conversations?.length || 0);
       const counts = m.q.trim() ? (total + ' match' + (total === 1 ? '' : 'es')) : 'Type to search';
-      statusEl.textContent = m.semantic ? counts + ' · ' + m.semantic.status : counts;
+      statusEl.textContent = (semEl.checked && m.semantic) ? counts + ' · ' + m.semantic.status : counts;
     } else if (m.command === 'prefill') {
       qEl.value = m.q;
       fireQuery();

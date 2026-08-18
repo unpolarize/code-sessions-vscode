@@ -154,6 +154,12 @@ describe("buildSearchResults", () => {
     expect(deps.embedQuery).not.toHaveBeenCalled();
   });
 
+  it("trims the query before embedding", async () => {
+    const deps = okDeps();
+    await buildSearchResults("  widget refactor  ", true, store, CFG, deps);
+    expect(deps.embedQuery).toHaveBeenCalledWith("search_query: widget refactor", CFG);
+  });
+
   it("semantic on attaches the semantic result alongside the LIKE panes", async () => {
     const payload = await buildSearchResults("rework component state container", true, store, CFG, okDeps());
     expect(payload.semantic?.available).toBe(true);

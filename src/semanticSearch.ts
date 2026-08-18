@@ -86,7 +86,7 @@ export async function buildSearchResults(
   const conversations = hasQuery ? store.searchTurns(q, 200) : [];
   const payload: Awaited<ReturnType<typeof buildSearchResults>> = { command: "results", q, topics, conversations };
   if (semantic && hasQuery) {
-    payload.semantic = await semanticSessionSearch(q, store, cfg, deps);
+    payload.semantic = await semanticSessionSearch(q.trim(), store, cfg, deps);
   }
   return payload;
 }
