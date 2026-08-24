@@ -1,10 +1,61 @@
 // Search webview: topic full-text + conversation full-text search over the
 // SQLite cache. LIKE-based; fast enough for tens of thousands of turns. The
 // excerpt is rendered with the matched span highlighted.
+//
+// A "Semantic" toggle (default off, persisted in webview state) adds a
+// cosine-ranked session pane on top; when Ollama or the vectors are missing
+// the view stays on LIKE and says so via the status string.
 
 import * as vscode from "vscode";
 import { preferredEditorColumn } from "./editorColumn";
 import { SessionStore } from "./db";
+import { EmbedConfig } from "./embedding";
+import { buildSearchResults } from "./semanticSearch";
+import { kickReembed, reembedInFlight } from "./reembedJob";
+
+/**
+ * A semantic result over a partial (or empty) vector corpus kicks the shared
+ * background re-embed job — fire-and-forget with a cancellable notification.
+ * Single-flight lives in reembedJob; the extra guard here just avoids
+ * spawning a progress notification that would immediately join and exit.
+ */
+export function maybeKickReembed(
+  store: SessionStore,
+  cfg: EmbedConfig,
+  semantic: { available: true; status: string } | { available: false; reason: string } | undefined,
+): void {
+  if (!semantic) return;
+  const partial = semantic.available
+    ? semantic.status.startsWith("semantic over ")
+    : semantic.reason === "no-vectors";
+  if (!partial || reembedInFlight()) return;
+  void vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Code Sessions: embedding sessions for semantic search",
+      cancellable: true,
+    },
+    async (progress, token) => {
+      let last = 0;
+      const outcome = await kickReembed(store, cfg, {
+        isCancelled: () => token.isCancellationRequested,
+        onProgress: (done, total) => {
+          progress.report({
+            message: `${done}/${total}`,
+            increment: ((done - last) / total) * 100,
+          });
+          last = done;
+        },
+      });
+      if (outcome.ok && outcome.embedded > 0 && !outcome.cancelled) {
+        vscode.window.setStatusBarMessage(
+          `Code Sessions: embedded ${outcome.embedded} session(s) — rerun the search`,
+          5000,
+        );
+      }
+    },
+  );
+}
 
 function nonceStr(): string {
   let s = "";
@@ -27,17 +78,21 @@ export function openSearchView(
   );
   panel.webview.html = renderHtml(panel.webview, initialQuery);
 
+  const cfg = vscode.workspace.getConfiguration("codeSessions");
+  const embedCfg: EmbedConfig = {
+    preferred: cfg.get<"ollama" | "transformersjs" | "fallback">("embedding.preferred", "ollama"),
+    ollamaUrl: cfg.get<string>("embedding.ollamaUrl", "http://127.0.0.1:11434"),
+    ollamaModel: cfg.get<string>("embedding.ollamaModel", "nomic-embed-text"),
+  };
+
   panel.webview.onDidReceiveMessage(async (msg) => {
     if (msg?.command === "query" && typeof msg.q === "string") {
-      const q: string = msg.q;
-      const topics = q.trim().length > 0 ? store.searchTopics(q, 200) : [];
-      const conversations = q.trim().length > 0 ? store.searchTurns(q, 200) : [];
-      panel.webview.postMessage({
-        command: "results",
-        q,
-        topics,
-        conversations,
-      });
+      const payload = await buildSearchResults(msg.q, msg.semantic === true, store, embedCfg);
+      // Echo the request seq so the webview can drop replies that a newer
+      // query (or a toggle flip) has already superseded — the semantic path
+      // can take seconds while LIKE replies are instant.
+      panel.webview.postMessage({ ...payload, seq: msg.seq });
+      maybeKickReembed(store, embedCfg, payload.semantic);
       return;
     }
     if (msg?.command === "open" && typeof msg.sessionId === "string") {
@@ -100,13 +155,21 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
   .badge.assistant { background: rgba(62, 207, 142, 0.20); color: #3ecf8e; }
   mark { background: var(--vscode-editor-findMatchHighlightBackground, rgba(240,160,80,0.4)); color: inherit; padding: 0 1px; border-radius: 2px; }
   .empty { color: var(--vscode-descriptionForeground); font-style: italic; padding: 4px 0; }
+  .semtoggle { display: flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer; user-select: none; }
+  .sempane { margin-bottom: 14px; }
+  .score { display: inline-block; min-width: 34px; font-size: 10.5px; font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-descriptionForeground); margin-right: 6px; }
 </style>
 </head><body>
 <h1>Search Claude history</h1>
 <div class="searchbar">
   <input id="q" type="search" placeholder="Search topics and conversations…" autofocus>
+  <label class="meta semtoggle"><input id="sem" type="checkbox"> Semantic</label>
   <span class="meta" id="status">Type to search</span>
 </div>
+<section class="panel sempane" id="semPane" style="display:none">
+  <h2>Sessions (semantic)</h2>
+  <div id="semBody"></div>
+</section>
 <div class="grid">
   <section class="panel">
     <h2>Topics</h2>
@@ -124,9 +187,13 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
   const statusEl = document.getElementById('status');
   const topicsBody = document.getElementById('topicsBody');
   const convBody = document.getElementById('convBody');
+  const semEl = document.getElementById('sem');
+  const semPane = document.getElementById('semPane');
+  const semBody = document.getElementById('semBody');
 
   const initial = ${seed};
   if (initial) { qEl.value = initial; }
+  semEl.checked = !!(vscode.getState() || {}).semantic;
 
   function escHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -210,17 +277,39 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
     }).join('');
   }
 
-  // Debounced query
+  function renderSemantic(sem, q) {
+    if (!semEl.checked || !sem) { semPane.style.display = 'none'; semBody.innerHTML = ''; return; }
+    semPane.style.display = '';
+    if (!sem.available) { semBody.innerHTML = '<div class="empty">' + escHtml(sem.status) + '</div>'; return; }
+    if (sem.rows.length === 0) { semBody.innerHTML = '<div class="empty">No sessions above the score floor.</div>'; return; }
+    semBody.innerHTML = sem.rows.map(r => {
+      const proj = r.project_id ? '<span class="proj">' + escHtml(r.project_id) + '</span>' : '';
+      return '<div class="row" data-sid="' + escHtml(r.session_id) + '">' +
+        '<div><span class="score">' + r.score.toFixed(2) + '</span>' + proj +
+          '<span class="title">' + escHtml(r.title || r.session_id.slice(0,8)) + '</span></div>' +
+        '<span class="resume" data-resume="' + escHtml(r.session_id) + '" title="Continue in Claude">▶</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  // Debounced query — semantic queries hit Ollama, so they debounce longer.
+  // seq lets the results handler drop replies a newer query superseded.
   let timer = null;
+  let seq = 0;
   function fireQuery() {
     clearTimeout(timer);
     timer = setTimeout(() => {
       const q = qEl.value;
       statusEl.textContent = q.trim() ? 'Searching…' : 'Type to search';
-      vscode.postMessage({ command: 'query', q });
-    }, 180);
+      vscode.postMessage({ command: 'query', q, semantic: semEl.checked, seq: ++seq });
+    }, semEl.checked ? 300 : 180);
   }
   qEl.addEventListener('input', fireQuery);
+  semEl.addEventListener('change', () => {
+    vscode.setState(Object.assign({}, vscode.getState() || {}, { semantic: semEl.checked }));
+    if (!semEl.checked) renderSemantic(null, '');
+    fireQuery();
+  });
 
   // Click delegation
   function onRowClick(ev) {
@@ -239,15 +328,19 @@ function renderHtml(webview: vscode.Webview, initialQuery: string): string {
   }
   topicsBody.addEventListener('click', onRowClick);
   convBody.addEventListener('click', onRowClick);
+  semBody.addEventListener('click', onRowClick);
 
   window.addEventListener('message', (ev) => {
     const m = ev.data;
     if (!m) return;
     if (m.command === 'results') {
+      if (typeof m.seq === 'number' && m.seq !== seq) return; // superseded reply
       renderTopics(m.topics || [], m.q);
       renderConversations(m.conversations || [], m.q);
+      renderSemantic(m.q.trim() ? m.semantic : null, m.q);
       const total = (m.topics?.length || 0) + (m.conversations?.length || 0);
-      statusEl.textContent = m.q.trim() ? (total + ' match' + (total === 1 ? '' : 'es')) : 'Type to search';
+      const counts = m.q.trim() ? (total + ' match' + (total === 1 ? '' : 'es')) : 'Type to search';
+      statusEl.textContent = (semEl.checked && m.semantic) ? counts + ' · ' + m.semantic.status : counts;
     } else if (m.command === 'prefill') {
       qEl.value = m.q;
       fireQuery();

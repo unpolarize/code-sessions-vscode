@@ -71,7 +71,7 @@ export async function probeOllama(cfg: EmbedConfig): Promise<boolean> {
 }
 
 /** Get one embedding via Ollama's /api/embeddings. Throws on HTTP failure. */
-async function embedOllamaOne(text: string, cfg: EmbedConfig): Promise<Float32Array> {
+export async function embedOllamaOne(text: string, cfg: EmbedConfig): Promise<Float32Array> {
   return new Promise((resolve, reject) => {
     const u = new URL("/api/embeddings", cfg.ollamaUrl);
     const payload = JSON.stringify({ model: cfg.ollamaModel, prompt: text });

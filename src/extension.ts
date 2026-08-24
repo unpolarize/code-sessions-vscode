@@ -10,6 +10,9 @@ import { openUsageView } from "./usageView";
 import { openSessionGraphView } from "./sessionGraphView";
 import { registerPlanning, setSessionProvider } from "./planning";
 import { SessionStore } from "./db";
+import { taggedEmbeddingModel } from "./embedText";
+import { kickReembed } from "./reembedJob";
+import type { EmbedConfig } from "./embedding";
 import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
 import { syncCodexToStore } from "./codexIndexer";
@@ -25,6 +28,12 @@ import { openSearchView } from "./searchView";
 import { BackgroundClassifier } from "./backgroundClassifier";
 import { MemoryProvider, scanMemorySources, summariseSources } from "./memoryView";
 import { preferredEditorColumn } from "./editorColumn";
+import { parseSessionUri } from "./sessionLink";
+import {
+  copySessionLinkToClipboard,
+  linkTargetFromArg,
+  openSessionFromLink,
+} from "./openSessionLink";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -2410,7 +2419,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
       const s = store;
       openSearchView(ctx, s, async (sessionId, title) => {
-        const jsonl = await locateSessionJsonl(sessionId);
+        const jsonl = await resolveTranscriptPath(s, sessionId);
         if (!jsonl && !locateStoreTurns(sessionId)) {
           vscode.window.showWarningMessage(`Transcript not found for ${sessionId}`);
           return;
@@ -2640,7 +2649,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("codeSessions.openTranscript", async (item: SessionItem) => {
-      const jsonl = await locateSessionJsonl(item.row.session);
+      const jsonl = await resolveTranscriptPath(store, item.row.session);
       if (!jsonl) {
         vscode.window.showWarningMessage(`Transcript not found for session ${item.row.session}`);
         return;
@@ -2649,8 +2658,37 @@ export function activate(ctx: vscode.ExtensionContext) {
       await vscode.window.showTextDocument(doc);
     }),
 
+    vscode.commands.registerCommand("codeSessions.copySessionLink", async (arg: SessionRow | SessionItem | undefined) => {
+      const target = linkTargetFromArg(arg) || linkTargetFromArg(unwrapRow(arg));
+      if (!target) {
+        vscode.window.showWarningMessage("No session to copy a link for.");
+        return;
+      }
+      const uri = await copySessionLinkToClipboard(target);
+      vscode.window.setStatusBarMessage(`Copied session link ${uri}`, 4000);
+    }),
+    vscode.commands.registerCommand("codeSessions.chatSessionFile", async () => {
+      const commands = await vscode.commands.getCommands(true);
+      if (commands.includes("codeBuild.chatSessionFile")) {
+        const ext = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
+        if (ext && !ext.isActive) await ext.activate();
+        await vscode.commands.executeCommand("codeBuild.chatSessionFile");
+        return;
+      }
+      vscode.window.showWarningMessage("Chat Session File needs Code Build installed.");
+    }),
+    vscode.window.registerUriHandler({
+      async handleUri(uri: vscode.Uri) {
+        const link = parseSessionUri({ authority: uri.authority, path: uri.path, query: uri.query });
+        if (!link) {
+          vscode.window.showWarningMessage("Code Sessions: invalid session link.");
+          return;
+        }
+        await openSessionFromLink({ ctx, store, openViewerPanels, link });
+      },
+    }),
     vscode.commands.registerCommand("codeSessions.viewConversation", async (item: SessionItem) => {
-      const jsonl = await locateSessionJsonl(item.row.session);
+      const jsonl = await resolveTranscriptPath(store, item.row.session);
       // No native transcript here → the cross-device fallback (~/.sessions turns)
       // is resolved inside openConversationViewer; only bail if neither exists.
       if (!jsonl && !locateStoreTurns(item.row.session)) {
@@ -2757,16 +2795,56 @@ export function activate(ctx: vscode.ExtensionContext) {
       const cfg = vscode.workspace.getConfiguration("codeSessions");
       const wantedOllama = cfg.get<string>("embedding.ollamaModel", "nomic-embed-text");
       const choice = await vscode.window.showInformationMessage(
-        `Drop cached embeddings and re-embed on next graph open?\nCurrent model: ollama/${wantedOllama}`,
+        `Drop cached embeddings?\nCurrent model: ollama/${wantedOllama}`,
         { modal: false },
-        "Drop all",
+        "Drop stale",
+        "Drop all + re-embed",
         "Cancel",
       );
-      if (choice !== "Drop all") return;
-      const keepModel = `ollama/${wantedOllama}`;
-      const dropped = store.deleteEmbeddingsExceptModel(keepModel) + store.deleteTurnEmbeddingsExceptModel(keepModel);
-      vscode.window.showInformationMessage(
-        `Dropped ${dropped} stale embedding row(s). Open the agent graph to re-embed.`,
+      if (choice === "Drop stale") {
+        // Session embeddings live under the full recipe tag (ollama/<model>@v2);
+        // pinning the untagged id here would delete the fresh rows and keep stale
+        // ones. Turn embeddings still use the untagged model id.
+        const keepModel = taggedEmbeddingModel(`ollama/${wantedOllama}`);
+        const dropped =
+          store.deleteEmbeddingsExceptModel(keepModel) + store.deleteTurnEmbeddingsExceptModel(`ollama/${wantedOllama}`);
+        vscode.window.showInformationMessage(
+          `Dropped ${dropped} stale embedding row(s). Open the agent graph to re-embed.`,
+        );
+        return;
+      }
+      if (choice !== "Drop all + re-embed") return;
+      // Force path: current-tag rows go too (dropping stale rows alone can't
+      // refresh vectors embedded from since-changed text under the same rev),
+      // then the shared background job rebuilds session vectors immediately.
+      const s = store;
+      const dropped = s.deleteAllSessionEmbeddings() + s.deleteAllTurnEmbeddings();
+      const embedCfg: EmbedConfig = {
+        preferred: cfg.get<"ollama" | "transformersjs" | "fallback">("embedding.preferred", "ollama"),
+        ollamaUrl: cfg.get<string>("embedding.ollamaUrl", "http://127.0.0.1:11434"),
+        ollamaModel: wantedOllama,
+      };
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Code Sessions: re-embedding all sessions",
+          cancellable: true,
+        },
+        async (progress, token) => {
+          const outcome = await kickReembed(s, embedCfg, {
+            isCancelled: () => token.isCancellationRequested,
+            onProgress: (done, total) => progress.report({ message: `${done}/${total}` }),
+          });
+          if (!outcome.ok) {
+            vscode.window.showWarningMessage(
+              `Dropped ${dropped} embedding row(s), but Ollama is unreachable — vectors will rebuild on the next graph open or semantic search.`,
+            );
+          } else {
+            vscode.window.showInformationMessage(
+              `Dropped ${dropped} row(s); re-embedded ${outcome.embedded}/${outcome.total} session(s)${outcome.cancelled ? " (cancelled)" : ""}.`,
+            );
+          }
+        },
       );
     }),
 
@@ -3424,6 +3502,23 @@ function writeAtomic(target: string, contents: string): { ok: true } | { ok: fal
     try { fs.unlinkSync(tmp); } catch { /* best-effort */ }
     return { ok: false, error: `Write failed: ${e.message}` };
   }
+}
+
+/** jsonl_path-first transcript locator: grok/codex transcripts live outside
+ * ~/.claude/projects, so the UUID walk below can never find them — the
+ * indexed path is authoritative when it still exists. Falls back to the walk
+ * for stale rows (claude transcript moved) or when the cache is disabled. */
+async function resolveTranscriptPath(
+  s: SessionStore | null,
+  sessionId: string,
+): Promise<string | null> {
+  const row = s?.getById(sessionId);
+  // git rows index session.json (metadata, not a transcript) — those must
+  // keep resolving to null so the viewer's ~/.sessions turns fallback kicks in.
+  if (row && row.source !== "git" && row.jsonl_path && fs.existsSync(row.jsonl_path)) {
+    return row.jsonl_path;
+  }
+  return locateSessionJsonl(sessionId);
 }
 
 async function locateSessionJsonl(sessionId: string): Promise<string | null> {

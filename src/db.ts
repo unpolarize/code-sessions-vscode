@@ -284,6 +284,16 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE turn ADD COLUMN assistant_full TEXT;
   `,
+
+  // v18 — embed-text hash on session_embedding. The tag (`<model>@<rev>`)
+  // only invalidates on recipe changes; the hash invalidates when the same
+  // recipe produces different text for a session (topics classified after an
+  // early embed, new tool turns indexed, title backfilled). Consumers compare
+  // the stored hash against freshly built embed text to find stale rows.
+  // NULL = pre-v18 row with unknown provenance, treated as stale.
+  `
+  ALTER TABLE session_embedding ADD COLUMN text_hash TEXT;
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok" | "codex" | "git";
@@ -748,15 +758,16 @@ export class SessionStore {
         this.db.exec(`INSERT OR IGNORE INTO turn_topic SELECT * FROM old.turn_topic`);
         this.db.exec(`INSERT OR IGNORE INTO classification_batch SELECT * FROM old.classification_batch`);
 
-        // session_embedding gained `cluster_id` at v4; old DBs through v3
-        // lack that column.
-        if (this.oldHasColumn("session_embedding", "cluster_id")) {
-          this.db.exec(`INSERT OR IGNORE INTO session_embedding SELECT * FROM old.session_embedding`);
-        } else if (this.oldHasTable("session_embedding")) {
+        // session_embedding gained `cluster_id` at v4 and `text_hash` at v18;
+        // copy with an explicit column list (SELECT * broke once already on
+        // the turn table — see above) and NULL the columns the old DB lacks.
+        if (this.oldHasTable("session_embedding")) {
+          const clusterCol = this.oldHasColumn("session_embedding", "cluster_id") ? "cluster_id" : "NULL";
+          const hashCol = this.oldHasColumn("session_embedding", "text_hash") ? "text_hash" : "NULL";
           this.db.exec(`
             INSERT OR IGNORE INTO session_embedding
-              (session_id, embedding, embedding_model, embedding_dim, computed_at, umap_x, umap_y, umap_fitted_at)
-            SELECT session_id, embedding, embedding_model, embedding_dim, computed_at, umap_x, umap_y, umap_fitted_at
+              (session_id, embedding, embedding_model, embedding_dim, computed_at, umap_x, umap_y, umap_fitted_at, cluster_id, text_hash)
+            SELECT session_id, embedding, embedding_model, embedding_dim, computed_at, umap_x, umap_y, umap_fitted_at, ${clusterCol}, ${hashCol}
             FROM old.session_embedding
           `);
         }
@@ -1112,16 +1123,29 @@ export class SessionStore {
 
   // ---- embedding queries (Phase 1C) ------------------------------------ //
 
-  upsertEmbedding(sessionId: string, embedding: Float32Array, model: string): void {
+  upsertEmbedding(sessionId: string, embedding: Float32Array, model: string, textHash: string | null = null): void {
     this.db.prepare(`
-      INSERT INTO session_embedding (session_id, embedding, embedding_model, embedding_dim, computed_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO session_embedding (session_id, embedding, embedding_model, embedding_dim, computed_at, text_hash)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         embedding = excluded.embedding,
         embedding_model = excluded.embedding_model,
         embedding_dim = excluded.embedding_dim,
-        computed_at = excluded.computed_at
-    `).run(sessionId, Buffer.from(embedding.buffer), model, embedding.length, Date.now());
+        computed_at = excluded.computed_at,
+        text_hash = excluded.text_hash
+    `).run(sessionId, Buffer.from(embedding.buffer), model, embedding.length, Date.now(), textHash);
+  }
+
+  /**
+   * session_id → stored embed-text hash for every row under one model tag.
+   * NULL hashes (pre-v18 rows) come back as null — callers treat those as
+   * stale since the text that produced the vector is unknown.
+   */
+  sessionEmbeddingHashes(model: string): Map<string, string | null> {
+    const rows = this.db
+      .prepare("SELECT session_id, text_hash FROM session_embedding WHERE embedding_model = ?")
+      .all(model) as any[];
+    return new Map(rows.map((r) => [r.session_id as string, (r.text_hash as string | null) ?? null]));
   }
 
   setUmapCoords(rows: Array<{ session_id: string; x: number; y: number }>, fittedAt: number): void {
@@ -1219,7 +1243,7 @@ export class SessionStore {
         JOIN turn_topic tt ON tt.turn_uuid = t.turn_uuid
         WHERE t.session_id IN (${placeholders})
         GROUP BY t.session_id, tt.topic_norm
-        ORDER BY t.session_id, n DESC
+        ORDER BY t.session_id, n DESC, tt.topic_norm ASC
       `)
       .all(...sessionIds) as any[];
     for (const r of rows) {
@@ -1229,6 +1253,103 @@ export class SessionStore {
       out.set(r.sid, entry);
     }
     return out;
+  }
+
+  /**
+   * Distinct tool names per session from `turn.tool_names_csv`, ordered
+   * freq-desc with alpha tiebreak, capped at `limit`. Feeds the shared
+   * embed-text builder (TOOLS section).
+   */
+  topToolsBySession(sessionIds: string[], limit = 30): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    if (sessionIds.length === 0) return out;
+    const placeholders = sessionIds.map(() => "?").join(",");
+    const rows = this.db
+      .prepare(`
+        SELECT session_id AS sid, tool_names_csv AS csv
+        FROM turn
+        WHERE session_id IN (${placeholders}) AND tool_names_csv IS NOT NULL AND tool_names_csv != ''
+      `)
+      .all(...sessionIds) as any[];
+    const counts = new Map<string, Map<string, number>>();
+    for (const r of rows) {
+      let m = counts.get(r.sid);
+      if (!m) {
+        m = new Map<string, number>();
+        counts.set(r.sid, m);
+      }
+      for (const raw of String(r.csv).split(",")) {
+        const name = raw.trim();
+        if (!name) continue;
+        m.set(name, (m.get(name) ?? 0) + 1);
+      }
+    }
+    for (const [sid, m] of counts) {
+      const ordered = [...m.entries()]
+        .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+        .slice(0, limit)
+        .map(([name]) => name);
+      out.set(sid, ordered);
+    }
+    return out;
+  }
+
+  /**
+   * Brute-force cosine ranking over `session_embedding` rows for one model
+   * tag. L2-normalizes both sides, requires query dim === row dim ===
+   * embedding_dim — mismatched rows are skipped + logged, never
+   * Math.min-truncated. Rows below `minScore` are dropped.
+   */
+  nearestSessions(
+    queryEmbedding: Float32Array,
+    model: string,
+    limit = 50,
+    minScore = 0.3,
+  ): Array<{ session_id: string; score: number }> {
+    const rows = this.db
+      .prepare("SELECT session_id, embedding, embedding_dim FROM session_embedding WHERE embedding_model = ?")
+      .all(model) as any[];
+    const dim = queryEmbedding.length;
+    const q = new Float32Array(queryEmbedding);
+    let qn = 0;
+    for (let i = 0; i < q.length; i++) qn += q[i] * q[i];
+    qn = Math.sqrt(qn) || 1;
+    for (let i = 0; i < q.length; i++) q[i] /= qn;
+    const scored: Array<{ session_id: string; score: number }> = [];
+    let skipped = 0;
+    for (const r of rows) {
+      const v = new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4);
+      if (v.length !== dim || Number(r.embedding_dim) !== dim) {
+        skipped++;
+        continue;
+      }
+      let vn = 0;
+      for (let i = 0; i < v.length; i++) vn += v[i] * v[i];
+      vn = Math.sqrt(vn) || 1;
+      let dot = 0;
+      for (let i = 0; i < v.length; i++) dot += (v[i] / vn) * q[i];
+      if (dot >= minScore) scored.push({ session_id: r.session_id, score: dot });
+    }
+    if (skipped > 0) {
+      console.warn(`[code-sessions] nearestSessions: skipped ${skipped} row(s) with dim != ${dim} under ${model}`);
+    }
+    scored.sort((a, b) => b.score - a.score || (a.session_id < b.session_id ? -1 : 1));
+    return scored.slice(0, limit);
+  }
+
+  /**
+   * Vector coverage under one model tag: how many sessions carry an embedding
+   * vs the non-automated corpus (the denominator embedding passes work from).
+   */
+  sessionEmbeddingCoverage(model: string): { embedded: number; total: number } {
+    const row = this.db
+      .prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM session_embedding WHERE embedding_model = ?) AS embedded,
+          (SELECT COUNT(*) FROM session WHERE is_automated = 0) AS total
+      `)
+      .get(model) as any;
+    return { embedded: Number(row.embedded), total: Number(row.total) };
   }
 
   sessionsMissingEmbedding(model: string): SessionRow[] {
@@ -1245,6 +1366,16 @@ export class SessionStore {
   /** Delete every session_embedding row whose model id is not `keepModel`. */
   deleteEmbeddingsExceptModel(keepModel: string): number {
     return this.db.prepare("DELETE FROM session_embedding WHERE embedding_model != ?").run(keepModel).changes;
+  }
+
+  /** Delete every session_embedding row — the force-refresh path. */
+  deleteAllSessionEmbeddings(): number {
+    return this.db.prepare("DELETE FROM session_embedding").run().changes;
+  }
+
+  /** Delete every turn_embedding row — the force-refresh path. */
+  deleteAllTurnEmbeddings(): number {
+    return this.db.prepare("DELETE FROM turn_embedding").run().changes;
   }
 
   /** Delete every turn_embedding row whose model id is not `keepModel`. */

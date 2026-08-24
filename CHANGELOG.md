@@ -1,6 +1,54 @@
 # Changelog
 
-## 1.36.0 — 2026-08-14
+## 1.41.0 — 2026-08-24
+
+### Codex sessions render in the conversation viewer
+
+- **Viewer routes codex rollouts to a codex parser** — `parserKindForSource` gains a `codex` kind (row source, or a `~/.codex/sessions/` path when the row is unavailable) and the viewer dispatches to the new `parseCodexRolloutAsParsed` adapter. Previously codex sessions went through the claude parser and rendered blank turn bodies.
+- **`parseCodexRolloutAsParsed`** (`src/codexIndexer.ts`): ParsedCodexSession → ParsedConversation. Tool calls come through as name-only entries (rollouts record tool names, not arguments/results); meta-only rollouts yield the viewer's zero-turn empty state; a missing file throws an explicit `rollout missing: <path>`.
+- **jsonl_path-first transcript locator** — Open/search/view commands now prefer the indexed `jsonl_path` (when it still exists on disk) over walking `~/.claude/projects` by UUID, which could never find codex (`~/.codex/sessions/**/rollout-*.jsonl`) or grok transcripts. Stale rows fall back to the walk, so claude behavior is unchanged.
+- Slice of tasks/csv-make-codex-a-first-class-source-sourcemeta-h (viewer + locator surfaces; sourceMeta consolidation, deep-metrics dispatch, and codex-binary resume preflight remain).
+
+## 1.40.0 — 2026-08-18
+
+### Background re-embed job + hash-based staleness (semantic search PR3)
+
+- **New `src/reembedJob.ts`** — consumer-driven background re-embed job under the shared `ollama/<model>@v2` tag: single-flight (concurrent kicks join the in-flight run), cancellable between 25-session chunks, 60 s probe-fail cooldown so debounced searches don't re-probe per keystroke. `buildEmbedTexts` moved here from the agent graph (both consumers share it).
+- **Hash-based stale detection** (schema v18: `session_embedding.text_hash`): every upsert stores an FNV-1a hash of the exact embed text. Rows whose stored hash no longer matches the freshly built text — topics classified *after* an early embed, new tool turns, pre-v18 NULL hashes — are re-embedded on the next graph open or job kick, even though the `@v2` tag is unchanged.
+- **Semantic search kicks the job**: a query answered over a partial corpus (`semantic over K/N`) or none at all fires the background job with a cancellable notification, then hints to rerun the search.
+- **"Re-embed sessions" command gains a force path**: *Drop stale* (old behavior — other-tag rows only) or *Drop all + re-embed*, which clears current-tag session+turn rows too (previously impossible without a recipe-rev bump) and rebuilds immediately.
+- Old-DB rebuild copy for `session_embedding` now uses an explicit column list (`SELECT *` would have broken on the new column, same class of bug as the v11 turn-table incident).
+- Fully done: tasks/csv-semantic-session-search-embed-the-query-cosi (PR1 1.37.0, PR2 1.39.0, PR3 here).
+
+## 1.39.0 — 2026-08-18
+
+### Semantic session search in the search view (PR2)
+
+- **"Semantic" toggle** in Claude · Search (default off, persisted in webview state, 300 ms debounce when on): probes Ollama, embeds the query as `search_query: <q>`, and cosine-ranks persisted `@v2` session vectors into a **Sessions (semantic)** pane (score to 2 dp, project chip, open/resume). LIKE topics/turns panes are unchanged and stay as secondary results.
+- **Exact fallback statuses**: probe fail / no vectors / embed error → LIKE only with `keyword (semantic unavailable)`; partially embedded corpus → `semantic over K/N` (new `SessionStore.sessionEmbeddingCoverage`).
+- Toggle off (or an empty query) produces the byte-identical pre-change payload and never touches Ollama — asserted by tests, incl. a paraphrase fixture where semantic finds the target and LIKE does not (`test/unit/semanticSearch.test.ts`).
+- `docs/semantic-search-smoke.md` — 5-query manual smoke template for local-Ollama verification.
+- Remaining slice (PR3): consumer-driven background re-embed job (kp: tasks/csv-semantic-session-search-embed-the-query-cosi).
+
+## 1.38.1 — 2026-08-17
+
+### Store sync: multi-window lock, corrupt-rebase recovery, merge when far ahead
+
+- **Per-repo lock** (`.git/csv-sync.lock`) so N VS Code windows (one per project) no longer run `git pull --rebase` on `~/docs` / `~/.sessions` at the same time. Stale lock (>2 min) is stolen.
+- **Corrupt rebase-merge** (dir exists, `head-name` missing) is deleted instead of `rebase --abort`, which cannot succeed in that state. Same wedge as the work-laptop `~/.sessions` / `~/docs` incidents.
+- **Merge, don't rebase**, when the clone is more than 50 commits ahead of origin. Replaying thousands of unpushed session commits is what leaves the corrupt marker dir.
+
+## 1.37.0 — 2026-08-16
+
+### Semantic search groundwork: shared v2 embed recipe + cosine ranking (PR1)
+
+- **New `src/embedText.ts`** — the single embed-text recipe for session vectors: `search_document: PROJECT/TITLE/TOPICS/TOOLS/FIRST USER` (empty sections omitted; ≤4096 chars with only FIRST USER truncated), `buildQueryEmbedText` (`search_query:` pairing), and `taggedEmbeddingModel` → `ollama/<model>@v2`. Bump `RECIPE_REV` whenever the text changes — the tag mismatch is what drives re-embeds.
+- **Agent graph embeds the enriched text** (was PROJECT+TITLE+FIRST USER only) and persists under the `@v2` tag; classified topics (≤20, freq-desc) and tool mix (≤30, freq-desc/alpha) now shape the vector space. Next graph open re-embeds under the new tag.
+- **`SessionStore.nearestSessions(query, model, limit=50, minScore=0.3)`** — brute-force in-process cosine over `session_embedding` (L2-normalize both sides, dot); mismatched-dimension rows are skipped + logged, never length-truncated. **`topToolsBySession`** aggregates `turn.tool_names_csv`; `topTopicsBySession` gains an alpha tiebreak for determinism.
+- **"Drop cached embeddings" pins the full `@v2` tag** for session rows (previously it would have deleted fresh tagged rows and kept stale untagged ones); turn embeddings keep the untagged id they're stored under.
+- Search-view Semantic toggle + Ollama query path land in the next slice (kp: tasks/csv-semantic-session-search-embed-the-query-cosi).
+
+
 
 ### Finished toasts no longer fire mid-session
 
