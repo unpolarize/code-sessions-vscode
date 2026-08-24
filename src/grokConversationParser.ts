@@ -159,17 +159,20 @@ export function parseGrokConversation(chatPath: string): ParsedGrokSession {
 }
 
 /** Which parser a session's transcript needs. Routes on the SessionRow's
- * `source`; when the row is unavailable (no store, cache miss) a transcript
- * living under ~/.grok/sessions/ still routes to the grok parser so it never
- * falls back to the claude parser's blank-body rendering. Everything else
- * stays on the claude parser (codex rollouts never reach this viewer path). */
+ * `source`; when the row is unavailable (no store, cache miss) the transcript
+ * path decides — ~/.grok/sessions/ and ~/.codex/sessions/ transcripts have
+ * line shapes the claude parser renders as blank turn bodies. claude and git
+ * stay on the claude parser (git store sessions replay through the same
+ * turnsToConversation fallback before reaching this). */
 export function parserKindForSource(
   source: string | null | undefined,
   jsonlPath?: string | null,
-): "grok" | "claude" {
+): "grok" | "codex" | "claude" {
   if (source === "grok") return "grok";
-  if (source == null && jsonlPath && /[\\/]\.grok[\\/]sessions[\\/]/.test(jsonlPath)) {
-    return "grok";
+  if (source === "codex") return "codex";
+  if (source == null && jsonlPath) {
+    if (/[\\/]\.grok[\\/]sessions[\\/]/.test(jsonlPath)) return "grok";
+    if (/[\\/]\.codex[\\/]sessions[\\/]/.test(jsonlPath)) return "codex";
   }
   return "claude";
 }

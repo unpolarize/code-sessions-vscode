@@ -33,6 +33,12 @@ import * as os from "os";
 import * as path from "path";
 import { StringDecoder } from "string_decoder";
 import { SessionStore, SessionRow, TurnRow } from "./db";
+import {
+  ConversationSummary,
+  ParsedConversation,
+  ToolCall,
+  Turn,
+} from "./conversationParser";
 
 export function codexSessionsRoot(): string {
   const home = process.env.CODEX_HOME && process.env.CODEX_HOME.trim().length > 0
@@ -130,7 +136,7 @@ function forEachLineSync(filePath: string, onLine: (line: string) => void): void
   }
 }
 
-interface CodexTurn {
+export interface CodexTurn {
   index: number;
   userText: string;
   assistantText: string;
@@ -145,7 +151,7 @@ interface CodexUsage {
   cache_read_tokens: number;
 }
 
-interface ParsedCodexSession {
+export interface ParsedCodexSession {
   sessionId: string | null;
   cwd: string | null;
   model: string | null;
@@ -523,5 +529,76 @@ export function syncCodexToStore(
     error_details,
     skipped_empty: skipped,
     elapsed_ms: Date.now() - t0,
+  };
+}
+
+/** Viewer adapter: codex rollout-*.jsonl → the same ParsedConversation the
+ * claude parser emits, so renderHtml stays parser-agnostic. Rollouts record
+ * tool *names* only — no arguments or results exist in the file — so tool
+ * calls come through as name-only entries (null input/result), never faked
+ * Claude-style detail. A meta-only rollout yields zero turns and renders as
+ * the viewer's empty state. */
+export function parseCodexRolloutAsParsed(filePath: string): ParsedConversation {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`rollout missing: ${filePath}`);
+  }
+  const c = parseCodexRollout(filePath);
+
+  const toolCountsByName: Record<string, number> = {};
+  let totalTools = 0;
+  let assistantChars = 0;
+  let lastAssistantTextMs: number | null = null;
+
+  const turns: Turn[] = c.turns.map((t) => {
+    const toolCalls: ToolCall[] = t.toolNames.map((name, j) => {
+      toolCountsByName[name] = (toolCountsByName[name] ?? 0) + 1;
+      totalTools += 1;
+      return {
+        id: `codex-${t.index}-${j}`,
+        name,
+        input: null,
+        startMs: t.startedAt ?? 0,
+        endMs: null,
+        durationMs: null,
+        resultText: null,
+        resultIsError: false,
+        isSubagent: false,
+      };
+    });
+    assistantChars += t.assistantText.length;
+    if (t.assistantText.length > 0) {
+      lastAssistantTextMs = t.endedAt ?? t.startedAt ?? lastAssistantTextMs;
+    }
+    return {
+      index: t.index,
+      userText: t.userText,
+      userTimestampMs: t.startedAt ?? 0,
+      assistantText: t.assistantText,
+      assistantStartMs: t.startedAt,
+      turnEndMs: t.endedAt,
+      toolCalls,
+    };
+  });
+
+  const summary: ConversationSummary = {
+    totalTurns: turns.length,
+    totalTools,
+    totalSubagents: 0,
+    totalAssistantTextChars: assistantChars,
+    totalTurnDurationMs: 0,
+    totalToolDurationMs: 0,
+    userThinkingMsList: [],
+    toolCountsByName,
+  };
+
+  return {
+    sessionId: c.sessionId ?? "",
+    // Title comes from the caller (session row); rollouts carry no title field.
+    title: "",
+    turns,
+    summary,
+    startMs: c.startedAt,
+    endMs: c.endedAt,
+    lastAssistantTextMs,
   };
 }

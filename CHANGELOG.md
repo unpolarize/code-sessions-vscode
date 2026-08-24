@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.41.0 — 2026-08-24
+
+### Codex sessions render in the conversation viewer
+
+- **Viewer routes codex rollouts to a codex parser** — `parserKindForSource` gains a `codex` kind (row source, or a `~/.codex/sessions/` path when the row is unavailable) and the viewer dispatches to the new `parseCodexRolloutAsParsed` adapter. Previously codex sessions went through the claude parser and rendered blank turn bodies.
+- **`parseCodexRolloutAsParsed`** (`src/codexIndexer.ts`): ParsedCodexSession → ParsedConversation. Tool calls come through as name-only entries (rollouts record tool names, not arguments/results); meta-only rollouts yield the viewer's zero-turn empty state; a missing file throws an explicit `rollout missing: <path>`.
+- **jsonl_path-first transcript locator** — Open/search/view commands now prefer the indexed `jsonl_path` (when it still exists on disk) over walking `~/.claude/projects` by UUID, which could never find codex (`~/.codex/sessions/**/rollout-*.jsonl`) or grok transcripts. Stale rows fall back to the walk, so claude behavior is unchanged.
+- Slice of tasks/csv-make-codex-a-first-class-source-sourcemeta-h (viewer + locator surfaces; sourceMeta consolidation, deep-metrics dispatch, and codex-binary resume preflight remain).
+
 ## 1.40.0 — 2026-08-18
 
 ### Background re-embed job + hash-based staleness (semantic search PR3)

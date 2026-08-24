@@ -9,6 +9,7 @@ import * as vscode from "vscode";
 import { preferredEditorColumn } from "./editorColumn";
 import { ParsedConversation, parseConversation, ToolCall, Turn } from "./conversationParser";
 import { parseGrokConversationAsParsed, parserKindForSource } from "./grokConversationParser";
+import { parseCodexRolloutAsParsed } from "./codexIndexer";
 import { SessionStore } from "./db";
 import { classifySession } from "./topicClassifier";
 import { locateStoreTurns, turnsToConversation } from "./storeTranscript";
@@ -352,15 +353,18 @@ export function openConversationViewer(
   );
   const render = () => {
     try {
-      // Route to the source-appropriate parser: grok chat_history.jsonl has a
-      // different line shape (top-level content + tool_calls) and renders as
-      // blank turn bodies through the claude parser.
+      // Route to the source-appropriate parser: grok chat_history.jsonl and
+      // codex rollout-*.jsonl have different line shapes and render as blank
+      // turn bodies through the claude parser.
       const row = store ? store.getById(sessionId) : null;
+      const kind = parserKindForSource(row?.source, jsonlPath);
       const parsed = storeRef
         ? turnsToConversation(storeRef, sessionId, title)
-        : parserKindForSource(row?.source, jsonlPath) === "grok"
+        : kind === "grok"
           ? parseGrokConversationAsParsed(jsonlPath as string)
-          : parseConversation(jsonlPath as string);
+          : kind === "codex"
+            ? parseCodexRolloutAsParsed(jsonlPath as string)
+            : parseConversation(jsonlPath as string);
       if (!parsed.title) parsed.title = title;
       if (!parsed.sessionId) parsed.sessionId = sessionId;
       const topics = store && !storeRef ? store.topicsForSession(parsed.sessionId) : undefined;

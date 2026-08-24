@@ -2419,7 +2419,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
       const s = store;
       openSearchView(ctx, s, async (sessionId, title) => {
-        const jsonl = await locateSessionJsonl(sessionId);
+        const jsonl = await resolveTranscriptPath(s, sessionId);
         if (!jsonl && !locateStoreTurns(sessionId)) {
           vscode.window.showWarningMessage(`Transcript not found for ${sessionId}`);
           return;
@@ -2649,7 +2649,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("codeSessions.openTranscript", async (item: SessionItem) => {
-      const jsonl = await locateSessionJsonl(item.row.session);
+      const jsonl = await resolveTranscriptPath(store, item.row.session);
       if (!jsonl) {
         vscode.window.showWarningMessage(`Transcript not found for session ${item.row.session}`);
         return;
@@ -2688,7 +2688,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       },
     }),
     vscode.commands.registerCommand("codeSessions.viewConversation", async (item: SessionItem) => {
-      const jsonl = await locateSessionJsonl(item.row.session);
+      const jsonl = await resolveTranscriptPath(store, item.row.session);
       // No native transcript here → the cross-device fallback (~/.sessions turns)
       // is resolved inside openConversationViewer; only bail if neither exists.
       if (!jsonl && !locateStoreTurns(item.row.session)) {
@@ -3502,6 +3502,19 @@ function writeAtomic(target: string, contents: string): { ok: true } | { ok: fal
     try { fs.unlinkSync(tmp); } catch { /* best-effort */ }
     return { ok: false, error: `Write failed: ${e.message}` };
   }
+}
+
+/** jsonl_path-first transcript locator: grok/codex transcripts live outside
+ * ~/.claude/projects, so the UUID walk below can never find them — the
+ * indexed path is authoritative when it still exists. Falls back to the walk
+ * for stale rows (claude transcript moved) or when the cache is disabled. */
+async function resolveTranscriptPath(
+  s: SessionStore | null,
+  sessionId: string,
+): Promise<string | null> {
+  const indexed = s?.getById(sessionId)?.jsonl_path;
+  if (indexed && fs.existsSync(indexed)) return indexed;
+  return locateSessionJsonl(sessionId);
 }
 
 async function locateSessionJsonl(sessionId: string): Promise<string | null> {

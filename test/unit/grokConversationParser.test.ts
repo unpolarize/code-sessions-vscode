@@ -90,10 +90,11 @@ describe("parseGrokConversationAsParsed (viewer adapter)", () => {
 });
 
 describe("parserKindForSource (viewer routing)", () => {
-  it("routes grok to the grok parser and everything else to claude", () => {
+  it("routes grok and codex to their parsers and everything else to claude", () => {
     expect(parserKindForSource("grok")).toBe("grok");
     expect(parserKindForSource("claude")).toBe("claude");
-    expect(parserKindForSource("codex")).toBe("claude");
+    expect(parserKindForSource("codex")).toBe("codex");
+    expect(parserKindForSource("git")).toBe("claude");
     expect(parserKindForSource(null)).toBe("claude");
     expect(parserKindForSource(undefined)).toBe("claude");
   });
