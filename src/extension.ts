@@ -3512,8 +3512,12 @@ async function resolveTranscriptPath(
   s: SessionStore | null,
   sessionId: string,
 ): Promise<string | null> {
-  const indexed = s?.getById(sessionId)?.jsonl_path;
-  if (indexed && fs.existsSync(indexed)) return indexed;
+  const row = s?.getById(sessionId);
+  // git rows index session.json (metadata, not a transcript) — those must
+  // keep resolving to null so the viewer's ~/.sessions turns fallback kicks in.
+  if (row && row.source !== "git" && row.jsonl_path && fs.existsSync(row.jsonl_path)) {
+    return row.jsonl_path;
+  }
   return locateSessionJsonl(sessionId);
 }
 
