@@ -1,5 +1,88 @@
 # Changelog
 
+## 1.44.8 — 2026-08-26
+
+### Board no longer dies on `blockedSet` during first snapshot
+
+- VS Code delivers a queued `snapshot` as soon as the webview script subscribes to `message`, which is *before* later `const`/`let` bindings ran. `renderBoard` then threw `Cannot access 'blockedSet' before initialization` (same class of TDZ for `renderError`).
+- Hoist `blockedSet`, `addDays`, board-filter state, and `renderError` above the listener. Test boots the script in a mini-DOM and injects a snapshot during `addEventListener('message')` — asserts six task lanes and no overlay error.
+
+## 1.44.7 — 2026-08-26
+
+### Sessions tree shows conversations, not newest jsonl mtimes
+
+- `listRecent(..., { requireReply: true })` ranks by `last_assistant_text_at` and drops panel-opens with no assistant reply. Empty/night-loop file mtimes were occupying the default 100-row window so the tree looked like “Today only.”
+- Sidebar + Fleet provider both use `requireReply`. Tests: crowding empties cannot hide a week-old chat; git-store rows keep `source=git` + `extras.host` in a real SQLite store.
+
+## 1.44.6 — 2026-08-25
+
+### Webview fills the editor; overlay no longer spins forever
+
+- `html,body{position:fixed;inset:0}` so `#main` gets a real height inside the VS Code iframe (100% / 100vh were collapsing to the top bar).
+- Overlay is back to `#main` (not covering the tab bar). If lanes still don't exist after one retry, show Retry instead of spinning.
+
+## 1.44.5 — 2026-08-25
+
+### Board no longer a blank pane under the top bar
+
+- Chrome (tabs, + New, sync pill) is static HTML; lanes live in `#main`. Every child of `#main` is `position:absolute`, so if `body` is only as tall as the top bar (`height:100vh` in an unsized iframe), `#main` is **0px** and the board/overlay paint off-screen. `html,body` now fill the webview (`height:100%`); `#main` is `flex:1 1 0%`.
+- Overlay is `position:fixed` and stays up until `#board .lanes .col` exists. A host `ready` pump can no longer hide a render crash behind a white pane.
+
+## 1.44.4 — 2026-08-25
+
+### Dashboard script is no longer inside `document.write`
+
+- Root cause of *Uncaught SyntaxError: Failed to execute 'write' on 'Document': Invalid or unexpected token @632*: the webview JS lived in a TypeScript template literal. `'\n'` in that template became a real newline inside a JS string (`action(s).\n` + `join('\n')`), so Chromium rejected the HTML `document.write`.
+- Move the dashboard script to `media/planning-dashboard.js` and load it with `<script src>`. The HTML payload is short chrome + CSS; JS is fetched separately and cannot break `document.write`.
+- Unit test `vm.Script`-parses the media file so a syntax error cannot ship.
+
+## 1.44.3 — 2026-08-25
+
+### Dashboard `document.write` SyntaxError @632
+
+- A `\n` inside the SCRIPT template became a real newline in the webview JS (`join('\n')` in fleet apply results). `document.write` then failed with *Invalid or unexpected token*. Join with `<br>` instead. 1.44.3 is not enough if the window was not reloaded — the JS is now out of the HTML string entirely.
+
+## 1.44.2 — 2026-08-25
+
+### Export no longer sits on "waiting for kp export…" forever
+
+- Overlay text staying on the HTML default meant the webview script never ran (or never pinged `ready`), so status never arrived. Boot script + `try/catch` around the dashboard JS now surface parse/runtime errors on the card.
+- Host **pumps load status every 1s** without waiting for `ready`, and kicks export as soon as the panel opens.
+- Hard watchdog kills a hung `kp` child (execFile `timeout` is not trusted in the extension host). Export budget 45s (CLI itself is ~0.4s on this store). Overlay shows the exact `node`/`cli` command.
+
+## 1.44.1 — 2026-08-25
+
+### Dashboard no longer sits blank while `kp export` runs
+
+- Opening Planning painted an empty editor until export finished, and CSS hid the board chrome (`body:not([data-view=board])`) until the first snapshot. Overlay now shows **phase, elapsed time, CLI queue depth, and errors**, with Retry. Status bar: `Planning: export…`.
+- `kp export` timeout raised to 180s for large stores. Failed first load is an error card, not a white void; refresh keeps the last-good board.
+
+## 1.44.0 — 2026-08-25
+
+### Fleet chat + denser board
+
+- **Ask this view** — expandable chat dock on the Fleet tab, scoped to the current filter (today / live / host / hide-auto / unlinked / search). Chips: tag automated, missing tasks, link projects, summarize. The agent returns prose **and** structured actions (tag / create-task / create-idea / link). Apply one or all.
+- **Hide auto** toggle (on by default) — cron / night-loop / fleet / headless sessions drop out of the board; the chat still sees `automated: true` on rows when you unhide them to tag.
+- **Layout** — host columns in a responsive grid, one-line rows (time · title · badges). Actions appear on hover/select instead of six always-on buttons. Default window is **Today**.
+
+## 1.43.0 — 2026-08-25
+
+### Session fleet board (laptops × sessions)
+
+- **Planning → Fleet** (command `Planning: Open session fleet` / `codeSessions.openFleet`): kanban-style board grouped by laptop, with live / today / week / unlinked / host filters. Other laptops appear from the `~/.sessions` git store after store-sync. Shortcut: **⌃⇧⌘F** (Mac) / **Ctrl+Alt+Shift+F** (Win/Linux).
+- **Live status ignores git-pull mtime.** A `git pull` of `~/.sessions` rewrites file mtime and previously made idle sessions look like they started seconds ago. Live = native JSONL mtime (this machine, 2 min) or envelope/turn content timestamps (15 min, other hosts). Git-store file mtime is never used.
+- **Explain / Ask / Apply labels / → idea / → task** on each card. Explain runs `claude -p` (subscription CLI) to derive intent/topic/tags (cs-label-session JSON); Apply writes `kp session-label`. Capture creates a linked KP idea or task.
+- Cards still Open / Resume / Link to a planning item.
+
+## 1.42.0 — 2026-08-25
+
+### Filter automated sessions + hard-delete
+
+- **Broader automation predicate** (`src/automation.ts`): hides not only the DB `is_automated` flag but night-loop / cron / fleet prompt signatures, extra entrypoints (`routine`, `headless`, …), git-store `extras.labels`, and subagent/workflow children. Code Build `sdk-cli` sessions stay visible unless the first prompt matches a suite-automation pattern. Settings: `codeSessions.automation.titlePatterns` / `extraEntrypoints` / `labels`.
+- **Easy toggle**: title-bar watch/eye icon, Filter picker Automation section, and a clickable “N automated/cron sessions hidden” tree tip. Still defaults to hidden (`codeSessions.showAutomated: false`).
+- **Delete session…** context-menu command: modal confirm, 60s idle guard (same as rename), removes native JSONL (and sibling subagent dir) / Grok session dir / Codex rollout / `~/.sessions` git dir (`git rm` + commit under the StoreSync lock so the next pull doesn't restore it), then `DELETE FROM session` (cascades turns, embeddings, star, hide).
+- Insights dashboard and agent graph use the same predicate so night jobs don't inflate KPIs or the scatter.
+
 ## 1.41.0 — 2026-08-24
 
 ### Codex sessions render in the conversation viewer

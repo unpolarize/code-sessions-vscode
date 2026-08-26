@@ -45,11 +45,13 @@ export class KpClient {
   }
 
   /** Enqueue one CLI call. `input` is piped to stdin (kp edit --body -). */
-  run(args: string[], input?: string): Promise<KpResult> {
+  run(args: string[], input?: string, timeoutMs?: number): Promise<KpResult> {
     if (this.disposed) return Promise.resolve({ ok: false, stdout: "", stderr: "kp client disposed" });
     this.depth++;
     if (this.depth > 1) this.opts.log?.(`[planning] kp queue depth=${this.depth} (${args[0]})`);
-    const job = this.queue.then(() => (this.disposed ? { ok: false, stdout: "", stderr: "kp client disposed" } : this.exec(args, input)));
+    const job = this.queue.then(() =>
+      this.disposed ? { ok: false, stdout: "", stderr: "kp client disposed" } : this.exec(args, input, timeoutMs),
+    );
     // the chain must survive a failed job; errors surface via the KpResult
     this.queue = job.catch(() => {}).then(() => {
       this.depth--;
@@ -57,7 +59,7 @@ export class KpClient {
     return job;
   }
 
-  private exec(args: string[], input?: string): Promise<KpResult> {
+  private exec(args: string[], input?: string, timeoutMs?: number): Promise<KpResult> {
     return new Promise<KpResult>((resolve) => {
       let inv: KpInvocation;
       try {
@@ -66,14 +68,28 @@ export class KpClient {
         resolve({ ok: false, stdout: "", stderr: `kp resolve failed: ${(e as Error).message}` });
         return;
       }
+      const ms = timeoutMs ?? this.opts.timeoutMs ?? 60_000;
+      let settled = false;
+      const settle = (r: KpResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        if (this.current === child) this.current = undefined;
+        resolve(r);
+      };
       const ef = this.opts.execFileImpl ?? execFile;
       const child = ef(
         inv.node,
         [inv.cli, ...args],
-        { encoding: "utf8", env: inv.env, maxBuffer: MAX_BUFFER, timeout: this.opts.timeoutMs ?? 60_000, killSignal: "SIGKILL" },
+        {
+          encoding: "utf8",
+          env: inv.env,
+          maxBuffer: MAX_BUFFER,
+          timeout: ms,
+          killSignal: "SIGKILL",
+        },
         (err, stdout, stderr) => {
-          if (this.current === child) this.current = undefined;
-          resolve({
+          settle({
             ok: !err,
             stdout: typeof stdout === "string" ? stdout : String(stdout ?? ""),
             stderr: (typeof stderr === "string" ? stderr : String(stderr ?? "")) || (err ? err.message : ""),
@@ -81,6 +97,18 @@ export class KpClient {
         },
       );
       this.current = child;
+      const watchdog = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* already gone */
+        }
+        settle({
+          ok: false,
+          stdout: "",
+          stderr: `kp ${args[0] ?? "?"} timed out after ${ms}ms (${inv.node} ${inv.cli})`,
+        });
+      }, ms + 250);
       if (input !== undefined && child.stdin) {
         // execFile has no spawnSync-style `input`: write + end explicitly, and
         // swallow EPIPE if the child exits before reading (error still lands

@@ -10,6 +10,8 @@
 import * as vscode from "vscode";
 
 export interface DashboardDeps {
+  /** extension install root — used to load media/planning-dashboard.js into the webview */
+  extensionUri: vscode.Uri;
   getSnapshot: () => unknown | null;
   reload: () => Promise<boolean>;
   onChange: vscode.Event<void>;
@@ -24,6 +26,9 @@ export interface DashboardDeps {
   getSyncStatus?: () => unknown;
   /** subscribe to store-sync status changes (returns a disposable) */
   onSyncStatus?: (cb: (s: unknown) => void) => vscode.Disposable;
+  /** kp export / parse progress for the load overlay */
+  getLoadStatus?: () => unknown;
+  onLoadStatus?: (cb: (s: unknown) => void) => vscode.Disposable;
 }
 
 function nonce(): string {
@@ -54,9 +59,11 @@ export class DashboardPanel {
   }
 
   private constructor(private deps: DashboardDeps, private initialView?: string, private initialItem?: string) {
+    const mediaRoot = vscode.Uri.joinPath(deps.extensionUri, "media");
     this.panel = vscode.window.createWebviewPanel("codePlanningDashboard", "Planning Dashboard", vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
+      localResourceRoots: [mediaRoot],
     });
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     this.panel.webview.onDidReceiveMessage((m) => void this.onMessage(m), null, this.disposables);
@@ -64,12 +71,22 @@ export class DashboardPanel {
     // Store-sync status → header indicator; arm aggressive polling when the panel
     // has focus (a pull that advances HEAD reloads the snapshot via onChange).
     if (this.deps.onSyncStatus) this.disposables.push(this.deps.onSyncStatus((s) => this.post({ type: "syncStatus", data: s })));
+    if (this.deps.onLoadStatus) this.disposables.push(this.deps.onLoadStatus((s) => this.post({ type: "loadStatus", data: s })));
     this.disposables.push(
       this.panel.onDidChangeViewState((e) => {
         if (e.webviewPanel.active) this.deps.noteActivity?.();
       }),
     );
     this.panel.webview.html = this.html();
+    // Don't wait for the webview `ready` ping — if the big script fails to
+    // parse, we'd otherwise sit on the HTML default forever. Pump status
+    // and kick export immediately.
+    this.post({ type: "loadStatus", data: this.deps.getLoadStatus?.() ?? { phase: "idle", detail: "webview opened" } });
+    if (!this.deps.getSnapshot()) void this.deps.reload();
+    const pump = setInterval(() => {
+      this.post({ type: "loadStatus", data: this.deps.getLoadStatus?.() });
+    }, 1000);
+    this.disposables.push({ dispose: () => clearInterval(pump) });
   }
 
   private pushSnapshot(): void {
@@ -79,6 +96,7 @@ export class DashboardPanel {
   private async onMessage(m: { type: string; [k: string]: unknown }): Promise<void> {
     switch (m.type) {
       case "ready":
+        if (this.deps.getLoadStatus) this.post({ type: "loadStatus", data: this.deps.getLoadStatus() });
         this.pushSnapshot();
         if (this.deps.getSyncStatus) this.post({ type: "syncStatus", data: this.deps.getSyncStatus() });
         this.deps.noteActivity?.();
@@ -161,7 +179,14 @@ export class DashboardPanel {
 
   private html(): string {
     const n = nonce();
-    const csp = `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${n}'; img-src data:;`;
+    const cs = this.panel.webview.cspSource;
+    const jsUri = this.panel.webview
+      .asWebviewUri(vscode.Uri.joinPath(this.deps.extensionUri, "media", "planning-dashboard.js"))
+      .toString();
+    // script-src must allow the vscode-webview: origin so <script src> loads.
+    // The dashboard JS is an external file — never interpolate it through a
+    // TS template (that turns '\n' into a real newline and document.write throws).
+    const csp = `default-src 'none'; style-src 'unsafe-inline' ${cs}; script-src 'nonce-${n}' ${cs}; img-src data:;`;
     return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>${STYLE}</style></head>
@@ -173,7 +198,7 @@ export class DashboardPanel {
     <button data-view="inbox">Inbox</button>
     <button data-view="autonomous">🤖 Auto</button>
     <button data-view="projects">Projects</button>
-    <button data-view="sessions">Sessions</button>
+    <button data-view="sessions">Fleet</button>
     <button data-view="social">✨ Social</button>
     <button data-view="calendar">Calendar</button>
     <button data-view="graph">Graph</button>
@@ -229,6 +254,15 @@ export class DashboardPanel {
   <svg id="graph" class="view hidden"></svg>
   <div id="canvas" class="view hidden"></div>
   <div id="gfilters" class="hidden"></div>
+  <div id="loadOverlay">
+    <div class="loadcard">
+      <div class="loadspin" id="loadSpin"></div>
+      <div id="loadTitle">Loading planning store</div>
+      <div id="loadDetail">waiting for kp export…</div>
+      <div id="loadTime"></div>
+      <button id="loadRetry" class="ghost" style="display:none">Retry export</button>
+    </div>
+  </div>
 </div>
 <div id="drawer" class="hidden"><div id="drawerInner"></div></div>
 <div id="backdrop" class="hidden"></div>
@@ -244,7 +278,16 @@ export class DashboardPanel {
     </div>
   </div>
 </div>
-<script nonce="${n}">${SCRIPT}</script>
+<script nonce="${n}">
+document.body.dataset.view = document.body.dataset.view || 'board';
+window.addEventListener('error', function (ev) {
+  var d = document.getElementById('loadDetail');
+  var t = document.getElementById('loadTitle');
+  if (t) t.textContent = 'Dashboard script error';
+  if (d) d.textContent = String(ev.message || ev.error || 'unknown') + (ev.lineno ? ' @' + ev.lineno : '');
+});
+</script>
+<script nonce="${n}" src="${jsUri}"></script>
 </body></html>`;
   }
 }
@@ -253,7 +296,8 @@ export class DashboardPanel {
 const STYLE = `
 :root{ --gap:10px; }
 *{box-sizing:border-box}
-body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background);height:100vh;overflow:hidden;display:flex;flex-direction:column}
+html,body{position:fixed;inset:0;width:100%;height:100%;margin:0}
+body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background);overflow:hidden;display:flex;flex-direction:column}
 /* Top bar must wrap when the editor group is minimized/narrow so view tabs
    (Sessions, Projects, …) never fall off-screen past the right edge. */
 #topbar{display:flex;align-items:center;gap:8px 10px;padding:8px 10px;border-bottom:1px solid var(--vscode-widget-border);flex:0 0 auto;flex-wrap:wrap;row-gap:6px;min-width:0}
@@ -288,6 +332,7 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 /* Scrollable content views: fill #main (absolute inset:0) and scroll inside.
    Without overflow + min-height chain, minimized panes clip sessions/lists. */
 #autonomous,#sessions,#social,#inbox,#projects,#calendar{padding:16px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;min-height:0}
+#sessions.fleet-shell{padding:0;overflow:hidden;display:flex;flex-direction:column}
 #autonomous{max-width:900px}
 .autorow{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px}
 .autostat{display:flex;flex-direction:column;gap:2px}
@@ -303,9 +348,9 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .ph.ide{background:#3b6ea5;color:#fff}.ph.imp{background:#4e8f6e;color:#fff}.ph.nxt{background:#7a6ea0;color:#fff}.ph.rep{background:#8a6d3b;color:#fff}
 .usagebar{height:8px;border-radius:5px;background:var(--vscode-widget-border);overflow:hidden;margin:4px 0 10px;max-width:360px}
 .usagefill{height:100%;background:var(--vscode-progressBar-background,#3b6ea5)}
-.sessbar{display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.sessbar{display:flex;gap:8px;align-items:center;margin:0;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid var(--vscode-widget-border);background:var(--vscode-editor-background);flex:none}
 .sesssearch{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:4px 9px;width:min(220px,100%);min-width:120px;flex:1 1 140px}
-.sesscount{font-size:11px;opacity:.6;margin-bottom:10px}
+.sesscount{font-size:11px;opacity:.7;padding:4px 12px 0;flex:none}
 .sesslist{display:flex;flex-direction:column;gap:8px;max-width:820px;min-width:0;width:100%}
 .sesscard{background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px 12px;cursor:pointer;min-width:0}
 .sesscard:hover{border-color:var(--vscode-focusBorder)}
@@ -314,6 +359,49 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 .sesscard .cm{opacity:.6;font-size:11px;flex:none}
 .sesscard .sm{display:flex;gap:8px;opacity:.7;font-size:11px;margin-top:5px;flex-wrap:wrap}
 .sesscard .sacts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+#fleetBoard{flex:1 1 auto;min-height:0;overflow:auto;padding:8px 10px 10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:10px;align-content:start}
+.fleetcol{background:color-mix(in srgb, var(--vscode-editorWidget-background) 88%, transparent);border:1px solid var(--vscode-widget-border);border-radius:10px;padding:6px;min-width:0;display:flex;flex-direction:column;min-height:0}
+.fleethost{display:flex;align-items:center;gap:8px;font-weight:700;font-size:12px;padding:4px 8px 6px;letter-spacing:.2px;position:sticky;top:0;background:var(--vscode-editorWidget-background);z-index:1}
+.fleet-row{display:grid;grid-template-columns:10px 52px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 8px;border-radius:7px;cursor:pointer;min-width:0}
+.fleet-row:hover{background:var(--vscode-list-hoverBackground)}
+.fleet-row.on{background:var(--vscode-list-activeSelectionBackground);color:var(--vscode-list-activeSelectionForeground)}
+.fleet-row.auto{opacity:.72}
+.fleet-row.live{box-shadow:inset 2px 0 0 #4ec9b0}
+.fleet-row .when{font-variant-numeric:tabular-nums;opacity:.55;font-size:11px}
+.fleet-row .ttl{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.fleet-row .meta{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;opacity:.75;font-size:10px}
+.fleet-row .acts{display:none;grid-column:1/-1;gap:6px;padding:2px 0 4px}
+.fleet-row:hover .acts,.fleet-row.on .acts{display:flex;flex-wrap:wrap}
+.badge.auto{background:#6b5b3a;color:#f3e6c4}
+.pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ec9b0;box-shadow:0 0 0 0 rgba(78,201,176,.7);animation:pulse 1.6s infinite}
+.pulse.remote{background:#dcdcaa;box-shadow:0 0 0 0 rgba(220,220,170,.7)}
+.pulse.open{background:#888;box-shadow:none;animation:none}
+.pulse.ended{background:#555;box-shadow:none;animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(78,201,176,.55)}70%{box-shadow:0 0 0 8px rgba(78,201,176,0)}100%{box-shadow:0 0 0 0 rgba(78,201,176,0)}}
+.sesscard.live{border-color:#4ec9b0}
+.sessdrawer{margin:4px 8px 8px;border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px;background:var(--vscode-editor-background)}
+.sessdrawer textarea{width:100%;min-height:56px;resize:vertical;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:8px;font-family:var(--vscode-font-family);font-size:12px}
+.sessdrawer .ans{white-space:pre-wrap;font-size:12px;line-height:1.45;margin-top:8px}
+#fleetChat{flex:none;border-top:1px solid var(--vscode-widget-border);background:var(--vscode-editorWidget-background);display:flex;flex-direction:column;min-height:36px;max-height:46%}
+#fleetChat.open{min-height:220px}
+.fc-bar{display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:12px;user-select:none}
+.fc-bar:hover{background:var(--vscode-toolbar-hoverBackground)}
+.fc-bar .hint{opacity:.6;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fc-body{display:none;flex-direction:column;min-height:0;flex:1;border-top:1px solid var(--vscode-widget-border)}
+#fleetChat.open .fc-body{display:flex}
+.fc-chips{display:flex;gap:6px;flex-wrap:wrap;padding:8px 12px 0}
+.fc-chip{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--vscode-widget-border);background:transparent;color:var(--vscode-foreground);cursor:pointer}
+.fc-chip:hover{border-color:var(--vscode-focusBorder)}
+.fc-log{flex:1;overflow:auto;padding:8px 12px;font-size:12px;line-height:1.45}
+.fc-msg{margin:0 0 8px;padding:8px 10px;border-radius:8px;max-width:95%}
+.fc-msg.user{background:var(--vscode-button-background);color:var(--vscode-button-foreground);margin-left:auto}
+.fc-msg.bot{background:var(--vscode-editor-background);border:1px solid var(--vscode-widget-border)}
+.fc-msg .md{white-space:pre-wrap}
+.fc-suggest{padding:0 12px 8px;display:flex;flex-direction:column;gap:6px;max-height:140px;overflow:auto}
+.fc-act{display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 8px;border:1px solid var(--vscode-widget-border);border-radius:7px}
+.fc-act .lab{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fc-input{display:flex;gap:8px;padding:8px 12px 10px;align-items:flex-end}
+.fc-input textarea{flex:1;min-height:40px;max-height:90px;resize:vertical;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:7px;padding:7px 9px;font-family:var(--vscode-font-family);font-size:12px}
 .srefs{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;min-width:0}
 .socialdrop{border:1px dashed var(--vscode-widget-border);border-radius:8px;padding:10px;text-align:center;font-size:12px;opacity:.6;margin-bottom:12px}
 .socialdrop.over{border-color:var(--vscode-focusBorder);background:var(--vscode-list-hoverBackground);opacity:1}
@@ -331,7 +419,17 @@ body{margin:0;font-family:var(--vscode-font-family);color:var(--vscode-foregroun
 /* min-height:0 is required so a flex child can shrink when the VS Code
    editor group is minimized — otherwise content (Sessions list, etc.) is
    clipped by overflow:hidden with no inner scroll. */
-#main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
+#main{flex:1 1 0%;min-height:0;position:relative;overflow:hidden}
+#loadOverlay{position:absolute;inset:0;z-index:8;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb, var(--vscode-editor-background) 88%, transparent);backdrop-filter:blur(2px)}
+#loadOverlay.hidden{display:none!important}
+#loadOverlay.err .loadspin{display:none}
+.loadcard{min-width:min(420px,86vw);max-width:560px;padding:22px 24px;border:1px solid var(--vscode-widget-border);border-radius:12px;background:var(--vscode-editorWidget-background);box-shadow:0 12px 40px rgba(0,0,0,.25)}
+#loadTitle{font-weight:700;font-size:14px;margin:8px 0 4px}
+#loadDetail{font-size:12px;opacity:.8;line-height:1.45;white-space:pre-wrap}
+#loadTime{font-size:11px;opacity:.55;margin-top:8px;font-variant-numeric:tabular-nums}
+#loadRetry{margin-top:12px}
+.loadspin{width:22px;height:22px;border-radius:50%;border:2px solid var(--vscode-widget-border);border-top-color:var(--vscode-progressBar-background,#4ec9b0);animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .view{position:absolute;inset:0;min-width:0;min-height:0}
 .hidden{display:none!important}
 /* Board-only chrome: hide when not on the board so Sessions / Projects /
@@ -342,7 +440,7 @@ body:not([data-view="board"]) #sortBy,
 body:not([data-view="board"]) #addLaneBtn{display:none!important}
 body:not([data-view="calendar"]) #calModeSeg{display:none!important}
 /* board */
-#board{display:flex;flex-direction:column;gap:10px;padding:14px;min-height:0;overflow:hidden}
+#board{display:flex;flex-direction:column;gap:10px;padding:14px;min-height:0;height:100%;overflow:hidden}
 .boardfilter{display:flex;gap:8px;align-items:center;font-size:12px;flex:0 0 auto;flex-wrap:wrap}
 .boardfilter select,.boardfilter input{background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:2px 6px}
 .lanes{display:flex;gap:var(--gap);overflow-x:auto;align-items:flex-start;flex:1;min-height:0}
@@ -484,855 +582,5 @@ select{background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-
 `;
 
 // ---------------------------------------------------------------- script -----
-const SCRIPT = `
-const vscode = acquireVsCodeApi();
-const LANES = {
-  task: ['inbox','today','in_progress','done','deferred','outdated'],
-  idea: ['capture','refine','accepted','parked','done'],
-  plan: ['plan','prototype','implement','validate','done','parked'],
-  thought: ['new','kept','converted','archived'],
-};
-const TYPE_COLOR = {idea:'#d7ba7d',plan:'#4ec9b0',task:'#569cd6',project:'#c586c0',catalog_entry:'#c586c0',domain:'#808080',daily_plan:'#dcdcaa',insight:'#4fc1ff',reflection:'#9cdcfe',knowledge:'#ce9178',session:'#608b4e',thought:'#e2c08d'};
-const LANE_COLOR = {inbox:'#888',today:'#569cd6',in_progress:'#dcdcaa',done:'#4ec9b0',deferred:'#a08',outdated:'#d16969',capture:'#d7ba7d',refine:'#dcdcaa',accepted:'#4ec9b0',parked:'#888',plan:'#569cd6',prototype:'#c586c0',implement:'#dcdcaa',validate:'#4fc1ff',new:'#d7ba7d',kept:'#4ec9b0',converted:'#569cd6',archived:'#666'};
-let S = null, view='board', laneSet='task';
-const _st=(vscode.getState&&vscode.getState())||{};
-let groupBy = _st.groupBy || 'status';
-let customLanes = _st.customLanes || [];
-let doneWindow = _st.doneWindow || 'week'; // hide done items older than: yesterday|week|month|all
-let sortBy = _st.sortBy || 'priority';
-function saveState(){ try{ vscode.setState({groupBy, customLanes, doneWindow, sortBy}); }catch(e){} }
-const BOARD_TYPES=['task','idea','plan','thought'];
-const $=s=>document.querySelector(s), el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
-const esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+// Webview JS lives in media/planning-dashboard.js and is loaded via <script src>.
 
-window.addEventListener('message',e=>{const m=e.data;
-  if(m.type==='snapshot'){S=m.data;render();}
-  else if(m.type==='detail'){renderDrawer(m.data);}
-  else if(m.type==='setView'){view=m.view;syncSeg();render();}
-  else if(m.type==='laneAdded'){ if(groupBy!=='lane'){groupBy='lane';const gb=$('#groupBy');if(gb)gb.value='lane';} if(m.name&&!customLanes.includes(m.name))customLanes.push(m.name); saveState(); renderBoard(); }
-  else if(m.type==='openItem'){ view='board'; syncSeg(); render(); if(m.id)openDetail(m.id); }
-  else if(m.type==='syncStatus'){ renderSyncPill(m.data); }
-  else if(m.type==='sessions'){ SESS=m.data||[]; if(view==='sessions')renderSessions(); }
-});
-
-// ── store-sync status pill + activity reporting ──────────────────────────────
-let syncState=null;
-function agoStr(t){ if(!t)return 'never'; const s=Math.round((Date.now()-t)/1000);
-  return s<60?s+'s ago':s<3600?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago'; }
-function renderSyncPill(s){ if(s)syncState=s; s=syncState; const p=$('#syncPill'); if(!p||!s)return;
-  const cls=s.status==='syncing'?'syncing':(s.status==='conflict'||s.status==='error'||s.status==='offline'||s.status==='push-failed')?'warn':'ok';
-  p.className='syncpill '+cls+(s.active?' active':'');
-  const icon=s.status==='syncing'?'⟳':(cls==='warn'?'⚠':'☁');
-  p.textContent=icon+' '+(s.status==='syncing'?'syncing…':agoStr(s.lastSyncAt))+(s.active?' ⚡':'');
-  p.title='Store sync — '+s.status+(s.detail?': '+s.detail:'')+
-    '\\nLast: '+(s.lastSyncAt?new Date(s.lastSyncAt).toLocaleTimeString():'never')+
-    (s.lastChanged&&s.lastChanged.length?'\\nUpdated: '+s.lastChanged.join(', '):'')+
-    (s.active?'\\n⚡ active — polling aggressively':'')+'\\nClick to sync now.'; }
-setInterval(()=>{ if(syncState&&syncState.status!=='syncing')renderSyncPill(); },15000); // keep "Xs ago" fresh
-$('#syncPill')&&$('#syncPill').addEventListener('click',()=>vscode.postMessage({type:'syncNow'}));
-// report activity (keyboard/click/scroll) so the host arms aggressive polling; throttled
-let lastActivity=0;
-function reportActivity(){ const now=Date.now(); if(now-lastActivity>10000){ lastActivity=now; vscode.postMessage({type:'activity'}); } }
-['click','keydown','wheel'].forEach(ev=>document.addEventListener(ev,reportActivity,{passive:true}));
-
-// top bar
-$('#viewSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;view=b.dataset.view;syncSeg();render();});
-$('#laneSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;laneSet=b.dataset.lane;syncSeg();renderBoard();});
-$('#calModeSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;calMode=b.dataset.cm;syncSeg();renderCalendar();});
-$('#refreshBtn').addEventListener('click',()=>vscode.postMessage({type:'refresh'}));
-$('#captureBtn').addEventListener('click',()=>openCreateDrawer({}));
-$('#syncBtn').addEventListener('click',()=>vscode.postMessage({type:'action',action:'runSync'}));
-let searchTerm='', maxLane=null;
-function applySearch(){const q=searchTerm.toLowerCase();
-  document.querySelectorAll('#board .card').forEach(c=>{c.style.display=(!q||c.textContent.toLowerCase().includes(q))?'':'none';});}
-document.addEventListener('keydown',e=>{
-  if((e.metaKey||e.ctrlKey)&&e.key==='f'){e.preventDefault();const s=$('#search');s.style.display='inline-block';s.focus();s.select();}
-  if(e.key==='Escape'){const s=$('#search');
-    if(document.activeElement===s){searchTerm='';s.value='';s.style.display='none';applySearch();}
-    else if(!$('#drawer').classList.contains('hidden')){closeDrawer();}
-    else if(maxLane){maxLane=null;renderBoard();}
-    else if(searchTerm){searchTerm='';s.value='';s.style.display='none';applySearch();}}
-});
-$('#search').addEventListener('input',e=>{searchTerm=e.target.value;applySearch();});
-(function(){const gb=$('#groupBy'); if(gb){gb.value=groupBy; gb.addEventListener('change',()=>{groupBy=gb.value;saveState();renderBoard();});}
-  const sb=$('#sortBy'); if(sb){sb.value=sortBy; sb.addEventListener('change',()=>{sortBy=sb.value;saveState();renderBoard();});}
-  const al=$('#addLaneBtn'); if(al)al.addEventListener('click',()=>vscode.postMessage({type:'action',action:'addLane'}));})();
-$('#backdrop').addEventListener('click',closeDrawer);
-function syncSeg(){
-  // Drive CSS for board-only chrome + narrow-pane prioritization of view tabs.
-  try{ document.body.dataset.view = view; }catch(e){}
-  document.querySelectorAll('#viewSeg button').forEach(b=>b.classList.toggle('on',b.dataset.view===view));
-  document.querySelectorAll('#laneSeg button').forEach(b=>b.classList.toggle('on',b.dataset.lane===laneSet));
-  document.querySelectorAll('#calModeSeg button').forEach(b=>b.classList.toggle('on',b.dataset.cm===calMode));
-  // Board/calendar chrome visibility is primarily CSS (body[data-view]); keep
-  // inline display in sync for older hosts / no-CSS-fallback.
-  $('#laneSeg').style.display = view==='board'?'inline-flex':'none';
-  $('#calModeSeg').style.display = view==='calendar'?'inline-flex':'none';
-  const boardOnly = ['#groupBy','#sortBy','#addLaneBtn'];
-  boardOnly.forEach(sel=>{ const n=$(sel); if(n) n.style.display = view==='board'?'':'none'; });
-  $('#board').classList.toggle('hidden',view!=='board');
-  $('#inbox').classList.toggle('hidden',view!=='inbox');
-  $('#autonomous').classList.toggle('hidden',view!=='autonomous');
-  $('#projects').classList.toggle('hidden',view!=='projects');
-  $('#sessions').classList.toggle('hidden',view!=='sessions');
-  $('#social').classList.toggle('hidden',view!=='social');
-  $('#calendar').classList.toggle('hidden',view!=='calendar');
-  $('#graph').classList.toggle('hidden',view!=='graph');
-  $('#gfilters').classList.toggle('hidden',view!=='graph');
-  $('#canvas').classList.toggle('hidden',view!=='canvas');
-}
-function render(){ if(!S){return;} syncSeg();
-  $('#counts').textContent = Object.entries(S.counts||{}).map(([k,v])=>k+':'+v).join('  ');
-  renderOverduePill();
-  renderInboxPill();
-  if(view==='board')renderBoard(); else if(view==='inbox')renderInbox(); else if(view==='autonomous')renderAutonomous(); else if(view==='projects')renderProjects(); else if(view==='sessions')renderSessions(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
-  applySearch();
-}
-$('#overduePill')&&$('#overduePill').addEventListener('click',()=>{
-  overdueOnly=!overdueOnly;
-  if(overdueOnly){ view='board'; if(groupBy==='type'){} else if(laneSet!=='task')laneSet='task'; }
-  syncSeg(); render();
-});
-$('#inboxPill')&&$('#inboxPill').addEventListener('click',()=>{ view=(view==='inbox')?'board':'inbox'; syncSeg(); render(); });
-const blockedSet=()=>new Set((S.blocked||[]).map(b=>b.id));
-
-// closing statuses prompt for a resolution note (host shows the InputBox; Esc aborts)
-const CLOSING=new Set(['done','deferred','outdated','parked','archived']);
-function postStatus(id,status){ if(CLOSING.has(status))openResModal(id,status); else vscode.postMessage({type:'setStatus',id:id,status:status}); }
-// Multi-line resolution note modal for closing moves (nicer than a one-line input).
-let resCtx=null;
-function openResModal(id,status){
-  resCtx={id:id,status:status};
-  const o=(S&&S.objects||[]).find(x=>x.id===id);
-  $('#resTitle').textContent=(o&&(o.title||o.id))||id;
-  $('#resSub').textContent='Moving to “'+status+'” — add a resolution note (optional).';
-  const ta=$('#resNote'); ta.value='';
-  $('#resmodal').classList.remove('hidden');
-  setTimeout(()=>ta.focus(),40);
-}
-function closeResModal(apply,withNote){
-  const m=$('#resmodal'); if(m.classList.contains('hidden'))return;
-  const ctx=resCtx; m.classList.add('hidden'); resCtx=null;
-  if(!ctx)return;
-  if(apply)vscode.postMessage({type:'setStatusApply',id:ctx.id,status:ctx.status,note:withNote?$('#resNote').value.trim():''});
-  else vscode.postMessage({type:'refresh'}); // cancel → snap the board back
-}
-$('#resSave').addEventListener('click',()=>closeResModal(true,true));
-$('#resSkip').addEventListener('click',()=>closeResModal(true,false));
-$('#resCancel').addEventListener('click',()=>closeResModal(false));
-$('#resX').addEventListener('click',()=>closeResModal(false));
-$('#resNote').addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();closeResModal(true,true);} if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeResModal(false);} });
-function laneFieldAndList(objs){
-  if(groupBy==='status') return {field:'status', lanes:(LANES[laneSet]||[...new Set(objs.map(o=>o.status||'inbox'))])};
-  if(groupBy==='type') return {field:'type', lanes:BOARD_TYPES.slice()};
-  const vals=new Set(objs.map(o=>o[groupBy]||'(none)')); customLanes.forEach(l=>vals.add(l)); const lanes=[...vals]; if(!lanes.includes('(none)'))lanes.push('(none)');
-  return {field:groupBy, lanes};
-}
-function renderBoard(){
-  const bl=blockedSet();
-  let objs = groupBy==='type' ? (S.objects||[]).filter(o=>BOARD_TYPES.indexOf(o.type)>=0) : (S.objects||[]).filter(o=>o.type===laneSet);
-  const {field, lanes} = laneFieldAndList(objs);
-  const board=$('#board'); board.innerHTML='';
-  // date filter bar (worked-on / due) — full-width row above the lanes
-  const fb=el('div','boardfilter');
-  const odCount=overdueList().length;
-  fb.innerHTML='<span style="opacity:.6">filter by</span>'+
-    '<select id="bfField"><option value="updated"'+(boardDateField==='updated'?' selected':'')+'>worked on (updated)</option><option value="due"'+(boardDateField==='due'?' selected':'')+'>due</option></select>'+
-    '<input type="date" id="bfDate" value="'+esc(boardDateVal||'')+'">'+
-    '<button class="ghost" id="bfToday">today</button>'+
-    (boardDateVal?'<button class="ghost" id="bfClear">clear ✕</button>':'')+
-    '<button class="ghost'+(overdueOnly?' on':'')+'" id="bfOverdue" title="Show only past-due, not-completed tasks">⚠ Overdue'+(odCount?' ('+odCount+')':'')+'</button>'+
-    '<button class="ghost'+(staleOnly?' on':'')+'" id="bfStale" title="Open items untouched for 21+ days">🕸 Stale</button>'+
-    '<span style="opacity:.6" id="bfN"></span>';
-  board.appendChild(fb);
-  fb.querySelector('#bfField').addEventListener('change',e=>{boardDateField=e.target.value;renderBoard();});
-  fb.querySelector('#bfDate').addEventListener('change',e=>{boardDateVal=e.target.value;renderBoard();});
-  fb.querySelector('#bfToday').addEventListener('click',()=>{boardDateVal=todayStr();renderBoard();});
-  if(fb.querySelector('#bfClear'))fb.querySelector('#bfClear').addEventListener('click',()=>{boardDateVal='';renderBoard();});
-  fb.querySelector('#bfOverdue').addEventListener('click',()=>{overdueOnly=!overdueOnly;renderOverduePill();renderBoard();});
-  fb.querySelector('#bfStale').addEventListener('click',()=>{staleOnly=!staleOnly;renderBoard();});
-  if(boardDateVal)objs=objs.filter(o=>String(o[boardDateField]||'').slice(0,10)===boardDateVal);
-  if(overdueOnly)objs=objs.filter(isOverdue);
-  if(staleOnly)objs=objs.filter(isStale);
-  if(fb.querySelector('#bfN'))fb.querySelector('#bfN').textContent=overdueOnly?(objs.length+' overdue'):staleOnly?(objs.length+' stale'):(boardDateVal?(objs.length+' '+laneSet+'(s) '+boardDateField+' '+boardDateVal):'');
-  const lanesWrap=el('div','lanes');board.appendChild(lanesWrap);
-  const shown=(maxLane&&lanes.includes(maxLane))?[maxLane]:lanes;
-  shown.forEach(lane=>{
-    let rows=objs.filter(o=>String(o[field]||'(none)')===String(lane));
-    const CMP={
-      priority:(a,b)=>String(a.priority||'p9').localeCompare(String(b.priority||'p9')),
-      due:(a,b)=>String(a.due||'9999').localeCompare(String(b.due||'9999')),
-      updated:(a,b)=>String(b.updated||'').localeCompare(String(a.updated||'')),
-      title:(a,b)=>String(a.title||a.id).localeCompare(String(b.title||b.id)),
-      project:(a,b)=>String(a.project||'~').localeCompare(String(b.project||'~')),
-      domain:(a,b)=>String(a.domain||'~').localeCompare(String(b.domain||'~')),
-      type:(a,b)=>String(a.type).localeCompare(String(b.type)),
-    };
-    rows.sort(CMP[sortBy]||CMP.priority); // unset values sort last (except updated: newest first)
-    const isDone = field==='status' && lane==='done';
-    let hidDone=0;
-    if(isDone && doneWindow!=='all'){
-      const days={yesterday:1,week:7,month:30}[doneWindow]||7;
-      const cut=addDays(todayStr(),-days);
-      const before=rows.length;
-      rows=rows.filter(o=>String(o.updated||'').slice(0,10)>=cut);
-      hidDone=before-rows.length;
-    }
-    const isMax=maxLane===lane;
-    const col=el('div','col'+(isMax?' max':'')); col.dataset.lane=lane;
-    const h=el('h3',null,'<span class="dot" style="background:'+(LANE_COLOR[lane]||TYPE_COLOR[lane]||'#888')+'"></span>'+esc(lane)+(isMax?' <span style="opacity:.5;font-weight:400;text-transform:none">(double-click or Esc to restore)</span>':'')+'<span class="cnt">'+rows.length+(hidDone?' <span style="opacity:.55" title="'+hidDone+' older done hidden">+'+hidDone+' older</span>':'')+'</span>');
-    col.title='double-click to '+(isMax?'restore':'maximize as a list');
-    col.addEventListener('dblclick',ev=>{ if(ev.target.closest('.card')||ev.target.tagName==='SELECT')return; maxLane=isMax?null:lane; renderBoard(); });
-    if(isDone){
-      const sel=el('select','donewin');
-      ['yesterday','week','month','all'].forEach(w=>{const op=el('option',null,w);op.value=w;if(w===doneWindow)op.selected=true;sel.appendChild(op);});
-      sel.title='show items done (updated) within… — older ones are hidden';
-      sel.addEventListener('click',ev=>ev.stopPropagation());
-      sel.addEventListener('change',()=>{doneWindow=sel.value;saveState();renderBoard();});
-      h.insertBefore(sel,h.querySelector('.cnt'));
-    }
-    col.appendChild(h);
-    const cards=el('div','cards');
-    rows.forEach(o=>{
-      const card=el('div','card'+(bl.has(o.id)?' blocked':'')+(isMax?' compact':'')); card.draggable=true; card.dataset.id=o.id;
-      const isThought=o.type==='thought';
-      card.innerHTML='<div class="cact">'+(isThought?'<button data-act="toIdea" title="Convert → idea">→💡</button><button data-act="toTask" title="Convert → task">→☑</button>':'')+'<button data-act="edit" title="Edit">✎</button><button data-act="clone" title="Clone">⧉</button><button data-act="recat" title="Recategorize / move">⇄</button><button data-act="del" title="Delete">✕</button></div>'+
-        '<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm"><span class="badge">'+o.type+'</span>'+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+(o.due?'<span class="due'+(o.due<todayStr()&&o.status!=='done'&&o.status!=='outdated'?' late':'')+'">⏰ '+esc(o.due)+'</span>':'')+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.lane?'<span>⋔ '+esc(o.lane)+'</span>':'')+(o.project?'<span>· '+esc(o.project.split('/').pop())+'</span>':'')+(isThought&&o.context?'<span title="where this was captured">◔ '+esc(o.context)+'</span>':'')+(isThought&&(o.surfaced_on||o.created)?'<span>'+esc(o.surfaced_on||o.created)+'</span>':'')+'</div>';
-      card.addEventListener('click',ev=>{ if(ev.target.closest('[data-act]'))return; openDetail(o.id); });
-      card.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();const a=b.dataset.act;vscode.postMessage({type:'action',action:a==='edit'?'editItem':a==='recat'?'recategorize':a==='clone'?'cloneItem':a==='toIdea'?'convertToIdea':a==='toTask'?'convertToTask':'deleteItem',id:o.id});}));
-      card.addEventListener('dragstart',ev=>{ev.dataTransfer.setData('text/plain',o.id);card.classList.add('dragging');});
-      card.addEventListener('dragend',()=>card.classList.remove('dragging'));
-      // drop a card ON another card => adopt its priority (drag-to-sort within a lane);
-      // across lanes it also takes the target lane's status
-      card.addEventListener('dragover',ev=>{ev.preventDefault();ev.stopPropagation();card.classList.add('dropover');});
-      card.addEventListener('dragleave',()=>card.classList.remove('dropover'));
-      card.addEventListener('drop',ev=>{ev.preventDefault();ev.stopPropagation();card.classList.remove('dropover');
-        const id=ev.dataTransfer.getData('text/plain'); if(!id||id===o.id)return;
-        const src=(S.objects||[]).find(x=>x.id===id);
-        if(field==='status'&&src&&String(src.status||'')!==String(lane))postStatus(id,lane);
-        vscode.postMessage({type:'setPriority',id:id,priority:o.priority||'-'});});
-      cards.appendChild(card);
-    });
-    col.appendChild(cards);
-    col.addEventListener('dragover',ev=>{ev.preventDefault();col.classList.add('over');});
-    col.addEventListener('dragleave',()=>col.classList.remove('over'));
-    col.addEventListener('drop',ev=>{ev.preventDefault();col.classList.remove('over');const id=ev.dataTransfer.getData('text/plain');if(!id)return;
-      if(field==='status')postStatus(id,lane);
-      else if(field==='type')vscode.postMessage({type:'action',action:'setType',id:id,toType:lane});
-      else vscode.postMessage({type:'action',action:'setField',id:id,field:field,value:lane==='(none)'?'':lane});});
-    lanesWrap.appendChild(col);
-  });
-}
-
-// ── project-centric view: each KP project with its open work + linked sessions ──
-const expandedProjects=new Set();
-function parseLinked(o){try{const v=typeof o.linked_sessions==='string'?JSON.parse(o.linked_sessions):(o.linked_sessions||[]);return Array.isArray(v)?v:[];}catch(e){return [];}}
-function renderProjects(){
-  const el2=$('#projects'); el2.innerHTML='';
-  const wrap=el('div','pgrid'); el2.appendChild(wrap);
-  const items=(S.objects||[]).filter(o=>BOARD_TYPES.indexOf(o.type)>=0);
-  const projects=(S.objects||[]).filter(o=>o.type==='project').sort((a,b)=>String(a.title||a.id).localeCompare(String(b.title||b.id)));
-  const buckets=projects.map(p=>({p,rows:items.filter(o=>o.project===p.id)}));
-  buckets.push({p:{id:'(none)',title:'(no project)',type:'project'},rows:items.filter(o=>!o.project)});
-  buckets.forEach(({p,rows})=>{
-    if(p.id==='(none)'&&!rows.length)return;
-    const open=rows.filter(o=>!CLOSING.has(String(o.status||'')));
-    const closed=rows.length-open.length;
-    const key=p.id, expanded=expandedProjects.has(key);
-    const card=el('div','pcard');
-    const byType={}; rows.forEach(o=>{byType[o.type]=(byType[o.type]||0)+1;});
-    const counts=Object.entries(byType).map(([k,v])=>v+' '+k+(v>1?'s':'')).join(' · ');
-    const h=el('h3',null,esc(p.title||p.id.split('/').pop())+'<span class="pn">'+open.length+' open'+(closed?' · '+closed+' closed':'')+(counts?' · '+counts:'')+'</span>');
-    h.title=p.id==='(none)'?'items without a project':'open '+esc(p.id)+' — double-click card to '+(expanded?'collapse':'expand');
-    if(p.id!=='(none)')h.addEventListener('click',()=>openDetail(p.id));
-    card.appendChild(h);
-    card.addEventListener('dblclick',ev=>{if(ev.target.closest('.pitem')||ev.target.closest('.psess'))return;expanded?expandedProjects.delete(key):expandedProjects.add(key);renderProjects();});
-    const STATUS_ORDER=['in_progress','today','inbox','capture','refine','accepted','plan','prototype','implement','validate','new','kept'];
-    const sorted=open.slice().sort((a,b)=>{const ai=STATUS_ORDER.indexOf(String(a.status)),bi=STATUS_ORDER.indexOf(String(b.status));return (ai<0?99:ai)-(bi<0?99:bi)||String(a.priority||'p9').localeCompare(String(b.priority||'p9'));});
-    const show=expanded?sorted:sorted.slice(0,10);
-    show.forEach(o=>{
-      const it=el('div','pitem');
-      it.innerHTML='<span class="dot" style="background:'+(TYPE_COLOR[o.type]||'#888')+'"></span><span class="st">'+esc(o.status||'')+(o.priority?' '+esc(o.priority):'')+'</span><span class="pt">'+esc(o.title||o.id)+'</span>';
-      it.addEventListener('click',()=>openDetail(o.id));
-      card.appendChild(it);
-    });
-    if(!expanded&&sorted.length>show.length){const m=el('div','pmore','…+'+(sorted.length-show.length)+' more — click to expand');m.addEventListener('click',()=>{expandedProjects.add(key);renderProjects();});card.appendChild(m);}
-    if(expanded&&closed){const m=el('div','pmore',closed+' closed item(s) shown on the board (done lane)');card.appendChild(m);}
-    const sess=new Set(parseLinked(p)); rows.forEach(o=>parseLinked(o).forEach(u=>sess.add(u)));
-    if(sess.size){
-      const ts=el('div','psess'); ts.appendChild(el('div','lbl','linked sessions ('+sess.size+')'));
-      [...sess].slice(0,expanded?15:5).forEach(u=>{
-        const it=el('div','pitem'); it.innerHTML='<span class="st">▸ session</span><span class="pt">'+esc(String(u).slice(0,18))+'…</span>';
-        it.title='open chat — '+esc(u);
-        it.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openSession',uuid:u}));
-        ts.appendChild(it);
-      });
-      card.appendChild(ts);
-    }
-    wrap.appendChild(card);
-  });
-  if(!wrap.children.length)wrap.appendChild(el('div',null,'<span style="opacity:.6">No projects yet — create type:project objects in the store, or assign items a Project in the drawer.</span>'));
-}
-// ── inbox: triage queue of freshly-captured items (task=inbox, idea=capture, thought=new) ──
-function inboxItems(){
-  const rows=(S&&S.objects||[]).filter(o=>(o.type==='task'&&o.status==='inbox')||(o.type==='idea'&&o.status==='capture')||(o.type==='thought'&&o.status==='new'));
-  return rows.sort((a,b)=>String((b.surfaced_on||b.created||'')).localeCompare(String(a.surfaced_on||a.created||'')));
-}
-function renderInbox(){
-  const el2=$('#inbox'); el2.innerHTML='';
-  const rows=inboxItems();
-  const bar=el('div',null,'<div style="font-size:13px;font-weight:600">📥 Inbox — '+rows.length+' to triage</div><div style="opacity:.65;font-size:12px;margin:2px 0 12px">Freshly-captured items awaiting a decision. Click to open · convert thoughts→ideas→tasks · set due/priority · park noise.</div>');
-  el2.appendChild(bar);
-  if(!rows.length){ el2.appendChild(el('div',null,'<div style="opacity:.55;padding:14px 2px">Inbox zero ✓</div>')); return; }
-  const list=el('div','sociallist');
-  rows.forEach(o=>{
-    const c=el('div','socialcard');
-    let tg=o.tags; if(typeof tg==='string'){try{tg=JSON.parse(tg);}catch(e){tg=[];}}
-    const auto=(Array.isArray(tg)&&tg.includes('autogenerated'))?'<span class="badge" title="created by the autonomous ideation">🤖 auto</span>':'';
-    let ls=o.linked_sessions; if(typeof ls==='string'){try{ls=JSON.parse(ls);}catch(e){ls=[];}}
-    const sess=(Array.isArray(ls)&&ls[0])?'<span class="badge" title="source session">▸ '+esc(String(ls[0]).slice(0,8))+'…</span>':'';
-    const agent=o.agent?'<span class="badge" title="agent/model">'+esc(o.agent)+(o.model?' · '+esc(o.model):'')+'</span>':'';
-    const prov=(o.context?'<span class="badge" title="captured under">◔ '+esc(o.context)+'</span>':'')+((o.surfaced_on||o.created)?'<span>'+esc(o.surfaced_on||o.created)+'</span>':'');
-    c.innerHTML='<div class="sh"><span class="ct">'+esc(o.title||o.id)+'</span><span class="cm"><span class="badge">'+o.type+'</span>'+auto+agent+sess+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+prov+'</span></div>';
-    const acts=el('div','sacts');
-    const open=el('button','ghost mini','Open'); open.addEventListener('click',()=>openDetail(o.id));
-    acts.appendChild(open);
-    if(o.type==='thought'){ const i=el('button','ghost mini','→ idea'); i.addEventListener('click',()=>vscode.postMessage({type:'action',action:'convertToIdea',id:o.id})); const t=el('button','ghost mini','→ task'); t.addEventListener('click',()=>vscode.postMessage({type:'action',action:'convertToTask',id:o.id})); acts.appendChild(i); acts.appendChild(t); }
-    if(o.type==='idea'){ const t=el('button','ghost mini','→ task'); t.addEventListener('click',()=>vscode.postMessage({type:'action',action:'moveToTask',id:o.id})); acts.appendChild(t); }
-    const park=el('button','ghost mini',o.type==='task'?'Defer':'Park'); park.addEventListener('click',()=>postStatus(o.id,o.type==='task'?'deferred':'parked')); acts.appendChild(park);
-    c.appendChild(acts);
-    c.addEventListener('click',ev=>{ if(ev.target.closest('button'))return; openDetail(o.id); });
-    list.appendChild(c);
-  });
-  el2.appendChild(list);
-}
-// ── autonomous: the night ideate→build orchestration (schedule / usage / reports / auto-ideas) ──
-function autoIdeas(){ return (S&&S.objects||[]).filter(o=>{let t=o.tags; if(typeof t==='string'){try{t=JSON.parse(t);}catch(e){t=[];}} return Array.isArray(t)&&t.includes('autogenerated');}); }
-function fmtDT(s){ if(!s)return '—'; try{const d=new Date(s);return d.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});}catch(e){return s;} }
-function specLinkHtml(spec){ return spec?'<span class="lnk speclnk" data-spec="'+esc(spec)+'" title="open the spec">📄 '+esc(spec)+'</span>':''; }
-function wireSpecLinks(root){ root.querySelectorAll('.speclnk').forEach(s=>s.addEventListener('click',ev=>{ev.stopPropagation();vscode.postMessage({type:'action',action:'openSpec',spec:s.getAttribute('data-spec')});})); }
-// idea id → spec path, from the current window + history (each records created ids)
-function ideaSpecMap(a){
-  const m={};
-  if(!a)return m;
-  const add=(ids,spec)=>{ (ids||[]).forEach(id=>{ if(spec&&!m[id])m[id]=spec; }); };
-  if(a.current_window&&a.current_window.ideate)add(a.current_window.ideate.created,a.current_window.ideate.spec);
-  (a.history||[]).forEach(h=>add(h.created,h.spec));
-  return m;
-}
-function renderAutonomous(){
-  const el2=$('#autonomous'); el2.innerHTML='';
-  const a=S&&S.autonomous;
-  const hd=el('div',null,'<div style="display:flex;align-items:center;gap:10px"><div style="font-size:14px;font-weight:700;flex:1">🤖 Autonomous builder</div></div><div style="opacity:.65;font-size:12px;margin:2px 0 14px">Overnight ideate→spec→implement, aligned to 5-hour Claude windows. Ideas land in the Inbox tagged <b>autogenerated</b>.</div>');
-  // enable/disable — flips <store>/autonomous/STOP (git-synced, honored by the orchestrator)
-  const on=!a||a.enabled!==false;
-  const tog=el('button','ghost mini',on?'⏸ Disable':'▶ Enable');
-  tog.title=on?'pause the autonomous builder (creates planning/autonomous/STOP)':'resume the autonomous builder';
-  tog.style.cssText=on?'border-color:#d16969;color:#d16969':'border-color:#4ec9b0;color:#4ec9b0';
-  tog.addEventListener('click',()=>vscode.postMessage({type:'action',action:'autoToggle',on:!on}));
-  hd.querySelector('div').appendChild(tog);
-  if(a&&a.enabled===false)hd.insertAdjacentHTML('beforeend','<div style="color:#d16969;font-size:12px;margin:-8px 0 12px">⏸ paused — no new windows will start until re-enabled</div>');
-  el2.appendChild(hd);
-  if(!a){ el2.appendChild(el('div',null,'<div style="opacity:.6;padding:14px 2px">No autonomous run yet. The night orchestrator writes its plan here after its first window (planning/autonomous/plan.json).</div>')); }
-  else {
-    // 2) ACTUAL usage (from headless "claude /usage") + config; projected as fallback
-    const cw=a.current_window;
-    const act=a.actual;
-    const usage=el('div','autorow');
-    const resetStr=act&&act.session_resets?new Date(act.session_resets).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):null;
-    const agoMin=act&&act.measured_at?Math.max(0,Math.round((Date.now()-new Date(act.measured_at).getTime())/60000)):null;
-    usage.innerHTML=(act
-        ?'<div class="autostat"><span class="l">Window usage (actual)</span><span class="v">'+esc(String(act.session_pct))+'%'+(resetStr?' · resets '+esc(resetStr):'')+'</span></div>'+
-         '<div class="autostat"><span class="l">Week</span><span class="v">'+esc(String(act.week_pct==null?'—':act.week_pct))+'%'+(act.fable_week_pct!=null?' · fable '+esc(String(act.fable_week_pct))+'%':'')+(agoMin!=null?' · measured '+agoMin+'m ago':'')+'</span></div>'
-        :'<div class="autostat"><span class="l">Projected usage / window</span><span class="v">'+esc(String(a.projected_usage_pct||0))+'%</span></div>')+
-      '<div class="autostat"><span class="l">Window</span><span class="v">'+esc(String(a.window_hours||5))+'h · implement '+esc(String(a.implement_lead_hours||1))+'h before close'+(a.usage_max_pct?' · gate ≥'+esc(String(a.usage_max_pct))+'%':'')+'</span></div>'+
-      '<div class="autostat"><span class="l">Targets</span><span class="v">'+esc((a.targets||[]).join(', '))+'</span></div>';
-    el2.appendChild(usage);
-    // 1) planned session orchestrations + times
-    const sched=el('div','autosec'); sched.appendChild(el('h4',null,'Planned sessions'));
-    const meter=el('div','usagebar'); const fill=el('div','usagefill');
-    const pct=act?act.session_pct:(a.projected_usage_pct||0);
-    fill.style.width=Math.min(100,pct)+'%';
-    if(a.usage_max_pct&&pct>=a.usage_max_pct)fill.style.background='#d16969';
-    meter.title=(act?'actual':'projected')+' '+pct+'% of the 5h window';
-    meter.appendChild(fill); sched.appendChild(meter);
-    if(cw){
-      const id=cw.ideate||{}, im=cw.implement||{};
-      sched.appendChild(el('div','autoline','<span class="ph ide">ideate</span> window '+fmtDT(cw.start)+' → '+fmtDT(cw.end)+' · <b>'+esc(id.status||'')+'</b>'+(id.created_count?' · '+id.created_count+' ideas':'')+(id.spec?' · '+specLinkHtml(id.spec):'')));
-      sched.appendChild(el('div','autoline','<span class="ph imp">implement</span> scheduled '+fmtDT(im.scheduled)+' · <b>'+esc(im.status||'planned')+'</b>'+(im.ran?' · ran '+fmtDT(im.ran):'')));
-    }
-    if(a.next_window)sched.appendChild(el('div','autoline','<span class="ph nxt">next</span> ideate at '+fmtDT(a.next_window.start)));
-    el2.appendChild(sched);
-    // 3) reports from implementation sessions
-    const reps=[]; if(cw&&cw.implement&&cw.implement.report)reps.push({when:cw.implement.ran||cw.start,report:cw.implement.report,spec:cw.ideate&&cw.ideate.spec});
-    (a.history||[]).slice().reverse().forEach(h=>{ if(h.report)reps.push({when:h.window_start,report:h.report,spec:h.spec,status:h.implement_status}); });
-    const rs=el('div','autosec'); rs.appendChild(el('h4',null,'Implementation reports ('+reps.length+')'));
-    if(!reps.length)rs.appendChild(el('div',null,'<div style="opacity:.55;font-size:12px">No reports yet.</div>'));
-    reps.forEach(r=>{ const row=el('div','autoline'); row.innerHTML='<span class="ph rep">report</span> '+fmtDT(r.when)+' · <span class="lnk">'+esc(r.report)+'</span>'+(r.spec?' · '+specLinkHtml(r.spec):'')+(r.status?' · '+esc(r.status):''); row.querySelector('.lnk').addEventListener('click',()=>vscode.postMessage({type:'open',kbPath:r.report})); rs.appendChild(row); });
-    el2.appendChild(rs);
-    // window history: every past ideation session + its planned/actual implementation
-    const hist=(a.history||[]).slice().reverse();
-    const hs=el('div','autosec'); hs.appendChild(el('h4',null,'Window history ('+hist.length+')'));
-    if(!hist.length)hs.appendChild(el('div',null,'<div style="opacity:.55;font-size:12px">No completed windows yet.</div>'));
-    hist.forEach(h=>{
-      const card=el('div','socialcard');
-      const ideaChips=(h.created||[]).map(id=>{const o=(S.objects||[]).find(x=>x.id===id);return '<span class="badge histidea" data-id="'+esc(id)+'" style="cursor:pointer" title="open">'+esc((o&&o.title)||id.split('/').pop())+'</span>';}).join(' ');
-      card.innerHTML='<div class="sh"><span class="ct">'+fmtDT(h.window_start)+(h.window_end?' → '+fmtDT(h.window_end):'')+'</span>'+
-        '<span class="cm"><span class="badge">'+esc(h.implement_status||'?')+'</span>'+(h.spec?specLinkHtml(h.spec):'')+'</span></div>'+
-        (h.ideate_summary?'<div style="font-size:12px;opacity:.8;margin-top:3px">💡 '+esc(h.ideate_summary)+'</div>':'')+
-        (h.implement_summary?'<div style="font-size:12px;opacity:.8;margin-top:2px">🔨 '+esc(h.implement_summary)+'</div>':'')+
-        (ideaChips?'<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:4px">'+ideaChips+'</div>':'')+
-        (h.report?'<div style="margin-top:4px"><span class="lnk histrep" data-r="'+esc(h.report)+'">📋 '+esc(h.report)+'</span></div>':'');
-      card.querySelectorAll('.histidea').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();openDetail(b.getAttribute('data-id'));}));
-      const rl=card.querySelector('.histrep'); if(rl)rl.addEventListener('click',ev=>{ev.stopPropagation();vscode.postMessage({type:'open',kbPath:rl.getAttribute('data-r')});});
-      hs.appendChild(card);
-    });
-    el2.appendChild(hs);
-    // configuration & schedule — the explicit config the orchestrator runs on
-    if(a.config){
-      const cs=el('div','autosec');
-      const det=document.createElement('details');
-      det.innerHTML='<summary style="cursor:pointer;font-size:13px;font-weight:600;margin-bottom:6px">⚙ Configuration & schedule</summary>';
-      const c=a.config;
-      const rowsHtml=[
-        ['window',c.window_hours+'h · implement '+c.implement_lead_hours+'h before close'],
-        ['caps','ideate '+c.ideate_cap_min+'m · implement '+c.implement_cap_min+'m'],
-        ['usage gate','skip phase at ≥'+c.usage_max_pct+'% session usage'],
-        ['active band',c.active_band+(c.active_band==='0000-0000'?' (24/7)':'')],
-        ['ideate','claude · effort '+esc(c.ideate&&c.ideate.effort||'high')],
-        ['implement','claude · model '+esc(c.implement&&c.implement.model||'fable')+' · effort '+esc(c.implement&&c.implement.effort||'medium')],
-        ['grok',esc(c.grok_cmd||'auto')],
-        ['targets',esc((c.targets||[]).join(', '))],
-        ['branch',esc(c.work_branch||'')],
-      ].map(r=>'<div class="autoline"><span style="opacity:.6;display:inline-block;min-width:100px">'+r[0]+'</span>'+r[1]+'</div>').join('');
-      const schedHtml=(a.schedule||[]).map(s=>'<div class="autoline" style="opacity:.75">· '+esc(s)+'</div>').join('');
-      det.insertAdjacentHTML('beforeend',rowsHtml+'<div style="margin-top:8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;opacity:.6">How it is scheduled</div>'+schedHtml+
-        '<div style="margin-top:8px"><span class="lnk" id="openAutoCfg">✎ edit config.json</span> <span style="opacity:.55;font-size:11px">(env vars NIGHT_* override; git-synced to both laptops)</span></div>');
-      cs.appendChild(det); el2.appendChild(cs);
-      const oc=det.querySelector('#openAutoCfg'); if(oc)oc.addEventListener('click',()=>vscode.postMessage({type:'open',path:c.path}));
-    }
-  }
-  // 4) ideas/tasks created during ideation (autogenerated) — always show what exists,
-  //    each with a link to the spec its window produced (review/correct from here)
-  const ideas=autoIdeas(); const sm=ideaSpecMap(a);
-  const is=el('div','autosec'); is.appendChild(el('h4',null,'Autogenerated ideas ('+ideas.length+')'));
-  if(!ideas.length)is.appendChild(el('div',null,'<div style="opacity:.55;font-size:12px">None yet — the ideation phase creates these.</div>'));
-  const list=el('div','sociallist');
-  ideas.forEach(o=>{ const c=el('div','socialcard'); const spec=sm[o.id];
-    let ls=o.linked_sessions; if(typeof ls==='string'){try{ls=JSON.parse(ls);}catch(e){ls=[];}}
-    const sess=(Array.isArray(ls)&&ls[0])?'<span class="badge" title="source session" style="cursor:pointer" data-sess="'+esc(ls[0])+'">▸ session '+esc(String(ls[0]).slice(0,8))+'…</span>':'';
-    const agent=o.agent?'<span class="badge" title="ideation agent">'+esc(o.agent)+(o.model?' · '+esc(o.model):'')+(o.effort?' · '+esc(o.effort):'')+'</span>':'';
-    c.innerHTML='<div class="sh"><span class="ct">'+esc(o.title||o.id)+'</span><span class="cm"><span class="badge">'+o.type+'</span>'+agent+sess+(o.status?'<span>'+esc(o.status)+'</span>':'')+(o.surfaced_on||o.created?'<span>'+esc(o.surfaced_on||o.created)+'</span>':'')+'</span></div>'+(spec?'<div style="margin-top:4px">'+specLinkHtml(spec)+'</div>':'');
-    c.addEventListener('click',ev=>{
-      const b=ev.target.closest('[data-sess]');
-      if(b){ vscode.postMessage({type:'action',action:'openSession',uuid:b.getAttribute('data-sess')}); return; }
-      openDetail(o.id);
-    });
-    list.appendChild(c); });
-  is.appendChild(list); el2.appendChild(is);
-  wireSpecLinks(el2);
-}
-// ── sessions view: CS git-store sessions with time filters + link-to-task ──
-let SESS=null, sessFilter='week', sessSearch='';
-function dayStart(offset){ const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()+(offset||0)); return d.getTime(); }
-function sessWhen(s){ return s.mtime||s.startedAt||0; } // last activity — matches the CS "Today" bucketing
-function sessInWindow(s){
-  const t=sessWhen(s);
-  if(sessFilter==='all')return true;
-  if(sessFilter==='today')return t>=dayStart(0);
-  if(sessFilter==='yesterday')return t>=dayStart(-1)&&t<dayStart(0);
-  if(sessFilter==='week')return t>=dayStart(-6);
-  return true;
-}
-function titleForId(id){ const o=(S&&S.objects||[]).find(x=>x.id===id); return o?(o.title||o.id):id; }
-// linked planning items for a session uuid: prefer the snapshot's linked_sessions
-// (works regardless of session source), else the envelope's planningRefs.
-function sessionLinks(s){
-  const out=new Set((s.planningRefs||[]));
-  (S&&S.objects||[]).forEach(o=>{ let ls=o.linked_sessions; if(typeof ls==='string'){try{ls=JSON.parse(ls);}catch(e){ls=[];}} if(Array.isArray(ls)&&ls.includes(s.uuid))out.add(o.id); });
-  return [...out];
-}
-function fmtWhen(t){ if(!t)return ''; const d=new Date(t); const today=dayStart(0);
-  const hm=d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-  if(t>=today)return 'today '+hm; if(t>=dayStart(-1))return 'yst '+hm;
-  return d.toLocaleDateString([], {month:'short',day:'numeric'})+' '+hm; }
-function renderSessions(){
-  const el2=$('#sessions'); el2.innerHTML='';
-  if(SESS===null){ el2.innerHTML='<div style="opacity:.6;padding:16px">Loading sessions…</div>'; vscode.postMessage({type:'requestSessions'}); return; }
-  const bar=el('div','sessbar');
-  const seg=el('div','seg');
-  [['today','Today'],['yesterday','Yesterday'],['week','Last week'],['all','All']].forEach(([k,lbl])=>{
-    const b=el('button',sessFilter===k?'on':null,lbl); b.addEventListener('click',()=>{sessFilter=k;renderSessions();}); seg.appendChild(b);
-  });
-  bar.appendChild(seg);
-  const srch=el('input'); srch.placeholder='Search sessions…'; srch.value=sessSearch; srch.className='sesssearch';
-  srch.addEventListener('input',e=>{sessSearch=e.target.value;renderSessions();});
-  bar.appendChild(srch);
-  const reload=el('button','ghost mini','⟳'); reload.title='reload sessions'; reload.addEventListener('click',()=>{SESS=null;vscode.postMessage({type:'requestSessions'});renderSessions();}); bar.appendChild(reload);
-  el2.appendChild(bar);
-  const q=sessSearch.toLowerCase();
-  let rows=SESS.filter(sessInWindow).filter(s=>!q||((s.title||'')+' '+(s.project||'')+' '+(s.agent||'')).toLowerCase().includes(q));
-  rows.sort((a,b)=>sessWhen(b)-sessWhen(a));
-  const cnt=el('div','sesscount',rows.length+' session(s) · '+sessFilter); el2.appendChild(cnt);
-  if(!rows.length){ el2.appendChild(el('div',null,'<div style="opacity:.55;padding:14px 2px">No sessions in this window.</div>')); return; }
-  const list=el('div','sesslist');
-  rows.slice(0,300).forEach(s=>{
-    const c=el('div','sesscard');
-    const src=s.source==='grok'?'[G]':s.source==='git'?'[S]':'[C]';
-    const links=sessionLinks(s);
-    const refs=links.map(id=>'<span class="badge" title="linked">↔ '+esc(titleForId(id))+'</span>').join('');
-    c.innerHTML='<div class="sh"><span class="ct">'+esc(s.title||s.uuid)+'</span><span class="cm">'+fmtWhen(sessWhen(s))+'</span></div>'+
-      '<div class="sm"><span class="badge">'+src+' '+esc(s.agent||'')+'</span>'+(s.host?'<span class="badge" title="ran on this machine">💻 '+esc(s.host)+'</span>':'')+(s.project?'<span>'+esc(s.project)+'</span>':'')+(s.turns?'<span>'+s.turns+'t</span>':'')+'</div>'+
-      (refs?'<div class="srefs">'+refs+'</div>':'');
-    const acts=el('div','sacts');
-    const open=el('button','ghost mini','Open'); open.title='view the conversation'; open.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openSession',uuid:s.uuid,title:s.title}));
-    const traj=el('button','ghost mini','Trajectory'); traj.title='conversation trajectory graph'; traj.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openTrajectory',uuid:s.uuid,title:s.title}));
-    const resume=el('button','ghost mini','Resume ▸'); resume.title='resume in Code Build'; resume.addEventListener('click',()=>vscode.postMessage({type:'action',action:'resumeSession',uuid:s.uuid,cwd:s.projectPath,source:s.source,title:s.title}));
-    const link=el('button','ghost mini','Link to task'); link.addEventListener('click',()=>vscode.postMessage({type:'action',action:'linkSessionToTask',uuid:s.uuid}));
-    acts.appendChild(open); acts.appendChild(traj); acts.appendChild(resume); acts.appendChild(link);
-    if(links.length){ const g=el('button','ghost mini','→ planning'); g.addEventListener('click',()=>openDetail(links[0])); acts.appendChild(g); }
-    c.appendChild(acts);
-    c.addEventListener('click',ev=>{ if(ev.target.closest('button'))return; vscode.postMessage({type:'action',action:'openSession',uuid:s.uuid,title:s.title}); });
-    list.appendChild(c);
-  });
-  el2.appendChild(list);
-}
-// ── social: ideas/tasks flagged (lane==='social') to polish into a post ──
-const SOCIAL_LANE='social';
-function isSocial(o){ return String(o.lane||'')===SOCIAL_LANE; }
-function renderSocial(){
-  const el2=$('#social'); el2.innerHTML='';
-  const rows=(S.objects||[]).filter(o=>(o.type==='idea'||o.type==='task'||o.type==='thought')&&isSocial(o));
-  const bar=el('div',null,'<div style="font-size:13px;font-weight:600;margin-bottom:2px">✨ Polish → social media post</div><div style="opacity:.65;font-size:12px;margin-bottom:12px">Ideas / tasks / thoughts flagged for social. Flag any item from its drawer ("Mark for social"), or drag a card here. "Polish in Code Build" drafts a post from the item.</div>');
-  el2.appendChild(bar);
-  const drop=el('div','socialdrop'); drop.textContent='＋ drop a card here to flag it for social';
-  drop.addEventListener('dragover',ev=>{ev.preventDefault();drop.classList.add('over');});
-  drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
-  drop.addEventListener('drop',ev=>{ev.preventDefault();drop.classList.remove('over');const id=ev.dataTransfer.getData('text/plain');if(id)vscode.postMessage({type:'action',action:'toggleSocial',id:id,on:true});});
-  el2.appendChild(drop);
-  if(!rows.length){ el2.appendChild(el('div',null,'<div style="opacity:.55;padding:14px 2px">Nothing flagged yet.</div>')); return; }
-  const list=el('div','sociallist');
-  rows.forEach(o=>{
-    const c=el('div','socialcard');
-    c.innerHTML='<div class="sh"><span class="ct">'+esc(o.title||o.id)+'</span><span class="cm"><span class="badge">'+o.type+'</span>'+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.status?'<span>'+esc(o.status)+'</span>':'')+'</span></div>';
-    const acts=el('div','sacts');
-    const polish=el('button','ghost mini','✨ Polish in Code Build'); polish.addEventListener('click',()=>vscode.postMessage({type:'action',action:'polishSocial',id:o.id}));
-    const open=el('button','ghost mini','Open'); open.addEventListener('click',()=>openDetail(o.id));
-    const unflag=el('button','ghost mini','Unflag'); unflag.addEventListener('click',()=>vscode.postMessage({type:'action',action:'toggleSocial',id:o.id,on:false}));
-    acts.appendChild(polish); acts.appendChild(open); acts.appendChild(unflag);
-    c.appendChild(acts); list.appendChild(c);
-  });
-  el2.appendChild(list);
-}
-function todayStr(){return (S&&S.board&&S.board.date)||new Date().toISOString().slice(0,10);}
-let calFrom=null, calTo=null, calMode='month', calAnchor=null;
-let boardDateField='updated', boardDateVal='', overdueOnly=false, staleOnly=false;
-// A task is overdue when its due date is before today and it isn't done/outdated.
-function isOverdue(o){ return o.type==='task' && o.due && String(o.due).slice(0,10)<todayStr() && o.status!=='done' && o.status!=='outdated'; }
-// Open item untouched for 21+ days (last = updated, else created).
-const CLOSED_STATUS=new Set(['done','outdated','parked','archived','converted']);
-function isStale(o){ if(CLOSED_STATUS.has(String(o.status||'')))return false; const last=String(o.updated||o.created||''); if(!last)return false; return last<addDays(todayStr(),-21); }
-function overdueList(){ return (S&&S.objects||[]).filter(isOverdue); }
-function renderOverduePill(){
-  const p=$('#overduePill'); if(!p)return; const n=overdueList().length;
-  if(!n){ p.style.display='none'; return; }
-  p.style.display='inline-flex'; p.textContent='⚠ '+n+' overdue'; p.classList.toggle('on',overdueOnly);
-}
-function renderInboxPill(){
-  const p=$('#inboxPill'); if(!p)return; const n=inboxItems().length;
-  if(!n){ p.style.display='none'; return; }
-  p.style.display='inline-flex'; p.textContent='📥 '+n; p.classList.toggle('on',view==='inbox');
-}
-const addDays=(d,n)=>{const x=new Date(d+'T00:00:00Z');x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10);};
-const weekStart=d=>{const x=new Date(d+'T00:00:00Z');return addDays(d,-((x.getUTCDay()+6)%7));}; // Monday
-function dueByDay(){const m={};(S.objects||[]).filter(o=>o.type==='task'&&o.due).forEach(o=>{(m[o.due]??=[]).push(o);});
-  for(const k in m)m[k].sort((a,b)=>((a.priority||'p9')).localeCompare(b.priority||'p9'));return m;}
-function calDrop(elm,day){
-  elm.addEventListener('dragover',ev=>{ev.preventDefault();ev.dataTransfer.dropEffect='move';elm.classList.add('over');});
-  elm.addEventListener('dragleave',()=>elm.classList.remove('over'));
-  elm.addEventListener('drop',ev=>{ev.preventDefault();elm.classList.remove('over');
-    const id=ev.dataTransfer.getData('text/plain');
-    if(id)vscode.postMessage({type:'setDue',id:id,due:day});});
-}
-function dueItem(o,cls){
-  const now=todayStr();const closed=o.status==='done'||o.status==='outdated';
-  const it=el('div',cls+(o.due<now&&!closed?' late':''));
-  it.textContent=(o.priority?o.priority+' · ':'')+(o.title||o.id);
-  it.draggable=true;
-  it.addEventListener('dragstart',ev=>{ev.stopPropagation();ev.dataTransfer.setData('text/plain',o.id);ev.dataTransfer.effectAllowed='move';});
-  it.addEventListener('click',ev=>{ev.stopPropagation();openDetail(o.id);});
-  return it;
-}
-function renderCalendar(){
-  const now=todayStr();
-  if(!calAnchor)calAnchor=now;
-  const cal=$('#calendar'); cal.innerHTML='';
-  const by=dueByDay();
-  if(calMode==='list'){ renderCalList(cal,by,now); return; }
-  const bar=el('div','calbar');
-  const title=calMode==='month'?new Date(calAnchor+'T00:00:00Z').toLocaleDateString(undefined,{month:'long',year:'numeric',timeZone:'UTC'}):'Week of '+weekStart(calAnchor);
-  bar.innerHTML='<button class="ghost" id="cPrev">‹</button><span class="title">'+esc(title)+'</span><button class="ghost" id="cNext">›</button><button class="ghost" id="cToday">Today</button>';
-  cal.appendChild(bar);
-  bar.querySelector('#cToday').addEventListener('click',()=>{calAnchor=now;renderCalendar();});
-  if(calMode==='month'){
-    bar.querySelector('#cPrev').addEventListener('click',()=>{const d=new Date(calAnchor+'T00:00:00Z');d.setUTCMonth(d.getUTCMonth()-1,1);calAnchor=d.toISOString().slice(0,10);renderCalendar();});
-    bar.querySelector('#cNext').addEventListener('click',()=>{const d=new Date(calAnchor+'T00:00:00Z');d.setUTCMonth(d.getUTCMonth()+1,1);calAnchor=d.toISOString().slice(0,10);renderCalendar();});
-    const gridStart=weekStart(calAnchor.slice(0,8)+'01');
-    const grid=el('div','mgrid');
-    ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].forEach(d=>grid.appendChild(el('div','dow',d)));
-    for(let i=0;i<42;i++){
-      const d=addDays(gridStart,i);
-      const cell=el('div','mcell'+(d.slice(0,7)!==calAnchor.slice(0,7)?' dim':'')+(d===now?' today':''));
-      cell.appendChild(el('div','d','<span>'+Number(d.slice(8))+'</span>'));
-      const due=by[d]||[];
-      due.slice(0,3).forEach(o=>cell.appendChild(dueItem(o,'mi')));
-      if(due.length>3)cell.appendChild(el('div','mi','+'+(due.length-3)+' more…'));
-      cell.addEventListener('click',ev=>{ if(ev.target.closest('.mi'))return; openCreateDrawer({due:d}); });
-      cell.querySelector('.d').addEventListener('click',ev=>{ev.stopPropagation();calMode='list';calFrom=d;calTo=d;renderCalendar();});
-      cell.querySelector('.d').style.cursor='pointer';cell.querySelector('.d').title='open day list';
-      calDrop(cell,d);
-      grid.appendChild(cell);
-    }
-    cal.appendChild(grid);
-  }else{
-    const days=calMode==='workweek'?5:7;
-    bar.querySelector('#cPrev').addEventListener('click',()=>{calAnchor=addDays(calAnchor,-7);renderCalendar();});
-    bar.querySelector('#cNext').addEventListener('click',()=>{calAnchor=addDays(calAnchor,7);renderCalendar();});
-    const start=weekStart(calAnchor);
-    const grid=el('div','wgrid');grid.style.gridTemplateColumns='repeat('+days+',1fr)';
-    for(let i=0;i<days;i++){
-      const d=addDays(start,i);
-      const col=el('div','wcol'+(d===now?' today':''));
-      const label=new Date(d+'T00:00:00Z').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',timeZone:'UTC'});
-      const h=el('h4',null,'<span>'+esc(label)+'</span><span>›</span>');
-      h.addEventListener('click',()=>{calMode='list';calFrom=d;calTo=d;renderCalendar();});
-      col.appendChild(h);
-      (by[d]||[]).forEach(o=>col.appendChild(dueItem(o,'witem')));
-      col.addEventListener('click',ev=>{ if(ev.target.closest('.witem')||ev.target.closest('h4'))return; openCreateDrawer({due:d}); });
-      col.style.cursor='pointer';col.title='click empty space to add a task due this day';
-      calDrop(col,d);
-      grid.appendChild(col);
-    }
-    cal.appendChild(grid);
-  }
-}
-function renderCalList(cal,by,now){
-  if(!calFrom){calFrom=now;}
-  if(!calTo){calTo=addDays(now,14);}
-  const bar=el('div','calbar');
-  bar.innerHTML='<label>from <input type="date" id="calFrom" value="'+calFrom+'"></label> <label>to <input type="date" id="calTo" value="'+calTo+'"></label> <button id="calAll" class="ghost">All dated</button> <button id="calOverdue" class="ghost">+ Overdue</button>';
-  cal.appendChild(bar);
-  const inWin=Object.keys(by).filter(d=>d>=calFrom&&d<=calTo).sort();
-  if(!inWin.length)cal.appendChild(el('div','calempty','(no tasks due between '+calFrom+' and '+calTo+')'));
-  inWin.forEach(day=>{
-    const dayEl=el('div','calday');
-    const mark=day<now?' ⚠':day===now?' ← today':'';
-    dayEl.appendChild(el('h3',null,esc(day)+mark));
-    by[day].forEach(o=>{const done=o.status==='done'||o.status==='outdated';
-      const row=el('div','calrow'+(done?' done':'')+(o.due<now&&!done?' late':''));
-      row.innerHTML='<span class="dot" style="background:'+(LANE_COLOR[o.status]||'#888')+'"></span>'+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+'<span class="ct">'+esc(o.title||o.id)+'</span><span class="cm">'+esc(o.status||'')+(o.domain?' · '+esc(o.domain):'')+'</span>';
-      row.addEventListener('click',()=>openDetail(o.id));
-      dayEl.appendChild(row);});
-    cal.appendChild(dayEl);
-  });
-  bar.querySelector('#calFrom').addEventListener('change',e=>{calFrom=e.target.value;renderCalendar();});
-  bar.querySelector('#calTo').addEventListener('change',e=>{calTo=e.target.value;renderCalendar();});
-  bar.querySelector('#calAll').addEventListener('click',()=>{calFrom='0000-01-01';calTo='9999-12-31';renderCalendar();});
-  bar.querySelector('#calOverdue').addEventListener('click',()=>{calFrom='0000-01-01';calTo=todayStr();renderCalendar();});
-}
-
-// force-directed graph
-let gFilter={nodes:new Set(),edges:new Set()};
-let gT={x:0,y:0,k:1};
-function renderFilters(){
-  const panel=$('#gfilters'); if(!panel)return;
-  const types=[...new Set(((S&&S.graph&&S.graph.nodes)||[]).map(n=>n.type))].sort();
-  const kinds=[...new Set(((S&&S.graph&&S.graph.edges)||[]).map(e=>e.kind))].sort();
-  const btn=(label,active,color,attr,val)=>'<button class="gf-btn'+(active?'':' off')+'" '+attr+'="'+esc(val)+'">'+(color?'<span class="gf-dot" style="background:'+color+'"></span>':'')+esc(label)+'</button>';
-  panel.innerHTML='<div class="gf-row"><span class="gf-lab">Nodes</span>'+types.map(t=>btn(t,!gFilter.nodes.has(t),TYPE_COLOR[t]||'#888','data-nt',t)).join('')+'</div>'+
-    '<div class="gf-row"><span class="gf-lab">Edges</span>'+kinds.map(k=>btn(k,!gFilter.edges.has(k),'','data-ek',k)).join('')+'<button class="gf-btn gf-fit" id="gfFit">⊡ fit</button></div>';
-  panel.querySelectorAll('[data-nt]').forEach(b=>b.addEventListener('click',()=>{const t=b.getAttribute('data-nt');gFilter.nodes.has(t)?gFilter.nodes.delete(t):gFilter.nodes.add(t);renderGraph();}));
-  panel.querySelectorAll('[data-ek]').forEach(b=>b.addEventListener('click',()=>{const k=b.getAttribute('data-ek');gFilter.edges.has(k)?gFilter.edges.delete(k):gFilter.edges.add(k);renderGraph();}));
-  const fit=$('#gfFit'); if(fit)fit.addEventListener('click',()=>renderGraph());
-}
-function renderGraph(){
-  const svg=$('#graph'); const r=svg.getBoundingClientRect();
-  const W=(r.width||window.innerWidth||900), H=(r.height||(window.innerHeight-100)||600);
-  svg.setAttribute('viewBox','0 0 '+W+' '+H);
-  renderFilters();
-  const allNodes=((S&&S.graph&&S.graph.nodes)||[]).filter(n=>!gFilter.nodes.has(n.type));
-  const present=new Set(allNodes.map(n=>n.id));
-  const edges=((S&&S.graph&&S.graph.edges)||[]).filter(e=>!gFilter.edges.has(e.kind)&&present.has(e.from)&&present.has(e.to));
-  if(!allNodes.length){ svg.innerHTML='<text x="20" y="40" fill="currentColor" opacity="0.6">No nodes (all hidden, or no data).</text>'; return; }
-  // lay out around the origin, then auto-fit the bounding box to the viewport
-  const N=allNodes.length, R0=Math.max(160,Math.sqrt(N)*80);
-  const nodes=allNodes.map((n,i)=>{const a=i/N*6.283;return {...n,x:Math.cos(a)*R0*(0.55+0.45*((i*0.37)%1)),y:Math.sin(a)*R0*(0.55+0.45*((i*0.61)%1)),vx:0,vy:0};});
-  const idx={}; nodes.forEach(n=>idx[n.id]=n);
-  const E=edges.filter(e=>idx[e.from]&&idx[e.to]);
-  for(let it=0;it<340;it++){
-    for(let a=0;a<nodes.length;a++)for(let b=a+1;b<nodes.length;b++){
-      const p=nodes[a],q=nodes[b];let dx=p.x-q.x,dy=p.y-q.y;let d=Math.sqrt(dx*dx+dy*dy)||0.5;let f=Math.min(9000/(d*d),45);p.vx+=dx/d*f;p.vy+=dy/d*f;q.vx-=dx/d*f;q.vy-=dy/d*f;}
-    E.forEach(e=>{const p=idx[e.from],q=idx[e.to];let dx=q.x-p.x,dy=q.y-p.y;let d=Math.sqrt(dx*dx+dy*dy)||1;let f=(d-72)*0.05;p.vx+=dx/d*f;p.vy+=dy/d*f;q.vx-=dx/d*f;q.vy-=dy/d*f;});
-    nodes.forEach(n=>{n.vx+=(-n.x)*0.013;n.vy+=(-n.y)*0.013;n.x+=Math.max(-18,Math.min(18,n.vx));n.y+=Math.max(-18,Math.min(18,n.vy));n.vx*=0.8;n.vy*=0.8;});
-  }
-  let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;
-  nodes.forEach(n=>{mnx=Math.min(mnx,n.x);mny=Math.min(mny,n.y);mxx=Math.max(mxx,n.x);mxy=Math.max(mxy,n.y);});
-  const bw=Math.max(1,mxx-mnx),bh=Math.max(1,mxy-mny),pad=120;
-  gT.k=Math.max(0.3,Math.min((W-pad)/bw,(H-pad)/bh,2.4)); gT.x=W/2-(mnx+bw/2)*gT.k; gT.y=H/2-(mny+bh/2)*gT.k;
-  const k=gT.k, fs=(12/k).toFixed(1);
-  const ns='http://www.w3.org/2000/svg';
-  svg.innerHTML='';
-  const g=document.createElementNS(ns,'g'); g.setAttribute('id','gz'); svg.appendChild(g);
-  E.forEach(e=>{const p=idx[e.from],q=idx[e.to];const l=document.createElementNS(ns,'line');l.setAttribute('x1',p.x);l.setAttribute('y1',p.y);l.setAttribute('x2',q.x);l.setAttribute('y2',q.y);l.setAttribute('vector-effect','non-scaling-stroke');if(e.kind==='blocked_by'&&e.status!=='resolved')l.setAttribute('class','blocked');g.appendChild(l);});
-  nodes.forEach(nd=>{const grp=document.createElementNS(ns,'g');
-    const c=document.createElementNS(ns,'circle');c.setAttribute('cx',nd.x);c.setAttribute('cy',nd.y);c.setAttribute('r',((nd.blocked?9:7)/k).toFixed(1));c.setAttribute('fill',nd.blocked?'#e51400':(TYPE_COLOR[nd.type]||'#888'));
-    c.addEventListener('click',()=>{ if(S.objects&&S.objects.some(o=>o.id===nd.id)) openDetail(nd.id); else vscode.postMessage({type:'open',id:nd.id,kbPath:nd.type==='knowledge'?nd.id:undefined}); });
-    const t=document.createElementNS(ns,'text');t.setAttribute('x',nd.x+(10/k));t.setAttribute('y',nd.y+(4/k));t.setAttribute('font-size',fs);t.setAttribute('paint-order','stroke');t.setAttribute('stroke','var(--vscode-editor-background)');t.setAttribute('stroke-width',(3.5/k).toFixed(1));t.setAttribute('stroke-linejoin','round');t.textContent=(nd.label||nd.id).slice(0,30);
-    grp.appendChild(c);grp.appendChild(t);g.appendChild(grp);});
-  applyZoom();
-}
-function applyZoom(){const g=$('#gz');if(g)g.setAttribute('transform','translate('+gT.x+','+gT.y+') scale('+gT.k+')');}
-(function(){const svg=$('#graph');let drag=false,sx,sy;
-  svg.addEventListener('wheel',e=>{e.preventDefault();const f=e.deltaY<0?1.1:0.9;gT.k=Math.max(0.2,Math.min(4,gT.k*f));applyZoom();},{passive:false});
-  svg.addEventListener('mousedown',e=>{if(e.target.tagName==='circle')return;drag=true;sx=e.clientX-gT.x;sy=e.clientY-gT.y;});
-  window.addEventListener('mousemove',e=>{if(!drag)return;gT.x=e.clientX-sx;gT.y=e.clientY-sy;applyZoom();});
-  window.addEventListener('mouseup',()=>drag=false);
-})();
-
-function renderCanvas(){ $('#canvas').innerHTML='<div style="font-size:40px">✎</div><div><b>Visual canvas — Excalidraw</b></div><div style="max-width:420px">A free-form sketch/whiteboard saved to <code>~/docs/planning/canvas/board.excalidraw</code> (versioned in git with the rest of the plan).</div><button class="ghost" id="cbtn" style="margin-top:6px">Open Excalidraw canvas →</button>'; const b=$('#cbtn'); if(b)b.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openCanvas'})); }
-
-// detail drawer
-let flushAutosave=null;
-function openDetail(id){ vscode.postMessage({type:'show',id:id}); $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden'); $('#drawerInner').innerHTML='<div style="opacity:.6">Loading '+esc(id)+'…</div>'; }
-function closeDrawer(){ if(flushAutosave){try{flushAutosave();}catch(e){}} flushAutosave=null; $('#drawer').classList.add('hidden'); $('#backdrop').classList.add('hidden'); }
-function domainOptions(){ const s=new Set(); ((S&&S.objects)||[]).forEach(x=>{ if(x.type==='domain')s.add(String(x.title||x.id.split('/').pop())); else if(x.domain)s.add(String(x.domain)); }); return [...s].sort(); }
-function projectOptions(){ return ((S&&S.objects)||[]).filter(x=>x.type==='project').map(x=>({id:x.id,title:x.title||x.id.split('/').pop()})).sort((a,b)=>a.title.localeCompare(b.title)); }
-// New-item editor rendered in the side drawer — all fields editable before it's
-// created (replaces the cramped one-line top-bar input).
-function openCreateDrawer(prefill){
-  flushAutosave=null;
-  prefill=prefill||{};
-  $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden');
-  const I=$('#drawerInner'); I.innerHTML='';
-  const head=el('div','dh'); head.appendChild(el('h2',null,'New item')); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
-  const STAT={task:['inbox','today','in_progress','done','deferred','outdated'],idea:['capture','refine','accepted','parked','done'],plan:['plan','prototype','implement','validate','done','parked'],thought:['new','kept','converted','archived']};
-  // tasks default to 'today' (new items are things to do now); ideas/plans/thoughts keep theirs
-  const DEF={task:'today',idea:'capture',plan:'plan',thought:'new'};
-  let type=prefill.type||'task';
-  const row=(label,node)=>{const r=el('div','statusrow'); r.appendChild(el('span',null,label)); r.appendChild(node); I.appendChild(r); return r;};
-  // Type
-  const tSel=el('select'); ['task','idea','plan','thought'].forEach(t=>{const o=el('option',null,t);o.value=t;if(t===type)o.selected=true;tSel.appendChild(o);}); row('Type:',tSel);
-  // Title
-  const title=el('input','fldEdit'); title.style.width='100%'; title.placeholder='What needs doing?'; title.value=prefill.title||''; row('Title:',title); title.parentElement.style.flexWrap='wrap';
-  // Status
-  const sSel=el('select'); const fillStatus=()=>{sSel.innerHTML=''; (STAT[type]||STAT.task).forEach(s=>{const o=el('option',null,s);o.value=s;if(s===(prefill.status||DEF[type]))o.selected=true;sSel.appendChild(o);});}; fillStatus(); row('Status:',sSel);
-  // Category/domain with datalist
-  const dl=el('datalist'); dl.id='newDomList'; domainOptions().forEach(d=>{const o=el('option');o.value=d;dl.appendChild(o);}); I.appendChild(dl);
-  const dom=el('input','fldEdit'); dom.setAttribute('list','newDomList'); dom.placeholder='kids / tech / career…'; dom.value=prefill.domain||''; row('Category:',dom);
-  // Lane
-  const lane=el('input','fldEdit'); lane.placeholder='(optional)'; lane.value=prefill.lane||''; row('Lane:',lane);
-  // Project
-  const pSel=el('select'); const pn=el('option',null,'(none)'); pn.value=''; pSel.appendChild(pn); projectOptions().forEach(p=>{const o=el('option',null,p.title);o.value=p.id;if(p.id===prefill.project)o.selected=true;pSel.appendChild(o);}); row('Project:',pSel);
-  // Due + priority
-  const due=el('input','fldEdit'); due.type='date'; due.value=prefill.due||todayStr(); const prio=el('select'); ['-','p0','p1','p2','p3'].forEach(p=>{const o=el('option',null,p);o.value=p;prio.appendChild(o);}); const dpr=el('div','statusrow'); dpr.appendChild(el('span',null,'Due:')); dpr.appendChild(due); dpr.appendChild(el('span',null,'Priority:')); dpr.appendChild(prio); I.appendChild(dpr);
-  // Body
-  { const s=el('div','sec'); s.appendChild(el('h4',null,'Notes / details')); const ta=el('textarea','bodyEdit'); ta.id='newBody'; ta.placeholder='Markdown details…'; ta.value=prefill.body||''; s.appendChild(ta); I.appendChild(s); }
-  tSel.addEventListener('change',()=>{type=tSel.value;fillStatus();});
-  // actions
-  const act=el('div','actions'); act.style.marginTop='14px';
-  const create=el('button','act primary','Create'); const cancel=el('button','act','Cancel');
-  act.appendChild(create); act.appendChild(cancel); I.appendChild(act);
-  cancel.addEventListener('click',closeDrawer);
-  const submit=()=>{ const t=title.value.trim(); if(!t){title.focus();return;}
-    vscode.postMessage({type:'action',action:'createItem',fields:{type:type,title:t,status:sSel.value,domain:dom.value.trim(),lane:lane.value.trim(),project:pSel.value,due:due.value,priority:prio.value==='-'?'':prio.value,body:$('#newBody').value}}); };
-  create.addEventListener('click',submit);
-  title.addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();submit();} });
-  setTimeout(()=>title.focus(),50);
-}
-function mdLite(s){ return esc(s).replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h2>$1</h2>').replace(/\\*\\*(.+?)\\*\\*/g,'<b>$1</b>').replace(/\`([^\`]+)\`/g,'<code>$1</code>'); }
-function refRow(r,bad,onclick){ const d=el('div','refitem'+(bad?' bad':'')); d.innerHTML=esc(r.title||r.id||r.path); if(r.status)d.innerHTML+=' <span class="badge">'+esc(r.status)+'</span>'; if(onclick)d.addEventListener('click',onclick); return d; }
-function renderDrawer(o){
-  const I=$('#drawerInner'); I.innerHTML='';
-  const head=el('div','dh'); const ti=el('input','titleEdit'); ti.value=o.title||''; ti.title='Edit name — Enter or click away to save'; ti.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:'title',value:ti.value})); head.appendChild(ti); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
-  const fm=o.frontmatter||{};
-  const meta=el('div','drow'); meta.innerHTML='<span class="badge">'+o.type+'</span>'+(o.status?'<span class="badge">'+esc(o.status)+'</span>':'')+(o.domain?'<span class="badge">'+esc(o.domain)+'</span>':'')+(fm.context?'<span class="badge" title="captured under">◔ '+esc(fm.context)+'</span>':'')+(fm.surfaced_on?'<span class="badge" title="surfaced on">'+esc(fm.surfaced_on)+'</span>':''); I.appendChild(meta);
-  if(fm.source_url){ const sr=el('div','drow'); const a=el('span','badge','↗ '+esc(fm.source||'source')); a.style.cursor='pointer'; a.title=fm.source_url; a.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openUrl',url:fm.source_url})); sr.appendChild(a); I.appendChild(sr); }
-  // status changer
-  const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>postStatus(o.id,sel.value)); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); I.appendChild(sr); }
-  { const fr=el('div','statusrow'); const mkf=(field,val)=>{ const inp=el('input','fldEdit'); inp.value=val||''; inp.placeholder=field; inp.title='Edit '+field; inp.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:field,value:inp.value})); return inp; };
-    const dl=el('datalist'); dl.id='domList';
-    const doms=new Set(); ((S&&S.objects)||[]).forEach(x=>{ if(x.type==='domain')doms.add(String(x.title||x.id.split('/').pop())); else if(x.domain)doms.add(String(x.domain)); });
-    [...doms].sort().forEach(d=>{const op=el('option');op.value=d;dl.appendChild(op);});
-    fr.appendChild(dl);
-    fr.appendChild(el('span',null,'Category:')); const di2=mkf('domain',o.domain); di2.setAttribute('list','domList'); di2.title='Category / domain — pick an existing one or type a new one'; fr.appendChild(di2);
-    fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); I.appendChild(fr); }
-  { const pr=el('div','statusrow'); pr.appendChild(el('span',null,'Project:'));
-    const sel=el('select'); const none=el('option',null,'(none)'); none.value='-'; sel.appendChild(none);
-    const cur=o.project||(o.frontmatter&&o.frontmatter.project)||'';
-    ((S&&S.objects)||[]).filter(x=>x.type==='project').forEach(p=>{const op=el('option',null,p.title||p.id);op.value=p.id;if(p.id===cur)op.selected=true;sel.appendChild(op);});
-    if(!cur)none.selected=true;
-    sel.addEventListener('change',()=>vscode.postMessage({type:'setProject',id:o.id,project:sel.value}));
-    pr.appendChild(sel); I.appendChild(pr); }
-  { const dr=el('div','statusrow'); dr.appendChild(el('span',null,'Due:')); const di=el('input','fldEdit'); di.type='date'; di.style.width='150px';
-    let lastDue=String(o.due||(o.frontmatter&&o.frontmatter.due)||'').slice(0,10); di.value=lastDue; di.title='Assign a due date — clear to unset';
-    // chromium fires 'change' per keystroke in the year segment (year "2" => valid 0002-07-25),
-    // so debounce and refuse implausible years instead of saving intermediates
-    let dueT=null;
-    const commitDue=()=>{const v=di.value; if(v===lastDue)return; if(v&&(!/^\\d{4}-\\d{2}-\\d{2}$/.test(v)||Number(v.slice(0,4))<1970))return; lastDue=v; vscode.postMessage({type:'setDue',id:o.id,due:v||'-'});};
-    di.addEventListener('change',()=>{clearTimeout(dueT);dueT=setTimeout(commitDue,700);});
-    di.addEventListener('blur',()=>{clearTimeout(dueT);commitDue();});
-    di.addEventListener('click',()=>{try{if(di.showPicker)di.showPicker();}catch(e){}});
-    dr.appendChild(di);
-    // Priority: p0 (highest) … p3, or none
-    dr.appendChild(el('span',null,'Priority:'));
-    const pi=el('select'); ['-','p0','p1','p2','p3'].forEach(p=>{const op=el('option',null,p);op.value=p;if(p===((o.frontmatter&&o.frontmatter.priority)||'-'))op.selected=true;pi.appendChild(op);});
-    pi.addEventListener('change',()=>vscode.postMessage({type:'setPriority',id:o.id,priority:pi.value}));
-    dr.appendChild(pi);
-    I.appendChild(dr); }
-  // agent actions
-  const act=el('div','sec'); act.appendChild(el('h4',null,'Agent actions'));
-  const grid=el('div','actions');
-  const mk=(k,d,action,primary)=>{const b=el('button','act'+(primary?' primary':''),'<span class="k">'+k+'</span><span class="d">'+d+'</span>');b.addEventListener('click',()=>vscode.postMessage({type:'action',action:action,id:o.id}));return b;};
-  grid.appendChild(mk('Ideate','expand into sub-ideas','ideate'));
-  grid.appendChild(mk('Draft spec','speckit FRs + criteria','spec'));
-  grid.appendChild(mk('Decompose','break into tasks','decompose'));
-  grid.appendChild(mk('Research KB','find + connect knowledge','research'));
-  act.appendChild(grid);
-  const grid2=el('div','actions'); grid2.style.marginTop='7px';
-  grid2.appendChild(mk('Run in Code Build ▸','review prompt, then run','execute',true));
-  grid2.appendChild(mk('Open in Code Build','whole-item context + @refs','openCB'));
-  grid2.appendChild(mk('Open file','edit markdown','openFile'));
-  grid2.appendChild(mk('Link session','search + attach','link'));
-  act.appendChild(grid2);
-  const grid3=el('div','actions'); grid3.style.marginTop='7px';
-  grid3.appendChild(mk('Edit','title / fields','editItem'));
-  grid3.appendChild(mk('Clone','duplicate this item','cloneItem'));
-  grid3.appendChild(mk('Recategorize','type / domain / lane','recategorize'));
-  if(o.type==='idea'){ grid3.appendChild(mk('Promote → plan','create a plan','promote')); grid3.appendChild(mk('Move → task','convert to task','moveToTask')); }
-  if(o.type==='thought'){ grid3.appendChild(mk('Convert → idea','promote this thought','convertToIdea')); grid3.appendChild(mk('Convert → task','make it actionable','convertToTask')); }
-  if(o.type==='idea'||o.type==='task'||o.type==='thought'){
-    const soc=String((o.frontmatter&&o.frontmatter.lane)||o.lane||'')==='social';
-    const b=el('button','act','<span class="k">'+(soc?'★ Unmark social':'✨ Mark for social')+'</span><span class="d">'+(soc?'flagged to polish':'polish → social post')+'</span>');
-    b.addEventListener('click',()=>vscode.postMessage({type:'action',action:'toggleSocial',id:o.id,on:!soc}));
-    grid3.appendChild(b);
-    grid3.appendChild(mk('Polish → social post','draft in Code Build','polishSocial'));
-  }
-  grid3.appendChild(mk('Delete','remove item','deleteItem'));
-  act.appendChild(grid3); I.appendChild(act);
-  // body
-  { const s=el('div','sec'); const h=el('div','bodyhead'); h.appendChild(el('h4',null,'Notes / details')); const st=el('span','savenote',''); h.appendChild(st); s.appendChild(h);
-    const ta=el('textarea','bodyEdit'); ta.value=o.body||''; ta.placeholder='Markdown details… (autosaves)'; s.appendChild(ta);
-    let t=null, saved=ta.value;
-    const save=()=>{ if(ta.value===saved)return; saved=ta.value; vscode.postMessage({type:'action',action:'autosaveField',id:o.id,field:'body',value:ta.value}); st.textContent='saved ✓'; setTimeout(()=>{if(st.textContent==='saved ✓')st.textContent='';},1500); };
-    ta.addEventListener('input',()=>{clearTimeout(t);st.textContent='…';t=setTimeout(save,800);});
-    ta.addEventListener('blur',()=>{clearTimeout(t);save();});
-    flushAutosave=save;
-    I.appendChild(s); }
-  // references
-  const refs=[['Blocked by knowledge',o.blocked_by,true],['Cites',o.cites,false],['Children',o.children,false],['Depends on',o.depends_on,false],['Related',o.related,false]];
-  refs.forEach(([label,list,isBlock])=>{ if(!list||!list.length)return; const s=el('div','sec'); s.appendChild(el('h4',null,label+' ('+list.length+')')); const rl=el('div','reflist'); list.forEach(r=>{ const bad=isBlock?(r.status!=='resolved'):(r.exists===false||r.missing); const open = r.id&&!r.missing? ()=>openDetail(r.id) : (r.path? ()=>vscode.postMessage({type:'open',kbPath:r.path}) : null); rl.appendChild(refRow(r,bad,open)); }); s.appendChild(rl); I.appendChild(s); });
-  if(o.parent){ const s=el('div','sec'); s.appendChild(el('h4',null,'Parent')); const rl=el('div','reflist'); rl.appendChild(refRow(o.parent,false,()=>openDetail(o.parent.id))); s.appendChild(rl); I.appendChild(s); }
-  if(o.linked_sessions&&o.linked_sessions.length){ const s=el('div','sec'); s.appendChild(el('h4',null,'Linked sessions ('+o.linked_sessions.length+')')); const rl=el('div','reflist'); o.linked_sessions.forEach(u=>rl.appendChild(refRow({id:u,title:'▸ open chat — '+u.slice(0,18)+'…'},false,()=>vscode.postMessage({type:'action',action:'openSession',uuid:u})))); s.appendChild(rl); I.appendChild(s); }
-}
-vscode.postMessage({type:'ready'});
-`;

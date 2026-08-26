@@ -14,6 +14,12 @@ import { embedMany, EmbedConfig, filterSameDimEmbeddings } from "./embedding";
 import { embedTextHash, taggedEmbeddingModel } from "./embedText";
 import { buildEmbedTexts, selectReembedTargets } from "./reembedJob";
 import { classifySession } from "./topicClassifier";
+import {
+  isAutomatedSession,
+  DEFAULT_TITLE_PATTERNS,
+  DEFAULT_EXTRA_ENTRYPOINTS,
+  DEFAULT_AUTO_LABELS,
+} from "./automation";
 
 interface GraphPoint {
   session_id: string;
@@ -195,7 +201,14 @@ async function buildLayout(
   // double-probe, just embed the first session immediately so the returned
   // model id is final, then re-use that string when querying which sessions
   // need embedding.
-  const allSessions = store.listRecent(100_000, false); // exclude automated
+  const vsCfg = vscode.workspace.getConfiguration("codeSessions");
+  const autoCfg = {
+    honorDbFlag: true,
+    extraEntrypoints: vsCfg.get<string[]>("automation.extraEntrypoints", DEFAULT_EXTRA_ENTRYPOINTS),
+    titlePatterns: vsCfg.get<string[]>("automation.titlePatterns", DEFAULT_TITLE_PATTERNS),
+    extraLabels: vsCfg.get<string[]>("automation.labels", DEFAULT_AUTO_LABELS),
+  };
+  const allSessions = store.listRecent(100_000, true).filter((s) => !isAutomatedSession(s, autoCfg));
   if (allSessions.length === 0) {
     return { points: [], embeddingModel: "(none)", clusterLabels: [], clusterMethod: "none" };
   }

@@ -34,6 +34,14 @@ import {
   linkTargetFromArg,
   openSessionFromLink,
 } from "./openSessionLink";
+import {
+  isAutomatedSession,
+  DEFAULT_TITLE_PATTERNS,
+  DEFAULT_EXTRA_ENTRYPOINTS,
+  DEFAULT_AUTO_LABELS,
+  type AutomationConfig,
+} from "./automation";
+import { deleteSessionArtifacts } from "./sessionDelete";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -423,6 +431,8 @@ interface SessionRow {
   tokens_total: number;
   cost_usd: number;
   title: string;
+  /** First user prompt (truncated). Used by the automation predicate. */
+  first_user_msg?: string;
   subagents: number;
   projects_touched: string[];
   first_ts_epoch?: number;
@@ -498,6 +508,32 @@ function formatDurationSec(sec: number): string {
   return remHr > 0 ? `${day}d ${remHr}h` : `${day}d`;
 }
 
+function readAutomationConfig(): AutomationConfig {
+  const cfg = vscode.workspace.getConfiguration("codeSessions");
+  return {
+    honorDbFlag: true,
+    extraEntrypoints: cfg.get<string[]>("automation.extraEntrypoints", DEFAULT_EXTRA_ENTRYPOINTS),
+    titlePatterns: cfg.get<string[]>("automation.titlePatterns", DEFAULT_TITLE_PATTERNS),
+    extraLabels: cfg.get<string[]>("automation.labels", DEFAULT_AUTO_LABELS),
+  };
+}
+
+function rowIsAutomated(r: {
+  is_automated?: boolean;
+  entrypoint?: string;
+  title?: string;
+  first_user_msg?: string;
+  extras_json?: string | null;
+  kind?: string;
+}): boolean {
+  return isAutomatedSession(r, readAutomationConfig());
+}
+
+async function syncShowAutomatedContext(): Promise<void> {
+  const on = vscode.workspace.getConfiguration("codeSessions").get<boolean>("showAutomated", false);
+  await vscode.commands.executeCommand("setContext", "codeSessions.showAutomated", on);
+}
+
 function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
   return {
     source: r.source,
@@ -520,6 +556,7 @@ function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
     cost_usd: r.cost_usd,
     own_cost_usd: r.cost_usd,
     title: r.title || (r.first_user_msg ?? "").slice(0, 70),
+    first_user_msg: r.first_user_msg ?? "",
     subagents: r.subagent_count,
     projects_touched: r.projects_touched,
     first_ts_epoch: r.started_at ? Math.floor(r.started_at / 1000) : 0,
@@ -736,7 +773,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     // Fast path: SQLite cache.
     if (cacheEnabled && this.store) {
       try {
-        const dbRows = this.store.listRecent(limit, true);
+        const dbRows = this.store.listRecent(limit, true, { requireReply: true });
         const childRollup = this.store.childRollupByParent();
         this.rows = dbRows
           .filter((r) => r.kind === "session" || !r.kind)
@@ -906,7 +943,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     const showAutomated = cfg.get<boolean>("showAutomated", false);
     const showHidden = cfg.get<boolean>("showHidden", false);
     return rows
-      .filter((r) => showAutomated || !r.is_automated)
+      .filter((r) => showAutomated || !rowIsAutomated(r))
       .filter((r) => showHidden || !r.is_hidden)
       .filter((r) => (r.last_response_epoch ?? 0) > 0);
   }
@@ -924,6 +961,14 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   /** Rows the QuickPick should offer folders/hosts from (scope-unfiltered). */
   candidateRows(): SessionRow[] {
     return this.filterCandidates(this.rows);
+  }
+
+  /** Sessions suppressed only by the automation filter (in scope, not user-hidden). */
+  automatedHiddenCount(): number {
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
+    if (cfg.get<boolean>("showAutomated", false)) return 0;
+    const showHidden = cfg.get<boolean>("showHidden", false);
+    return this.rows.filter((r) => rowIsAutomated(r) && (showHidden || !r.is_hidden) && this.inScope(r)).length;
   }
 
   /** Returns the epoch-second timestamp we treat as the session's
@@ -1035,16 +1080,16 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     // suppressed only by the named axis, so the user sees actionable
     // numbers instead of cumulative hides.
     const automatedCount = showAutomated ? 0 :
-      allRows.filter((r) => r.is_automated && (showHidden || !r.is_hidden)
+      allRows.filter((r) => rowIsAutomated(r) && (showHidden || !r.is_hidden)
         && this.inScope(r)).length;
     const hiddenCount = showHidden ? 0 :
-      allRows.filter((r) => r.is_hidden && (showAutomated || !r.is_automated)
+      allRows.filter((r) => r.is_hidden && (showAutomated || !rowIsAutomated(r))
         && this.inScope(r)).length;
 
     const out: vscode.TreeItem[] = [];
 
     if (wsFilter || hostFilter) {
-      const hiddenByScope = allRows.filter((r) => (showAutomated || !r.is_automated)
+      const hiddenByScope = allRows.filter((r) => (showAutomated || !rowIsAutomated(r))
         && (showHidden || !r.is_hidden)
         && (r.last_response_epoch ?? 0) > 0
         && !this.inScope(r)).length;
@@ -1117,9 +1162,13 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       );
       tip.iconPath = new vscode.ThemeIcon("watch");
       tip.tooltip = new vscode.MarkdownString(
-        "Sessions whose `entrypoint` is not interactive (e.g. `sdk-cli`) are hidden.\n\nToggle **Settings → Code Sessions: Show Automated** to include them.",
+        "Cron, night-loop, fleet, and other suite-automation sessions are hidden.\n\nClick this row (or the title-bar watch icon) to show them.",
       );
       tip.contextValue = "automatedHidden";
+      tip.command = {
+        command: "codeSessions.showAutomatedSessions",
+        title: "Show automated sessions",
+      };
       out.push(tip);
     }
     if (!showHidden && hiddenCount > 0) {
@@ -1303,12 +1352,13 @@ class SessionItem extends vscode.TreeItem {
     // disappear once `showHidden` flips off; source default (`rocket` for
     // grok, `comment-discussion` for claude) carries the source signal in
     // the default state, doubling up with the `[C]` / `[G]` label prefix.
+    const automated = rowIsAutomated(row);
     this.iconPath = new vscode.ThemeIcon(
       row.is_hidden
         ? "eye-closed"
         : row.is_starred
           ? "star-full"
-          : row.is_automated
+          : automated
             ? "watch"
             : row.active === "*"
               ? "pulse"
@@ -1318,7 +1368,7 @@ class SessionItem extends vscode.TreeItem {
                   ? "terminal"
                   : "comment-discussion",
     );
-    const base = row.is_automated ? "sessionAutomated" : "session";
+    const base = automated ? "sessionAutomated" : "session";
     const starred = row.is_starred ? `${base}-starred` : base;
     this.contextValue = row.is_hidden ? `${starred}-hidden` : starred;
     // No `command` here: clicking expands the children. Use the explicit
@@ -2288,7 +2338,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   sessions.hostOverride = ctx.workspaceState.get<string | null>(HOST_OVERRIDE_KEY, null);
   // Feed the planning dashboard's Sessions view from the CS index (recent + rich);
   // it falls back to the ~/.sessions git store when the cache is disabled.
-  setSessionProvider(() => (store ? (store.listRecent(500, true) as unknown as never[]) : null));
+  setSessionProvider(() => (store ? (store.listRecent(500, true, { requireReply: true }) as unknown as never[]) : null));
   ctx.subscriptions.push({ dispose: () => setSessionProvider(undefined) });
   const kb = new KbChangesProvider();
   const projects = new ProjectsActivityProvider();
@@ -2355,6 +2405,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     treeDataProvider: sessions,
     showCollapseAll: true,
   });
+  void syncShowAutomatedContext();
   ctx.subscriptions.push(
     sessionsTreeView,
     vscode.window.registerTreeDataProvider("codeProjectsActivity", projects),
@@ -2461,7 +2512,7 @@ export function activate(ctx: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand("codeSessions.chooseFilter", async () => {
       type FilterPick = vscode.QuickPickItem & {
-        axis?: "folder" | "host";
+        axis?: "folder" | "host" | "automation";
         value?: string | null; // null = default, "*" = all, else explicit
       };
       const localHost = os.hostname();
@@ -2528,20 +2579,40 @@ export function activate(ctx: vscode.ExtensionContext) {
             description: `${e.n} session${e.n === 1 ? "" : "s"}`
               + activeMark(ho != null && normalizeHost(ho) === key),
           })),
+        { label: "Automation", kind: vscode.QuickPickItemKind.Separator },
+        {
+          axis: "automation", value: "hide",
+          label: "$(watch) Hide automated",
+          description: `${sessions.automatedHiddenCount()} hidden` +
+            activeMark(!vscode.workspace.getConfiguration("codeSessions").get<boolean>("showAutomated", false)),
+        },
+        {
+          axis: "automation", value: "show",
+          label: "$(eye) Show automated",
+          description: "include cron / night-loop / KP·CSV·CS jobs" +
+            activeMark(!!vscode.workspace.getConfiguration("codeSessions").get<boolean>("showAutomated", false)),
+        },
       ];
       const pick = await vscode.window.showQuickPick(items, {
-        title: "Filter sessions — pick a folder or a host",
+        title: "Filter sessions — pick a folder, host, or automation",
         placeHolder:
-          "Defaults: current workspace + this host. Pick again to change the other axis.",
+          "Defaults: current workspace + this host + hide automated. Pick again to change another axis.",
         matchOnDescription: true,
       });
       if (!pick || !pick.axis) return;
       if (pick.axis === "folder") {
         sessions.folderOverride = pick.value ?? null;
         await ctx.workspaceState.update(FOLDER_OVERRIDE_KEY, sessions.folderOverride);
-      } else {
+      } else if (pick.axis === "host") {
         sessions.hostOverride = pick.value ?? null;
         await ctx.workspaceState.update(HOST_OVERRIDE_KEY, sessions.hostOverride);
+      } else if (pick.axis === "automation") {
+        await vscode.workspace.getConfiguration("codeSessions").update(
+          "showAutomated",
+          pick.value === "show",
+          vscode.ConfigurationTarget.Global,
+        );
+        await syncShowAutomatedContext();
       }
       sessions.refresh();
     }),
@@ -2947,6 +3018,58 @@ export function activate(ctx: vscode.ExtensionContext) {
       store.setHidden(row.session, false);
       sessions.refresh();
     }),
+    vscode.commands.registerCommand("codeSessions.showAutomatedSessions", async () => {
+      await vscode.workspace.getConfiguration("codeSessions").update(
+        "showAutomated", true, vscode.ConfigurationTarget.Global,
+      );
+      await syncShowAutomatedContext();
+      sessions.refresh();
+    }),
+    vscode.commands.registerCommand("codeSessions.hideAutomatedSessions", async () => {
+      await vscode.workspace.getConfiguration("codeSessions").update(
+        "showAutomated", false, vscode.ConfigurationTarget.Global,
+      );
+      await syncShowAutomatedContext();
+      sessions.refresh();
+    }),
+    vscode.commands.registerCommand("codeSessions.deleteSession", async (arg: SessionRow | SessionItem | undefined) => {
+      if (!store) {
+        vscode.window.showWarningMessage("Delete requires the SQLite cache. Enable codeSessions.cacheEnabled.");
+        return;
+      }
+      const row = unwrapRow(arg);
+      if (!row?.session) return;
+      const title = (row.title || row.session).slice(0, 80);
+      const choice = await vscode.window.showWarningMessage(
+        `Delete session “${title}”? This removes the cache row and on-disk transcripts (native JSONL and the ~/.sessions copy). Cannot be undone from this extension.`,
+        { modal: true },
+        "Delete",
+      );
+      if (choice !== "Delete") return;
+      const dbRow = store.getById(row.session);
+      const result = await deleteSessionArtifacts({
+        session_id: row.session,
+        source: row.source,
+        jsonl_path: dbRow?.jsonl_path ?? null,
+        mtime_epoch: row.mtime_epoch,
+      }, {
+        locateClaudeJsonl: (id) => locateSessionJsonl(id),
+        locateGrokSummary: () => locateGrokSummary(row),
+        locateStoreTurns,
+        gitSessionsRoot,
+      });
+      if (!result.ok) {
+        vscode.window.showErrorMessage(`Delete failed: ${result.error}`);
+        return;
+      }
+      store.deleteSession(row.session);
+      sessions.refresh();
+      const n = result.deleted.length;
+      vscode.window.setStatusBarMessage(
+        `Deleted “${title}” (${n} path${n === 1 ? "" : "s"}${result.gitCommitted ? ", committed in ~/.sessions" : ""}).`,
+        5000,
+      );
+    }),
     vscode.commands.registerCommand("codeSessions.renameSession", async (arg: SessionRow | SessionItem | undefined) => {
       if (!store) {
         vscode.window.showWarningMessage("Rename requires the SQLite cache. Enable codeSessions.cacheEnabled.");
@@ -3020,7 +3143,10 @@ export function activate(ctx: vscode.ExtensionContext) {
   // Re-render trees when relevant settings flip (e.g. showAutomated).
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("codeSessions")) sessions.refresh();
+      if (e.affectsConfiguration("codeSessions")) {
+        void syncShowAutomatedContext();
+        sessions.refresh();
+      }
       if (e.affectsConfiguration("codeKbChanges")) {
         kb.refresh();
         if (e.affectsConfiguration("codeKbChanges.repoPath")) refreshKbTitle();

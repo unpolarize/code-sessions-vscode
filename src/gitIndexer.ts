@@ -58,6 +58,7 @@ interface Envelope {
   totals?: { input_tokens?: number; output_tokens?: number; cost_usd?: number };
   title?: string;
   labels?: string[];
+  planning_refs?: string[];
   native_ref?: { format?: string; uuid?: string };
 }
 
@@ -290,6 +291,8 @@ export function buildGitRows(info: GitSessionInfo): { session: SessionRow; turns
       host: env.host,
       agent: env.agent,
       labels: env.labels ?? [],
+      open: !env.ended_at,
+      planning_refs: env.planning_refs ?? [],
     }),
   };
 
