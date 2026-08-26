@@ -53,6 +53,7 @@ const USER = { timestamp: "2026-06-20T15:28:06.000Z", type: "event_msg", payload
 const TOOL = { timestamp: "2026-06-20T15:28:06.500Z", type: "response_item", payload: { type: "function_call", name: "shell", arguments: "{\"command\":[\"ls\"]}" } };
 const AGENT = { timestamp: "2026-06-20T15:28:07.000Z", type: "event_msg", payload: { type: "agent_message", message: "hello from codex" } };
 const TOKENS = { timestamp: "2026-06-20T15:28:07.500Z", type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 3000, cached_input_tokens: 1000, output_tokens: 42, total_tokens: 3042 } } } };
+const TOKENS_REASON = { timestamp: "2026-06-20T15:28:07.500Z", type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 500, cached_input_tokens: 100, output_tokens: 19, reasoning_output_tokens: 9, total_tokens: 619 } } } };
 
 let passed = 0;
 function t(name, fn) {
@@ -83,6 +84,7 @@ t("happy path: id/model/tokens/title/entrypoint/turns all mapped", () => {
   assert.strictEqual(s.input_tokens, 3000);
   assert.strictEqual(s.output_tokens, 42);
   assert.strictEqual(s.cache_read_tokens, 1000);
+  assert.strictEqual(s.reasoning_tokens, null); // no reasoning_output_tokens in fixture
   assert.strictEqual(s.cost_usd, 0);
   assert.strictEqual(s.entrypoint, "exec");
   assert.strictEqual(s.is_automated, true);
@@ -95,6 +97,17 @@ t("happy path: id/model/tokens/title/entrypoint/turns all mapped", () => {
   assert.strictEqual(rows.turns[0].user_text, "Reply with exactly: hello from codex");
   assert.strictEqual(rows.turns[0].assistant_excerpt, "hello from codex");
   assert.strictEqual(rows.turns[0].tool_names_csv, "shell");
+});
+
+t("reasoning_output_tokens maps to session.reasoning_tokens (9/19 share)", () => {
+  const { root, day } = makeRoot();
+  writeRollout(day, [META, TURN_CTX, USER, AGENT, TOKENS_REASON]);
+  const infos = listAllCodexSessions(root);
+  const rows = buildCodexRows(infos[0]);
+  assert.ok(rows);
+  assert.strictEqual(rows.session.reasoning_tokens, 9);
+  assert.strictEqual(rows.session.output_tokens, 19);
+  assert.strictEqual(rows.turns[0].reasoning_tokens, null); // cumulative at session only
 });
 
 // 2. Truncated last line (live-append) is skipped, rest parses.

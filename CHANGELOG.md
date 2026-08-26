@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.42.0 — 2026-08-26
+
+### Reasoning / thinking token share (Codex-first)
+
+- **Schema v19** — nullable `reasoning_tokens` on `session` and `turn` (NULL = never reported; 0 = reported zero; no `DEFAULT 0`).
+- **`src/reasoningTokens.ts`** — cross-backend alias map + share formula (`reasoning / output`, n/a when missing / output≤0 / reasoning>output).
+- **Codex indexer** keeps `reasoning_output_tokens` from `token_count` (no longer dropped); Claude JSONL alias-reads `output_tokens_details.thinking_tokens` when present (n/a on today's transcripts); Grok/git stay NULL.
+- **Conversation viewer** shows a **Reasoning share** stat (`47.4%` or `n/a`) with tooltip counts.
+- Fixture + unit tests: Codex 9/19 → 47.4%; missing field stays NULL (never fake 0%).
+- Slice of ideas/csv-reasoning-thinking-token-share-card-multi-ba (schema + Codex parser + share card; multi-backend list sort / Insights rollup remain).
+
 ## 1.41.0 — 2026-08-24
 
 ### Codex sessions render in the conversation viewer

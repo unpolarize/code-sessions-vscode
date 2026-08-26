@@ -278,6 +278,7 @@ export function buildGitRows(info: GitSessionInfo): { session: SessionRow; turns
     output_tokens: totals.output_tokens ?? 0,
     cache_read_tokens: 0,
     cache_write_tokens: 0,
+    reasoning_tokens: null,
     cost_usd: totals.cost_usd ?? 0,
     model: env.model ?? null,
     title,
@@ -311,6 +312,7 @@ export function buildGitRows(info: GitSessionInfo): { session: SessionRow; turns
     output_tokens: e.output_tokens,
     cache_read_tokens: e.cache_read_tokens,
     cache_write_tokens: e.cache_write_tokens,
+    reasoning_tokens: null,
     cost_usd: e.cost_usd,
   }));
 

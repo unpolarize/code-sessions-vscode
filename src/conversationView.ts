@@ -13,6 +13,7 @@ import { parseCodexRolloutAsParsed } from "./codexIndexer";
 import { SessionStore } from "./db";
 import { classifySession } from "./topicClassifier";
 import { locateStoreTurns, turnsToConversation } from "./storeTranscript";
+import { formatReasoningShare } from "./reasoningTokens";
 import * as fs from "fs";
 
 function fmtClock(ms: number): string {
@@ -230,6 +231,7 @@ function renderHtml(
     output_tokens?: number | null;
     cache_read_tokens?: number | null;
     cache_write_tokens?: number | null;
+    reasoning_tokens?: number | null;
     model?: string | null;
   } | null,
   src?: { fromStore: boolean; host?: string },
@@ -263,6 +265,11 @@ function renderHtml(
     return String(v);
   };
   const totalTok = (row?.input_tokens ?? 0) + (row?.output_tokens ?? 0) + (row?.cache_read_tokens ?? 0) + (row?.cache_write_tokens ?? 0);
+  const reasoningShareLabel = formatReasoningShare(row?.reasoning_tokens, row?.output_tokens);
+  const reasoningTitle =
+    row?.reasoning_tokens == null
+      ? "source did not report a reasoning/thinking breakdown"
+      : `reasoning ${fmtTok(row.reasoning_tokens)} ÷ output ${fmtTok(row?.output_tokens)} (vendor-reported; subset of output)`;
   const revealArg = project?.path ? encodeURIComponent(JSON.stringify([project.path])) : "";
   const revealUrl = revealArg ? `command:codeSessions.revealProjectFolder?${revealArg}` : "";
   const classifiedCount = topics?.size ?? 0;
@@ -311,6 +318,7 @@ function renderHtml(
 <div class="totals">
   ${row?.cost_usd != null ? `<div class="stat"><span class="label">Cost</span><span class="value">${fmtCost(row.cost_usd)}</span></div>` : ""}
   ${totalTok > 0 ? `<div class="stat"><span class="label">Tokens</span><span class="value" title="in ${fmtTok(row?.input_tokens)} · out ${fmtTok(row?.output_tokens)} · cache r ${fmtTok(row?.cache_read_tokens)} / w ${fmtTok(row?.cache_write_tokens)}">${fmtTok(totalTok)}</span></div>` : ""}
+  ${row ? `<div class="stat"><span class="label">Reasoning share</span><span class="value" title="${escapeHtml(reasoningTitle)}">${escapeHtml(reasoningShareLabel)}</span></div>` : ""}
   ${row?.model ? `<div class="stat"><span class="label">Model</span><span class="value">${escapeHtml(row.model)}</span></div>` : ""}
   <div class="stat"><span class="label">Turns</span><span class="value">${totalTurns}</span></div>
   <div class="stat"><span class="label">Tool calls</span><span class="value">${totalTools}</span></div>

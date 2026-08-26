@@ -37,6 +37,7 @@ describe("parseCodexRollout", () => {
       input_tokens: 1200,
       output_tokens: 340,
       cache_read_tokens: 800,
+      reasoning_tokens: null,
     });
     expect(parsed.startedAt).toBe(Date.parse("2026-07-02T09:00:00.000Z"));
     expect(parsed.endedAt).toBe(Date.parse("2026-07-02T09:00:13.000Z"));

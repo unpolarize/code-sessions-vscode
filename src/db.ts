@@ -294,6 +294,15 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE session_embedding ADD COLUMN text_hash TEXT;
   `,
+
+  // v19 — reasoning/thinking token annotation (subset of output for
+  // Claude/Codex/OpenAI; may be separate on xAI API). NULL = source never
+  // reported a breakdown; 0 = reported zero. No DEFAULT 0 — UI must treat
+  // NULL as n/a, never 0%. See src/reasoningTokens.ts.
+  `
+  ALTER TABLE session ADD COLUMN reasoning_tokens INTEGER;
+  ALTER TABLE turn ADD COLUMN reasoning_tokens INTEGER;
+  `,
 ];
 
 export type CoderSourceId = "claude" | "grok" | "codex" | "git";
@@ -318,6 +327,9 @@ export interface SessionRow {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  /** Reasoning/thinking tokens when the source reports a breakdown.
+   * NULL = never reported (UI n/a); 0 = reported zero. Migration v19. */
+  reasoning_tokens: number | null;
   cost_usd: number;
   model: string | null;
   title: string;
@@ -380,6 +392,9 @@ export interface TurnRow {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  /** Per-turn reasoning/thinking tokens when reported. NULL = never
+   * reported (migration v19); not defaulted to 0. */
+  reasoning_tokens: number | null;
   /** Per-turn USD cost — precomputed at index time using the session's
    * model rate table. Lets the bucket header sum costs that were
    * actually paid that day, not the lifetime total. Default 0 for rows
@@ -406,6 +421,7 @@ function rowToSession(r: any): SessionRow {
     output_tokens: r.output_tokens,
     cache_read_tokens: r.cache_read_tokens,
     cache_write_tokens: r.cache_write_tokens,
+    reasoning_tokens: r.reasoning_tokens == null ? null : Number(r.reasoning_tokens),
     cost_usd: r.cost_usd,
     model: r.model,
     title: r.title,
@@ -914,6 +930,7 @@ export class SessionStore {
         mtime_ns, size_bytes, started_at, ended_at,
         message_count, tool_count, subagent_count,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        reasoning_tokens,
         cost_usd, model, title, first_user_msg,
         entrypoint, is_automated, indexed_at, last_assistant_text_at,
         extras_json, kind, parent_session_id, workflow_id
@@ -922,6 +939,7 @@ export class SessionStore {
         @mtime_ns, @size_bytes, @started_at, @ended_at,
         @message_count, @tool_count, @subagent_count,
         @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens,
+        @reasoning_tokens,
         @cost_usd, @model, @title, @first_user_msg,
         @entrypoint, @is_automated, @indexed_at, @last_assistant_text_at,
         @extras_json, @kind, @parent_session_id, @workflow_id
@@ -943,6 +961,7 @@ export class SessionStore {
         output_tokens       = excluded.output_tokens,
         cache_read_tokens   = excluded.cache_read_tokens,
         cache_write_tokens  = excluded.cache_write_tokens,
+        reasoning_tokens    = excluded.reasoning_tokens,
         cost_usd            = excluded.cost_usd,
         model               = excluded.model,
         title               = excluded.title,
@@ -959,6 +978,7 @@ export class SessionStore {
       ...s,
       projects_touched: s.projects_touched.join(","),
       is_automated: s.is_automated ? 1 : 0,
+      reasoning_tokens: s.reasoning_tokens ?? null,
       last_assistant_text_at: s.last_assistant_text_at ?? null,
       extras_json: s.extras_json ?? null,
       kind: s.kind || 'session',
@@ -991,11 +1011,11 @@ export class SessionStore {
       INSERT INTO turn (
         turn_uuid, session_id, turn_index, started_at, ended_at, duration_ms,
         user_text, assistant_excerpt, assistant_full, tool_names_csv, tool_count, has_subagent,
-        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, cost_usd
       ) VALUES (
         @turn_uuid, @session_id, @turn_index, @started_at, @ended_at, @duration_ms,
         @user_text, @assistant_excerpt, @assistant_full, @tool_names_csv, @tool_count, @has_subagent,
-        @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens, @cost_usd
+        @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens, @reasoning_tokens, @cost_usd
       )
       ON CONFLICT(turn_uuid) DO UPDATE SET
         turn_index         = excluded.turn_index,
@@ -1012,11 +1032,16 @@ export class SessionStore {
         output_tokens      = excluded.output_tokens,
         cache_read_tokens  = excluded.cache_read_tokens,
         cache_write_tokens = excluded.cache_write_tokens,
+        reasoning_tokens   = excluded.reasoning_tokens,
         cost_usd           = excluded.cost_usd
     `);
     const insertMany = this.db.transaction((rows: TurnRow[]) => {
       for (const r of rows) {
-        stmt.run({ ...r, has_subagent: r.has_subagent ? 1 : 0 });
+        stmt.run({
+          ...r,
+          has_subagent: r.has_subagent ? 1 : 0,
+          reasoning_tokens: r.reasoning_tokens ?? null,
+        });
       }
     });
     insertMany(turns);
@@ -1033,6 +1058,7 @@ export class SessionStore {
     return rows.map((r) => ({
       ...r,
       has_subagent: !!r.has_subagent,
+      reasoning_tokens: r.reasoning_tokens == null ? null : Number(r.reasoning_tokens),
     }));
   }
 
