@@ -13,6 +13,11 @@ export const INTERACTIVE_ENTRYPOINTS = new Set([
   "claude-vscode",
   "claude-jetbrains",
   "sdk-cli",
+  // Grok Build / Code Build interactive sessions (not night-loop cron).
+  "grok-build-plan",
+  "grok",
+  "code-build",
+  "acp",
   "",
 ]);
 

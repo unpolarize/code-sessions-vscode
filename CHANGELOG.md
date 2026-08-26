@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.44.9 — 2026-08-26
+
+### Grok Build sessions are interactive; Ask picks provider; resume doesn't walk disk
+
+- `grok-build-plan` (and `grok` / `code-build` / `acp`) are interactive entrypoints — they were hidden as "automated" so Fleet and the Sessions tree dropped the live Grok chat.
+- **Show automated** applies immediately (in-memory override) instead of blocking on a Global settings.json write.
+- **Ask** (session + fleet chat) Quick-Picks provider and model like Code Build (`claude -p --model` / `grok -p --model`).
+- **Open in Code Build** uses indexed `jsonl_path` and skips scanning `~/.claude/projects` for Grok ids; progress notification while Code Build activates.
+- **Rename** writes Grok `summary.json` without the 60s idle guard and pushes `codeBuild.setSessionTitle` so the panel tab matches the tree.
+
 ## 1.44.8 — 2026-08-26
 
 ### Board no longer dies on `blockedSet` during first snapshot

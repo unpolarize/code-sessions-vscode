@@ -53,6 +53,19 @@ describe("isAutomatedSession", () => {
     expect(isAutomatedSession({ ...interactive, entrypoint: "claude-vscode" })).toBe(false);
   });
 
+  it("keeps Grok Build / Code Build interactive sessions (grok-build-plan)", () => {
+    expect(
+      isAutomatedSession({
+        ...interactive,
+        entrypoint: "grok-build-plan",
+        title: "Session fleet board and restart timestamp fix",
+        first_user_msg: "looks like there is a bug in code build",
+      }),
+    ).toBe(false);
+    expect(isAutomatedSession({ ...interactive, entrypoint: "grok" })).toBe(false);
+    expect(isAutomatedSession({ ...interactive, entrypoint: "code-build" })).toBe(false);
+  });
+
   it("flags git-store extras.labels that mark suite automation", () => {
     expect(
       isAutomatedSession({

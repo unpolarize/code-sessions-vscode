@@ -422,6 +422,8 @@ interface SessionRow {
   project: string;
   project_path: string | null;
   session: string;
+  /** Native transcript path when known — skip a full ~/.claude walk on resume. */
+  jsonl_path?: string | null;
   modified: string;
   messages: number;
   tokens_input: number;
@@ -544,6 +546,7 @@ function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
     project: r.project_id || "",
     project_path: r.project_path ?? null,
     session: r.session_id,
+    jsonl_path: r.jsonl_path ?? null,
     modified: r.ended_at
       ? new Date(r.ended_at).toISOString().slice(0, 16)
       : new Date(r.mtime_ns / 1e6).toISOString().slice(0, 16),
@@ -758,8 +761,15 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
    * the "Filter sessions" QuickPick. */
   folderOverride: string | null = null;
   hostOverride: string | null = null;
+  /** Instant toggle while the settings.json write is in flight. */
+  showAutomatedOverride: boolean | null = null;
 
   constructor(private readonly store: SessionStore | null) {}
+
+  showAutomatedNow(): boolean {
+    if (this.showAutomatedOverride !== null) return this.showAutomatedOverride;
+    return vscode.workspace.getConfiguration("codeSessions").get<boolean>("showAutomated", false) ?? false;
+  }
 
   refresh(): Promise<void> {
     return this.load().then(() => this._onDidChange.fire());
@@ -940,7 +950,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
    * "Filter sessions" QuickPick counts folders and hosts over. */
   private filterCandidates(rows: SessionRow[]): SessionRow[] {
     const cfg = vscode.workspace.getConfiguration("codeSessions");
-    const showAutomated = cfg.get<boolean>("showAutomated", false);
+    const showAutomated = this.showAutomatedNow();
     const showHidden = cfg.get<boolean>("showHidden", false);
     return rows
       .filter((r) => showAutomated || !rowIsAutomated(r))
@@ -966,7 +976,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   /** Sessions suppressed only by the automation filter (in scope, not user-hidden). */
   automatedHiddenCount(): number {
     const cfg = vscode.workspace.getConfiguration("codeSessions");
-    if (cfg.get<boolean>("showAutomated", false)) return 0;
+    if (this.showAutomatedNow()) return 0;
     const showHidden = cfg.get<boolean>("showHidden", false);
     return this.rows.filter((r) => rowIsAutomated(r) && (showHidden || !r.is_hidden) && this.inScope(r)).length;
   }
@@ -1067,7 +1077,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
    * source-derived default icon. */
   private buildRootChildren(): vscode.TreeItem[] {
     const cfg = vscode.workspace.getConfiguration("codeSessions");
-    const showAutomated = cfg.get<boolean>("showAutomated", false);
+    const showAutomated = this.showAutomatedNow();
     const showHidden = cfg.get<boolean>("showHidden", false);
     const wsFilter = this.workspaceFilter();
     const hostFilter = this.hostFilter();
@@ -3019,18 +3029,20 @@ export function activate(ctx: vscode.ExtensionContext) {
       sessions.refresh();
     }),
     vscode.commands.registerCommand("codeSessions.showAutomatedSessions", async () => {
-      await vscode.workspace.getConfiguration("codeSessions").update(
+      sessions.showAutomatedOverride = true;
+      await vscode.commands.executeCommand("setContext", "codeSessions.showAutomated", true);
+      await sessions.refresh();
+      void vscode.workspace.getConfiguration("codeSessions").update(
         "showAutomated", true, vscode.ConfigurationTarget.Global,
-      );
-      await syncShowAutomatedContext();
-      sessions.refresh();
+      ).then(() => { sessions.showAutomatedOverride = null; });
     }),
     vscode.commands.registerCommand("codeSessions.hideAutomatedSessions", async () => {
-      await vscode.workspace.getConfiguration("codeSessions").update(
+      sessions.showAutomatedOverride = false;
+      await vscode.commands.executeCommand("setContext", "codeSessions.showAutomated", false);
+      await sessions.refresh();
+      void vscode.workspace.getConfiguration("codeSessions").update(
         "showAutomated", false, vscode.ConfigurationTarget.Global,
-      );
-      await syncShowAutomatedContext();
-      sessions.refresh();
+      ).then(() => { sessions.showAutomatedOverride = null; });
     }),
     vscode.commands.registerCommand("codeSessions.deleteSession", async (arg: SessionRow | SessionItem | undefined) => {
       if (!store) {
@@ -3095,6 +3107,9 @@ export function activate(ctx: vscode.ExtensionContext) {
       // Optimistic cache update — the next indexer pass will re-derive the
       // same value from the file we just wrote.
       try { store.updateSessionTitle(row.session, next); } catch { /* indexer will fix */ }
+      try {
+        await vscode.commands.executeCommand("codeBuild.setSessionTitle", { id: row.session, title: next });
+      } catch { /* CB not installed or different id */ }
       sessions.refresh();
       vscode.window.setStatusBarMessage(
         `Renamed session — the native ${row.source === "grok" ? "grok" : "claude"} CLI will show the new title next time you resume.`,
@@ -3365,11 +3380,23 @@ function unwrapRow(arg: SessionRow | SessionItem | undefined): SessionRow | null
 /** Open the session in zhirafovod.code-build-vscode's chat UI. Falls back
  * to the native per-source extension when code-build isn't installed. */
 async function resumeInCodeBuild(row: SessionRow): Promise<void> {
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `Opening ${row.source} session…` },
+    () => resumeInCodeBuildInner(row),
+  );
+}
+
+async function resumeInCodeBuildInner(row: SessionRow): Promise<void> {
   const cwd = SessionsProvider.sessionCwd(row) ?? undefined;
   const codeBuildExt = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
-  // Cross-device: no native transcript on this machine → native resume can't
-  // reach it. Seed a fresh Code Build conversation with the store transcript.
-  const nativeJsonl = await locateSessionJsonl(row.session);
+  // Prefer the indexed jsonl_path — walking ~/.claude/projects for a Grok id
+  // is why "Open in Code Build" felt frozen.
+  const nativeJsonl =
+    row.jsonl_path && fs.existsSync(row.jsonl_path)
+      ? row.jsonl_path
+      : row.source === "claude"
+        ? await locateSessionJsonl(row.session)
+        : null;
   if (!nativeJsonl) {
     const storeRef = locateStoreTurns(row.session);
     if (storeRef) {
@@ -3521,15 +3548,16 @@ async function renameSessionFile(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const text = newTitle.trim();
   if (!text) return { ok: false, error: "Empty title — nothing to write." };
+  if (row.source === "grok") {
+    // summary.json rewrite is not O_APPEND — skip the claude idle guard.
+    return renameGrokSession(row, text);
+  }
   const ageSec = Math.max(0, Math.floor(Date.now() / 1000 - row.mtime_epoch));
   if (ageSec < RENAME_MIN_IDLE_SECONDS) {
     return {
       ok: false,
       error: `Session was active ${ageSec}s ago. Wait at least ${RENAME_MIN_IDLE_SECONDS}s after the last turn before renaming, so an in-flight write isn't lost.`,
     };
-  }
-  if (row.source === "grok") {
-    return renameGrokSession(row, text);
   }
   if (row.source === "codex") {
     // Guard: codex rollouts have no rename affordance yet, and falling through

@@ -25,6 +25,7 @@ import {
   type FleetSession,
 } from "./sessionFleet";
 import { buildExplainPrompt, invokeClaudeP, parseLabelJson } from "./sessionExplain";
+import { invokeAskAgent, pickAskRuntime } from "./askAgent";
 import { isAutomatedSession } from "./automation";
 import {
   actionLabel,
@@ -1274,6 +1275,11 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       case "askSession": {
         void (async () => {
           const uuid = String(msg.uuid || "");
+          const runtime = msg.action === "askSession" ? await pickAskRuntime() : { backend: "claude" as const, model: "sonnet" };
+          if (!runtime) {
+            DashboardPanel.current?.post({ type: "sessionAsk", uuid, error: "cancelled" });
+            return;
+          }
           const sess = listSessionsRich().find((s) => s.uuid === uuid);
           const snapObj = model.get();
           const candidates = (snapObj?.objects ?? [])
@@ -1292,7 +1298,9 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
             question: msg.action === "askSession" ? String(msg.question || "") : undefined,
             candidateItems: candidates,
           });
-          const r = await invokeClaudeP(prompt);
+          const r = msg.action === "askSession"
+            ? await invokeAskAgent(prompt, runtime)
+            : await invokeClaudeP(prompt);
           if (r.code !== 0) {
             DashboardPanel.current?.post({
               type: "sessionExplain",
@@ -1365,6 +1373,11 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
           const question = String(msg.question || "").trim();
           const uuids = Array.isArray(msg.uuids) ? (msg.uuids as string[]) : [];
           const view = (msg.filter || {}) as FleetChatView;
+          const runtime = await pickAskRuntime();
+          if (!runtime) {
+            DashboardPanel.current?.post({ type: "fleetChat", running: false, error: "cancelled" });
+            return;
+          }
           DashboardPanel.current?.post({ type: "fleetChat", running: true, question });
           const all = listSessionsRich();
           const wanted = new Set(uuids);
@@ -1402,12 +1415,12 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
             openItems,
             question: question || "Summarize this view and suggest missing links/tasks.",
           });
-          const r = await invokeClaudeP(prompt, { timeoutMs: 120_000 });
+          const r = await invokeAskAgent(prompt, { ...runtime, timeoutMs: 120_000 });
           if (r.code !== 0) {
             DashboardPanel.current?.post({
               type: "fleetChat",
               running: false,
-              error: r.stderr || r.stdout || `claude -p exited ${r.code}`,
+              error: r.stderr || r.stdout || `${runtime.backend} -p exited ${r.code}`,
             });
             return;
           }
