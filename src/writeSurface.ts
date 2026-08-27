@@ -145,14 +145,27 @@ function strippedStem(p: string): string {
   return base;
 }
 
+/** Directory context for pairing: dirname segments minus test-dir segments
+ * (__tests__/tests/test) and the src/lib layer, so co-located, __tests__
+ * sibling, and src|lib↔tests mirror all collapse to the same context. */
+function pairContext(p: string): string {
+  return segmentsOf(p)
+    .slice(0, -1)
+    .filter((s) => !TEST_DIR_SEGMENTS.has(s) && s !== "src" && s !== "lib")
+    .join("/");
+}
+
 /** Does touched path T companion-pair with production write W? Strict: T must
- * itself be a test path AND share W's stem after affix stripping. Stem
- * equality subsumes the co-located / __tests__-sibling / src↔tests-mirror
- * candidate forms; an unrelated bar.test.ts never clears foo.ts. The lenient
- * "any test in the same package" rule is deliberately not implemented. */
+ * itself be a test path, share W's stem after affix stripping, AND live in
+ * the same directory context (co-located, __tests__/tests sibling, or
+ * src|lib↔tests mirror). An unrelated bar.test.ts never clears foo.ts, and a
+ * same-stem test in a different monorepo package never clears it either. The
+ * lenient "any test in the same package" rule is deliberately not
+ * implemented. */
 export function pairsWith(write: string, touch: string): boolean {
   if (!isTestPath(touch)) return false;
-  return strippedStem(touch) === strippedStem(write);
+  if (strippedStem(touch) !== strippedStem(write)) return false;
+  return pairContext(touch) === pairContext(write);
 }
 
 const KNOWN_HEURISTIC_EXTS = new Set([...JS_EXTS, ".py", ".go", ".rs"]);
@@ -234,12 +247,16 @@ export function extractClaudeTouches(jsonlPath: string): { touches: SessionTouch
   return { touches: { writes, reads }, caveats: [...caveats] };
 }
 
+const GROK_SUBAGENT_CAVEAT = "grok subagent (spawn_subagent) file writes are not tracked";
+
 export function extractGrokTouches(jsonlPath: string): { touches: SessionTouches; caveats: string[] } {
   const parsed = parseGrokConversation(jsonlPath);
   const writes: string[] = [];
   const reads: string[] = [];
+  const caveats = new Set<string>();
   for (const turn of parsed.turns) {
     for (const tc of turn.toolCalls) {
+      if (tc.name === "spawn_subagent") caveats.add(GROK_SUBAGENT_CAVEAT);
       if (typeof tc.arguments !== "string") continue;
       let args: any;
       try {
@@ -256,7 +273,7 @@ export function extractGrokTouches(jsonlPath: string): { touches: SessionTouches
       }
     }
   }
-  return { touches: { writes, reads }, caveats: [] };
+  return { touches: { writes, reads }, caveats: [...caveats] };
 }
 
 const CODEX_SHELL_CAVEAT = "Codex shell writes (touch, cat >, heredocs) are not detected";
@@ -306,7 +323,13 @@ export function extractCodexTouches(rolloutPath: string): { touches: SessionTouc
     const p = ev?.payload ?? null;
     if (!p || typeof p !== "object") continue;
     const ptype = p.type;
-    if (ptype !== "function_call" && ptype !== "custom_tool_call" && ptype !== "local_shell_call") continue;
+    if (
+      ptype !== "function_call" &&
+      ptype !== "custom_tool_call" &&
+      ptype !== "local_shell_call" &&
+      ptype !== "tool_call"
+    )
+      continue;
 
     const name = typeof p.name === "string" ? p.name : "";
     const argsRaw =
@@ -358,8 +381,9 @@ export function extractCodexTouches(rolloutPath: string): { touches: SessionTouc
  * transcript or a store fallback (no tool arguments exist) → 'unavailable',
  * never a fake "all paired". */
 export function computeWriteSurface(row: WriteSurfaceSessionInput): WriteSurface {
-  const source = row.source ?? "claude";
+  const source = row.source ?? null;
   const jsonlPath = row.jsonl_path ?? null;
+  if (!source) return unavailable("session source unknown — surface unavailable");
   if (!jsonlPath) return unavailable("transcript path unknown — surface unavailable");
   if (!fs.existsSync(jsonlPath)) return unavailable("transcript missing on this device — surface unavailable");
   if (source !== "claude" && source !== "grok" && source !== "codex") {

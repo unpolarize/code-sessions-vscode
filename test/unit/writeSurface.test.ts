@@ -103,6 +103,10 @@ describe("pairsWith", () => {
   it("unrelated test file does not pair", () => {
     expect(pairsWith("/p/src/foo.ts", "/p/src/bar.test.ts")).toBe(false);
   });
+  it("same-stem test in a different monorepo package does not pair", () => {
+    expect(pairsWith("/repo/apps/web/src/foo.ts", "/repo/apps/api/tests/foo.test.ts")).toBe(false);
+    expect(pairsWith("/repo/apps/web/src/foo.ts", "/repo/apps/web/tests/foo.test.ts")).toBe(true);
+  });
   it("non-test touch never pairs", () => {
     expect(pairsWith("/p/src/foo.ts", "/p/src/foo.ts")).toBe(false);
   });
@@ -193,6 +197,19 @@ describe("extractGrokTouches", () => {
     const s = computeFromTouches(touches);
     expect(s.untestedWrites).toEqual([]);
   });
+  it("spawn_subagent surfaces a caveat → status partial end-to-end", () => {
+    const p = writeJsonl("grok-subagent.jsonl", [
+      { type: "user", content: "go" },
+      {
+        type: "assistant",
+        content: [],
+        tool_calls: [{ name: "spawn_subagent", arguments: JSON.stringify({ prompt: "x" }) }],
+      },
+    ]);
+    const { caveats } = extractGrokTouches(p);
+    expect(caveats.join(" ")).toMatch(/spawn_subagent/);
+    expect(computeWriteSurface({ source: "grok", jsonl_path: p }).status).toBe("partial");
+  });
   it("read_file legacy file_path key also accepted", () => {
     const p = writeJsonl("grok-legacy.jsonl", [
       { type: "user", content: "go" },
@@ -280,6 +297,10 @@ describe("computeWriteSurface routing", () => {
   });
   it("null path → unavailable", () => {
     expect(computeWriteSurface({ source: "claude", jsonl_path: null }).status).toBe("unavailable");
+  });
+  it("null/missing source → unavailable (never misrouted to a parser)", () => {
+    const p = writeJsonl("no-source.jsonl", [claudeUser]);
+    expect(computeWriteSurface({ jsonl_path: p }).status).toBe("unavailable");
   });
   it("store-fallback source → unavailable", () => {
     const p = writeJsonl("git.jsonl", [claudeUser]);
