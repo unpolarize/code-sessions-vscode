@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.43.0 — 2026-08-27
+
+### Rules doctor core — never-referenced rule sections vs multi-backend transcripts
+
+- **`src/rulesDoctor.ts`** (pure, no vscode/db imports) — first slice of the never-referenced-rules doctor card:
+  - Discovery: `CLAUDE.md` / `AGENTS.md` (any casing) / `.cursor/rules/*.{md,mdc}`, 2 MB cap.
+  - Fence-safe `##`/`###` section parser; `.mdc` YAML frontmatter stripped; headingless file → one section named by filename; content-hash dedupe for CLAUDE.md↔AGENTS.md duplicates.
+  - Distinctive-signal extractor (code spans ≥6 chars, path-like tokens, quoted phrases ≥3 tokens, 4–6-token prose n-grams); junk sole-matches (heading keywords, always/never/prefer, lone stack nouns) never score → `unscorable`, not a delete candidate. Short `- Never …`/`- Do not …` bullets shield the section as `protected`.
+  - Bounded hit counter (distinct sessions primary, turns secondary; per-turn scan byte cap; ≤12 signals/section) — no FTS, no migration, read-only.
+  - **Cross-source workspace join (Gap A):** claude sessions store `project_path` as the dash-encoded `~/.claude/projects/-Users-…` dir while codex/grok/git store the real cwd — `sessionMatchesWorkspace`/`filterWorkspaceSessions` handle both and include subagent/workflow children only when their parent matched.
+  - `buildDoctorReport` buckets Candidates / Protected / Unscorable / Scored-with-hits; `exportChecklist` emits a hedged "no transcript evidence" markdown checklist (never "delete these").
+- 18 unit tests (`test/unit/rulesDoctor.test.ts`). UI card in insightsView + command wiring land in the next slice.
+
 ## 1.42.0 — 2026-08-26
 
 ### Reasoning / thinking token share (Codex-first)
