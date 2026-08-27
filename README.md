@@ -212,6 +212,18 @@ If you don't want the daemon running:
 
 Manual classification still works via the **Classify all topics** button on the agent graph or **Analyze conversation topics** in the command palette.
 
+## Compaction-cliff defaults (handoff recommender)
+
+Pure core in `src/compactionCliff.ts` (UI card wiring next). Heuristic thresholds — not vendor remaining-context guarantees; recommendation only (no auto-failover):
+
+| Backend | Warn at compacts | Recommend handoff | Context-fill warn | Prefer handoff to |
+|---|---|---|---|---|
+| Codex | 1 | 2 | 70% | Claude, Grok |
+| Grok | 1 | 2 | 80% | Claude, Codex |
+| Claude | 2 | 3 | 85% | Grok, Codex |
+
+Overrides merge into `evaluateCompactionCliff(signals, overrides)`. Handoff pack schema: `code-sessions/compaction-cliff-handoff@1`.
+
 ## Settings
 
 | Setting | Default | What it does |

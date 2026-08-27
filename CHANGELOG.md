@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.46.0 — 2026-08-27
+
+### Compaction-cliff handoff core (cross-backend)
+
+- **`src/compactionCliff.ts`** (pure, no vscode/db imports) — first slice of the compaction-cliff cross-backend handoff card: recommend a KP-cartridge switch *before* Codex/early-compact quality drop.
+  - Per-backend defaults (editable overrides): **Codex** warn@1 / handoff@2 (fill 70%); **Grok** warn@1 / handoff@2 (fill 80%); **Claude** warn@2 / handoff@3 (fill 85%).
+  - `evaluateCompactionCliff` → card (`ok` / `approaching` / `recommend_handoff`) with headline `"approaching cliff — handoff to <backend> with KP cartridge"`; `autoFailover` always `false` (recommendation only).
+  - `countCompactionMarkers` + `signalsFromExtras` for fixture / Grok `signals.json` inputs; `renderCliffCardMarkdown` for session-detail injection.
+  - `buildHandoffPack` emits `code-sessions/compaction-cliff-handoff@1` markdown (goal, acceptance, paths, last N decisions) reusable by Code Build / KP.
+- 20 unit tests (`test/unit/compactionCliff.test.ts`). Session-detail card UI + one-click command wiring land in the next slice.
+
 ## 1.45.0 — 2026-08-27
 
 ### Untested-write surface core (multi-backend)
