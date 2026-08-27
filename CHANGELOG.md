@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.45.0 — 2026-08-27
+
+### Untested-write surface core (multi-backend)
+
+- **`src/writeSurface.ts`** (pure, no vscode/db imports) — first slice of the untested-write surface card: production paths the agent wrote with zero companion test-path touch in the same session. Computed on demand from the transcript; nothing persisted.
+  - Per-backend extraction: Claude `Write`/`Edit`→writes + `Read`→reads (MultiEdit/subagent writes disclosed as caveats); Grok `write`/`search_replace`→writes + `read_file` reads (`target_file`, legacy `file_path`); Codex rollout re-read pulls `function_call.arguments` — V4A `*** Add/Update File` (+ `*** Move to` destination) and structured `operation.path` create/update; deletes ignored; shell-write miss disclosed.
+  - Test-path heuristics (Jest/Vitest, pytest, Go `*_test.go` only — `testdata/` is fixtures, Rust `tests/` dir only with inline-`#[cfg(test)]` caveat note); docs/config/lockfile/generated/snapshot writes excluded.
+  - Strict stem pairing: unrelated `bar.test.ts` never clears `foo.ts`; test-file writes never listed; unknown languages tagged "no test heuristic".
+  - Missing transcript / store-fallback source → `status: 'unavailable'` — never a fake "all paired".
+- 28 unit tests (`test/unit/writeSurface.test.ts`). Session-detail card injection + `codeSessions.openAbsoluteFile` command land in the next slice.
+
 ## 1.43.0 — 2026-08-27
 
 ### Rules doctor core — never-referenced rule sections vs multi-backend transcripts
