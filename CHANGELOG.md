@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.47.0 — 2026-08-28
+
+### Plan-assumption checklist core
+
+- **`src/planAssumptions.ts`** (pure, no vscode/db imports) — first slice of the plan-assumption checklist card: extract plan/ask-phase assumptions as checkboxes before a build run.
+  - Heuristics: `I assume` / `assuming` / `will use` / `defaulting to` / `given that` / plan bullets asserting a chosen approach; dedupe + cap 3–7.
+  - `buildAssumptionChecklist` → card; `evaluateChecklistGate` blocks Start build / Promote to KP until every item is checked or dismissed, or the human supplies a skip reason.
+  - `formatConstraintsMarkdown` emits a KP `## Constraints` write-back block (`code-sessions/plan-assumption-checklist@1`); `renderAssumptionCardMarkdown` for session-detail injection.
+- 17 unit tests (`test/unit/planAssumptions.test.ts`). Session-detail card UI + CB/KP command wiring land in the next slice.
+
 ## 1.46.0 — 2026-08-27
 
 ### Compaction-cliff handoff core (cross-backend)

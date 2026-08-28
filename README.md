@@ -212,6 +212,10 @@ If you don't want the daemon running:
 
 Manual classification still works via the **Classify all topics** button on the agent graph or **Analyze conversation topics** in the command palette.
 
+## Plan-assumption checklist (pre-build gate)
+
+Pure core in `src/planAssumptions.ts` (UI card wiring next). On plan/ask-phase transcripts, heuristics extract 3–7 candidate assumptions (`I assume`, `will use`, `defaulting to`, plan bullets). Start build / Promote to KP stay blocked until every item is checked or dismissed, or the human skips with a reason. Accepted items format as a KP `## Constraints` block (`code-sessions/plan-assumption-checklist@1`). Offline / local only — false positives are dismissible.
+
 ## Compaction-cliff defaults (handoff recommender)
 
 Pure core in `src/compactionCliff.ts` (UI card wiring next). Heuristic thresholds — not vendor remaining-context guarantees; recommendation only (no auto-failover):
