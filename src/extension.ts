@@ -18,6 +18,7 @@ import { syncGrokToStore } from "./grokIndexer";
 import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
 import { daemonIsUp, refreshDaemonSessions } from "./daemonClient";
+import { startEventLoopLagMonitor } from "./eventLoopLag";
 import { IndexDiagnostics } from "./indexDiagnostics";
 import { StoreSyncManager, setSyncBridge, type SyncStatus } from "./storeSync";
 import { classifySession } from "./topicClassifier";
@@ -2150,7 +2151,7 @@ async function migrateSettingsToCodeNamespace(
 export function activate(ctx: vscode.ExtensionContext) {
   // Output channel for diagnostics — visible under View → Output → "Code Sessions".
   const log = vscode.window.createOutputChannel("Code Sessions");
-  ctx.subscriptions.push(log);
+  ctx.subscriptions.push(log, startEventLoopLagMonitor((line) => log.appendLine(line)));
   log.appendLine(`[activate] code-sessions starting (VS Code ${vscode.version})`);
   void refreshDaemonSessions().then((ok) => {
     log.appendLine(`[daemon] session API ${ok ? "connected (git import skipped)" : "unavailable — local indexers + git import"}`);

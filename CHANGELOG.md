@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.45.1 — 2026-08-29
+
+### Extension-host event-loop lag on the output channel
+
+- Samples `monitorEventLoopDelay` every 30 s onto **Code Sessions** output. p99 > 200 ms is tagged `STALL` so host freezes are visible without `sample`.
+
 ## 1.45.0 — 2026-08-29
 
 ### Fleet reads the sessions daemon (phase 1)
