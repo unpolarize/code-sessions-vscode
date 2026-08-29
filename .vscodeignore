@@ -8,3 +8,5 @@ vsc-extension-quickstart.md
 **/.eslintrc.json
 **/*.map
 **/*.ts
+docs/suite-architecture
+docs/suite-architecture/**

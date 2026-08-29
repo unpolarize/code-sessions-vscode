@@ -15,7 +15,28 @@ import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
 import { KpClient, type KpResult } from "./kpClient";
 import { ReloadGate } from "./reloadGate";
+import { startSpan } from "./hostTrace";
 import { syncBridge } from "./storeSync";
+import {
+  localLiveIds,
+  daemonRowsToFleet,
+  mergeFleetSessions,
+  parseExtras,
+  shortHost,
+  toFleetSession,
+  type FleetSession,
+} from "./sessionFleet";
+import { buildExplainPrompt, invokeClaudeP, parseLabelJson } from "./sessionExplain";
+import { invokeAskAgent, pickAskRuntime } from "./askAgent";
+import { isAutomatedSession } from "./automation";
+import { cachedDaemonSessions } from "./daemonClient";
+import {
+  actionLabel,
+  buildFleetChatPrompt,
+  parseFleetChatResult,
+  type FleetAction,
+  type FleetChatView,
+} from "./fleetChat";
 
 interface SessionInfo {
   uuid: string;
@@ -30,6 +51,9 @@ interface SessionInfo {
   turns?: number;
   cost?: number;
   planningRefs: string[];
+  labels?: string[];
+  endedAt?: number | null;
+  open?: boolean;
 }
 
 // The CS SQLite index (created in extension.ts, after registerPlanning) is the
@@ -43,35 +67,99 @@ type CsSessionRow = {
   project_path?: string | null;
   mtime_ns?: number; // nanoseconds
   started_at?: number; // epoch ms
+  ended_at?: number | null;
+  last_assistant_text_at?: number | null;
+  first_user_msg?: string | null;
+  extras_json?: string | null;
   message_count?: number;
   cost_usd?: number;
+  is_automated?: boolean;
+  entrypoint?: string | null;
+  kind?: string | null;
 };
 let _sessionProvider: (() => CsSessionRow[] | null) | undefined;
 export function setSessionProvider(p: (() => CsSessionRow[] | null) | undefined): void {
   _sessionProvider = p;
 }
 
-/** Session list for the dashboard: prefer the CS SQLite index (recent + rich),
- * fall back to scanning the ~/.sessions git store when the cache is disabled. */
-function listSessionsRich(): SessionInfo[] {
-  const rows = _sessionProvider?.();
-  if (rows && rows.length) {
-    // The CS index has no host column; recover it from the git store's
-    // hosts/<host>/… layout, else this machine (native transcripts are local).
-    const hostMap = sessionHostMap();
-    const localHost = shortHost(os.hostname());
-    return rows.map((r) => {
-      const s = listSessionsFromProvider(r);
-      s.host = hostMap[s.uuid] ?? localHost;
-      return s;
-    });
+/** Session list for the dashboard: merge the CS SQLite index (local live +
+ * native transcripts) with the ~/.sessions git store (other laptops). */
+function listSessionsRich(): FleetSession[] {
+  const now = Date.now();
+  const localHost = shortHost(os.hostname());
+  const hostMap = sessionHostMap();
+  const rows = _sessionProvider?.() ?? [];
+  const liveIds = localLiveIds(
+    rows.map((r) => ({ session_id: r.session_id, mtime_ns: r.mtime_ns ?? 0, source: r.source })),
+    now,
+  );
+  const fromIndex = rows.map((r) => {
+    const s = listSessionsFromProvider(r);
+    const extras = parseExtras(r.extras_json);
+    return toFleetSession(
+      {
+        uuid: s.uuid,
+        title: s.title,
+        agent: s.agent,
+        host: extras.host || s.host || hostMap[s.uuid] || (r.source === "git" ? undefined : localHost),
+        project: s.project,
+        projectPath: s.projectPath,
+        source: s.source,
+        startedAt: s.startedAt,
+        mtime: s.mtime,
+        lastActivity: r.last_assistant_text_at || r.ended_at || s.startedAt,
+        endedAt: r.ended_at ?? null,
+        open: extras.open === true || liveIds.has(s.uuid),
+        turns: s.turns,
+        cost: s.cost,
+        planningRefs: extras.planning_refs ?? s.planningRefs,
+        labels: extras.labels,
+        firstUserMsg: r.first_user_msg ?? undefined,
+        automated: isAutomatedSession({
+          is_automated: r.is_automated,
+          entrypoint: r.entrypoint,
+          title: s.title,
+          first_user_msg: r.first_user_msg,
+          extras_json: r.extras_json,
+          kind: r.kind,
+        }),
+      },
+      { now, localHost, localLiveIds: liveIds },
+    );
+  });
+  const daemonRows = cachedDaemonSessions();
+  if (daemonRows.length > 0) {
+    return mergeFleetSessions([...fromIndex, ...daemonRowsToFleet(daemonRows, { now, localHost })]);
   }
-  return listGitStoreSessions();
-}
-
-/** Prettify a hostname for display: drop the .local/.lan suffix. */
-function shortHost(h: string | undefined): string {
-  return (h ?? "").replace(/\.(local|lan)$/i, "") || "unknown";
+  const fromGit = listGitStoreSessions().map((s) =>
+    toFleetSession(
+      {
+        uuid: s.uuid,
+        title: s.title,
+        agent: s.agent,
+        host: s.host,
+        project: s.project,
+        projectPath: s.projectPath,
+        source: s.source,
+        startedAt: s.startedAt,
+        mtime: s.mtime,
+        lastActivity: s.endedAt || s.startedAt,
+        endedAt: s.endedAt ?? null,
+        open: s.open,
+        turns: s.turns,
+        cost: s.cost,
+        planningRefs: s.planningRefs,
+        labels: s.labels,
+        automated: isAutomatedSession({
+          title: s.title,
+          first_user_msg: undefined,
+          extras_json: JSON.stringify({ labels: s.labels ?? [] }),
+        }),
+      },
+      { now, localHost, localLiveIds: liveIds },
+    ),
+  );
+  return mergeFleetSessions([...fromIndex, ...fromGit]);
 }
 
 /** uuid → host, from the git session store directory layout hosts/<host>/<month>/<uuid>/. */
@@ -134,6 +222,7 @@ function listGitStoreSessions(): SessionInfo[] {
           const agent: string = s.agent ?? "";
           const source: "claude" | "grok" | "git" = /grok/i.test(agent) ? "grok" : /claude/i.test(agent) ? "claude" : "git";
           const started = s.started_at ? Date.parse(s.started_at) : NaN;
+          const ended = s.ended_at ? Date.parse(s.ended_at) : NaN;
           out.push({
             uuid: s.session_id || sid,
             title: s.title,
@@ -143,10 +232,13 @@ function listGitStoreSessions(): SessionInfo[] {
             project: s.project_path ? path.basename(s.project_path) : undefined,
             source,
             startedAt: Number.isFinite(started) ? started : statSync(f).mtimeMs,
-            mtime: statSync(f).mtimeMs,
+            mtime: Number.isFinite(ended) ? ended : Number.isFinite(started) ? started : statSync(f).mtimeMs,
             turns: s.turn_count,
             cost: s.totals?.cost_usd,
             planningRefs: Array.isArray(s.planning_refs) ? s.planning_refs : [],
+            labels: Array.isArray(s.labels) ? s.labels : [],
+            endedAt: Number.isFinite(ended) ? ended : null,
+            open: !s.ended_at,
           });
         } catch {
           /* skip */
@@ -298,15 +390,26 @@ let reloadGate: ReloadGate | undefined;
 /** kp subcommands that never write the store (everything else counts as a mutation). */
 const KP_READ_CMDS = new Set(["export", "show"]);
 
-async function runKp(args: string[], input?: string): Promise<KpResult> {
+async function runKp(args: string[], input?: string, timeoutMs?: number): Promise<KpResult> {
   if (!kpClient) kpClient = new KpClient({ resolve: kpInvocation });
   const mutating = !KP_READ_CMDS.has(args[0]);
   if (mutating) reloadGate?.noteMutationStart();
   try {
-    return await kpClient.run(args, input);
+    return await kpClient.run(args, input, timeoutMs);
   } finally {
     if (mutating) reloadGate?.noteMutationEnd();
   }
+}
+
+export type PlanningLoadPhase = "idle" | "export" | "parse" | "ready" | "error";
+
+export interface PlanningLoadStatus {
+  phase: PlanningLoadPhase;
+  detail: string;
+  startedAt: number;
+  queueDepth: number;
+  objectCount?: number;
+  error?: string;
 }
 
 /** Shared snapshot, reloaded on refresh and consumed by every provider/view.
@@ -318,11 +421,32 @@ async function runKp(args: string[], input?: string): Promise<KpResult> {
 class PlanningModel {
   private snap: Snapshot | null = null;
   readonly onDidChange = new vscode.EventEmitter<void>();
+  readonly onStatus = new vscode.EventEmitter<PlanningLoadStatus>();
   private inFlight: Promise<boolean> | null = null;
   private pending = false;
   private appliedGen = 0;
   private nextGen = 0;
   private lastOk = false;
+  private load: PlanningLoadStatus = {
+    phase: "idle",
+    detail: "not started",
+    startedAt: 0,
+    queueDepth: 0,
+  };
+
+  getLoadStatus(): PlanningLoadStatus {
+    return { ...this.load, queueDepth: kpClient?.queueDepth ?? 0 };
+  }
+
+  private setLoad(partial: Partial<PlanningLoadStatus>): void {
+    this.load = {
+      ...this.load,
+      ...partial,
+      queueDepth: kpClient?.queueDepth ?? 0,
+      startedAt: partial.startedAt ?? this.load.startedAt,
+    };
+    this.onStatus.fire(this.getLoadStatus());
+  }
 
   async reload(log?: vscode.OutputChannel): Promise<boolean> {
     if (this.inFlight) {
@@ -330,6 +454,9 @@ class PlanningModel {
       // after this caller's (already-completed) mutation on the same CLI queue,
       // so awaiting the shared promise means "my change is painted".
       this.pending = true;
+      this.setLoad({
+        detail: `export already running — coalesced (queue ${kpClient?.queueDepth ?? 0})`,
+      });
       return this.inFlight;
     }
     this.inFlight = (async () => {
@@ -337,22 +464,62 @@ class PlanningModel {
         do {
           this.pending = false;
           const gen = ++this.nextGen;
-          const res = await runKp(["export", "--date", "today"]);
+          const t0 = Date.now();
+          const inv = kpInvocation();
+          const span = startSpan("csv.planning.export");
+          try {
+          log?.appendLine(`[planning] export start gen=${gen} node=${inv.node} cli=${inv.cli}`);
+          this.setLoad({
+            phase: "export",
+            detail: `running: ${inv.node} ${inv.cli} export --date today`,
+            startedAt: t0,
+            error: undefined,
+          });
+          const res = await runKp(["export", "--date", "today"], undefined, 45_000);
+          const ms = Date.now() - t0;
+          span.mark("kp");
           if (gen <= this.appliedGen) continue; // a newer export already painted
           this.appliedGen = gen;
           if (!res.ok) {
-            log?.appendLine(`[planning] kp export failed (kept last snapshot): ${res.stderr}`);
+            const err = (res.stderr || res.stdout || "kp export failed").trim().slice(0, 400);
+            log?.appendLine(`[planning] kp export failed ${ms}ms (kept last snapshot): ${err}`);
             this.lastOk = false;
+            this.setLoad({
+              phase: this.snap ? "ready" : "error",
+              detail: this.snap ? `export failed after ${ms}ms — showing last snapshot` : `export failed after ${ms}ms`,
+              error: err,
+            });
           } else {
+            this.setLoad({ phase: "parse", detail: `parsing ${(res.stdout.length / 1024).toFixed(0)} KB (${ms}ms)` });
             try {
               this.snap = JSON.parse(res.stdout) as Snapshot;
               this.lastOk = true;
+              const n = this.snap.objects?.length ?? 0;
+              this.setLoad({
+                phase: "ready",
+                detail: `${n} objects in ${ms}ms`,
+                objectCount: n,
+                error: undefined,
+              });
+              log?.appendLine(`[planning] export ok gen=${gen} objects=${n} ${ms}ms`);
             } catch (e) {
               log?.appendLine(`[planning] kp export parse error (kept last snapshot): ${(e as Error).message}`);
               this.lastOk = false;
+              this.setLoad({
+                phase: this.snap ? "ready" : "error",
+                detail: "snapshot JSON parse failed",
+                error: (e as Error).message,
+              });
             }
           }
           this.onDidChange.fire();
+          } finally {
+            span.end({
+              ok: this.lastOk,
+              ms: Date.now() - t0,
+              objects: this.snap?.objects?.length ?? 0,
+            });
+          }
         } while (this.pending);
       } finally {
         this.inFlight = null;
@@ -1121,6 +1288,218 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         });
         break;
       }
+      case "explainSession":
+      case "askSession": {
+        void (async () => {
+          const uuid = String(msg.uuid || "");
+          const runtime = msg.action === "askSession" ? await pickAskRuntime() : { backend: "claude" as const, model: "sonnet" };
+          if (!runtime) {
+            DashboardPanel.current?.post({ type: "sessionAsk", uuid, error: "cancelled" });
+            return;
+          }
+          const sess = listSessionsRich().find((s) => s.uuid === uuid);
+          const snapObj = model.get();
+          const candidates = (snapObj?.objects ?? [])
+            .filter((o: any) => ["task", "idea", "plan", "thought"].includes(o.type) && o.status !== "done" && o.status !== "outdated")
+            .slice(0, 30)
+            .map((o: any) => ({ id: o.id, title: String(o.title || o.id), type: String(o.type) }));
+          DashboardPanel.current?.post({ type: "sessionExplainStatus", uuid, status: "running" });
+          const prompt = buildExplainPrompt({
+            uuid,
+            title: sess?.title,
+            host: sess?.host,
+            agent: sess?.agent,
+            project: sess?.project,
+            firstUserMsg: sess?.firstUserMsg,
+            excerpt: sess?.firstUserMsg,
+            question: msg.action === "askSession" ? String(msg.question || "") : undefined,
+            candidateItems: candidates,
+          });
+          const r = msg.action === "askSession"
+            ? await invokeAskAgent(prompt, runtime)
+            : await invokeClaudeP(prompt);
+          if (r.code !== 0) {
+            DashboardPanel.current?.post({
+              type: "sessionExplain",
+              uuid,
+              error: r.stderr || r.stdout || `claude -p exited ${r.code}`,
+            });
+            return;
+          }
+          if (msg.action === "askSession") {
+            DashboardPanel.current?.post({ type: "sessionAsk", uuid, answer: r.stdout.trim() });
+            return;
+          }
+          const label = parseLabelJson(r.stdout);
+          if (!label) {
+            DashboardPanel.current?.post({
+              type: "sessionExplain",
+              uuid,
+              error: "Could not parse label JSON",
+              raw: r.stdout.slice(0, 1500),
+            });
+            return;
+          }
+          DashboardPanel.current?.post({ type: "sessionExplain", uuid, label });
+        })();
+        break;
+      }
+      case "applySessionLabel": {
+        void (async () => {
+          const uuid = String(msg.uuid || "");
+          const intent = String(msg.intent || "").trim();
+          const topic = String(msg.topic || "").trim();
+          const summary = String(msg.summary || "").trim();
+          const tags = Array.isArray(msg.tags) ? (msg.tags as string[]) : [];
+          const args = ["session-label", uuid];
+          if (intent) args.push("--intent", intent);
+          if (topic) args.push("--topic", topic);
+          if (summary) args.push("--summary", summary);
+          for (const t of tags) args.push("--tag", t);
+          const r = await runKp(args);
+          if (!r.ok) {
+            void vscode.window.showWarningMessage(`session-label failed: ${r.stderr || r.stdout}`);
+            return;
+          }
+          DashboardPanel.current?.post({ type: "sessions", data: listSessionsRich() });
+          void vscode.window.showInformationMessage(`Labeled session ${uuid.slice(0, 8)}…`);
+        })();
+        break;
+      }
+      case "captureFromSession": {
+        void (async () => {
+          const uuid = String(msg.uuid || "");
+          const type = String(msg.asType || "idea");
+          const title = String(msg.title || "untitled from session").slice(0, 120);
+          const status = type === "task" ? "inbox" : type === "thought" ? "new" : "capture";
+          const r = await runKp(["create", title, "--type", type, "--status", status, "--session", uuid]);
+          if (!r.ok) {
+            void vscode.window.showWarningMessage(`capture failed: ${r.stderr || r.stdout}`);
+            return;
+          }
+          await model.reload(log);
+          DashboardPanel.current?.post({ type: "sessions", data: listSessionsRich() });
+          const newId = /created\s+(\S+)/.exec(r.stdout)?.[1];
+          void vscode.window.showInformationMessage(`Captured ${type} ${newId || ""} from session`.trim());
+          if (newId) DashboardPanel.current?.post({ type: "openItem", id: newId });
+        })();
+        break;
+      }
+      case "fleetChat": {
+        void (async () => {
+          const question = String(msg.question || "").trim();
+          const uuids = Array.isArray(msg.uuids) ? (msg.uuids as string[]) : [];
+          const view = (msg.filter || {}) as FleetChatView;
+          const runtime = await pickAskRuntime();
+          if (!runtime) {
+            DashboardPanel.current?.post({ type: "fleetChat", running: false, error: "cancelled" });
+            return;
+          }
+          DashboardPanel.current?.post({ type: "fleetChat", running: true, question });
+          const all = listSessionsRich();
+          const wanted = new Set(uuids);
+          const sessions = wanted.size ? all.filter((s) => wanted.has(s.uuid)) : all;
+          const snapObj = model.get();
+          const objects = snapObj?.objects ?? [];
+          const projects = objects
+            .filter((o: any) => o.type === "project")
+            .map((o: any) => ({ id: o.id, title: String(o.title || o.id) }));
+          const openItems = objects
+            .filter(
+              (o: any) =>
+                ["task", "idea", "plan"].includes(o.type) &&
+                o.status !== "done" &&
+                o.status !== "outdated" &&
+                o.status !== "parked",
+            )
+            .slice(0, 40)
+            .map((o: any) => ({
+              id: o.id,
+              title: String(o.title || o.id),
+              type: String(o.type),
+              project: o.project ? String(o.project) : undefined,
+            }));
+          const prompt = buildFleetChatPrompt({
+            view: {
+              window: String(view.window || "today"),
+              host: String(view.host || "all"),
+              unlinked: !!view.unlinked,
+              hideAutomated: view.hideAutomated !== false,
+              search: String(view.search || ""),
+            },
+            sessions,
+            projects,
+            openItems,
+            question: question || "Summarize this view and suggest missing links/tasks.",
+          });
+          const r = await invokeAskAgent(prompt, { ...runtime, timeoutMs: 120_000 });
+          if (r.code !== 0) {
+            DashboardPanel.current?.post({
+              type: "fleetChat",
+              running: false,
+              error: r.stderr || r.stdout || `${runtime.backend} -p exited ${r.code}`,
+            });
+            return;
+          }
+          const parsed = parseFleetChatResult(r.stdout);
+          if (!parsed) {
+            DashboardPanel.current?.post({
+              type: "fleetChat",
+              running: false,
+              answer: r.stdout.trim().slice(0, 4000),
+              actions: [],
+            });
+            return;
+          }
+          DashboardPanel.current?.post({
+            type: "fleetChat",
+            running: false,
+            answer: parsed.answer,
+            actions: parsed.actions.map((a) => ({ ...a, label: actionLabel(a) })),
+          });
+        })();
+        break;
+      }
+      case "applyFleetActions": {
+        void (async () => {
+          const actions = (Array.isArray(msg.actions) ? msg.actions : []) as FleetAction[];
+          const results: Array<{ ok: boolean; label: string; detail: string }> = [];
+          for (const a of actions.slice(0, 40)) {
+            const label = actionLabel(a);
+            try {
+              if (a.kind === "tag") {
+                const args = ["session-label", a.uuid];
+                if (a.intent) args.push("--intent", a.intent);
+                if (a.topic) args.push("--topic", a.topic);
+                if (a.summary) args.push("--summary", a.summary);
+                for (const t of a.tags ?? []) args.push("--tag", t);
+                const r = await runKp(args);
+                results.push({ ok: r.ok, label, detail: r.ok ? r.stdout.trim() : r.stderr || r.stdout });
+              } else if (a.kind === "create-task" || a.kind === "create-idea") {
+                const type = a.kind === "create-task" ? "task" : "idea";
+                const status = type === "task" ? "inbox" : "capture";
+                const args = ["create", String(a.title || "from session"), "--type", type, "--status", status, "--session", a.uuid];
+                if (a.project) args.push("--project", a.project);
+                const r = await runKp(args);
+                results.push({ ok: r.ok, label, detail: r.ok ? r.stdout.trim() : r.stderr || r.stdout });
+              } else if (a.kind === "link" && a.objectId) {
+                const r = await runKp(["link-session", a.objectId, a.uuid]);
+                results.push({ ok: r.ok, label, detail: r.ok ? r.stdout.trim() : r.stderr || r.stdout });
+              } else {
+                results.push({ ok: false, label, detail: "skipped" });
+              }
+            } catch (e) {
+              results.push({ ok: false, label, detail: String(e) });
+            }
+          }
+          await model.reload(log);
+          DashboardPanel.current?.post({ type: "sessions", data: listSessionsRich() });
+          DashboardPanel.current?.post({ type: "fleetChatApplied", results });
+          const okN = results.filter((x) => x.ok).length;
+          void vscode.window.showInformationMessage(`Fleet: applied ${okN}/${results.length} action(s)`);
+        })();
+        break;
+      }
       case "linkSessionToTask": {
         // from a session, pick a planning item (searchable) and link it
         void (async () => {
@@ -1217,6 +1596,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   };
 
   const dashDeps: DashboardDeps = {
+    extensionUri: ctx.extensionUri,
     getSnapshot: () => model.get(),
     reload: () => model.reload(log),
     onChange: model.onDidChange.event,
@@ -1229,7 +1609,28 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       const b = syncBridge();
       return b ? b.onDidSync(cb) : new vscode.Disposable(() => {});
     },
+    getLoadStatus: () => model.getLoadStatus(),
+    onLoadStatus: (cb) => model.onStatus.event(cb),
   };
+
+  const loadBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 8);
+  loadBar.name = "Planning load";
+  loadBar.command = "codePlanning.openDashboard";
+  ctx.subscriptions.push(loadBar);
+  const paintLoadBar = (s: PlanningLoadStatus) => {
+    if (s.phase === "export" || s.phase === "parse") {
+      loadBar.text = `$(sync~spin) Planning: ${s.phase}…`;
+      loadBar.tooltip = `${s.detail}\nqueue ${s.queueDepth}`;
+      loadBar.show();
+    } else if (s.phase === "error" && !model.get()) {
+      loadBar.text = "$(error) Planning: export failed";
+      loadBar.tooltip = s.error || s.detail;
+      loadBar.show();
+    } else {
+      loadBar.hide();
+    }
+  };
+  ctx.subscriptions.push(model.onStatus.event(paintLoadBar));
 
   ctx.subscriptions.push(
     vscode.commands.registerCommand("codePlanning.refresh", async () => {
@@ -1322,6 +1723,8 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       if (id) term.sendText(`# Working on ${id}. After the session: kp link-session ${id} <session-uuid>`, false);
     }),
     vscode.commands.registerCommand("codePlanning.openDashboard", () => DashboardPanel.show(dashDeps)),
+    vscode.commands.registerCommand("codePlanning.openFleet", () => DashboardPanel.show(dashDeps, "sessions")),
+    vscode.commands.registerCommand("codeSessions.openFleet", () => DashboardPanel.show(dashDeps, "sessions")),
     // Session → planning: from a session item, jump to the planning object(s) it is
     // linked to (object.linked_sessions ∪ envelope.planning_refs); offer to link if none.
     vscode.commands.registerCommand("codePlanning.openFromSession", async (arg?: any) => {

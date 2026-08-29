@@ -850,11 +850,28 @@ export class SessionStore {
     return r ? rowToSession(r) : null;
   }
 
-  listRecent(limit: number, includeAutomated: boolean): SessionRow[] {
+  /**
+   * Newest sessions for the sidebar / dashboard.
+   * `requireReply` (Sessions tree / Fleet) orders by last assistant text and
+   * drops jsonl-open-with-no-reply rows so empty panel-opens cannot occupy
+   * the entire `limit` window.
+   */
+  listRecent(
+    limit: number,
+    includeAutomated: boolean,
+    opts?: { requireReply?: boolean },
+  ): SessionRow[] {
+    const reply = opts?.requireReply
+      ? "AND last_assistant_text_at IS NOT NULL AND last_assistant_text_at > 0"
+      : "";
+    const order = opts?.requireReply
+      ? "ORDER BY last_assistant_text_at DESC, mtime_ns DESC"
+      : "ORDER BY mtime_ns DESC";
     const sql = `
       SELECT * FROM session
       WHERE ($includeAuto OR is_automated = 0)
-      ORDER BY mtime_ns DESC
+        ${reply}
+      ${order}
       LIMIT $limit
     `;
     return (this.db.prepare(sql).all({ limit, includeAuto: includeAutomated ? 1 : 0 }) as any[]).map(rowToSession);
@@ -1687,6 +1704,15 @@ export class SessionStore {
     this.db
       .prepare("UPDATE session SET title = ? WHERE session_id = ?")
       .run(title, sessionId);
+  }
+
+  /** Hard-delete a session row. Dependent tables cascade (turns, embeddings,
+   * star, hide) because PRAGMA foreign_keys is ON. Does NOT touch on-disk
+   * transcripts — caller must delete those first or the next indexer pass
+   * re-imports the row. */
+  deleteSession(sessionId: string): number {
+    const info = this.db.prepare("DELETE FROM session WHERE session_id = ?").run(sessionId);
+    return info.changes;
   }
 
   // ---- maintenance ----------------------------------------------------- //

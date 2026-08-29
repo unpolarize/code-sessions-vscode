@@ -3,6 +3,8 @@
 // tree under test/fixtures/gitstore — no real transcripts, no home-dir access.
 // syncGitToStore stats are exercised with a duck-typed in-memory store.
 import { describe, it, expect } from "vitest";
+import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { listAllGitSessions, buildGitRows, syncGitToStore } from "../../src/gitIndexer";
 import { SessionStore, SessionRow, TurnRow } from "../../src/db";
@@ -164,5 +166,25 @@ describe("syncGitToStore", () => {
     const stats = syncGitToStore(store, { root: ROOT, localHost: LOCAL_HOST, includeLocalHost: true });
     expect(stats.skipped_local_host).toBe(0);
     expect(stats.parsed).toBe(3);
+  });
+
+  it("real SessionStore keeps source=git and extras.host (the tree host filter)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "csv-git-"));
+    const real = SessionStore.open(dir);
+    try {
+      const stats = syncGitToStore(real, { root: ROOT, localHost: LOCAL_HOST });
+      expect(stats.errors).toBe(0);
+      expect(stats.parsed).toBe(2);
+      const remote = real.getById(S_CLAUDE_REMOTE);
+      expect(remote).not.toBeNull();
+      expect(remote!.source).toBe("git");
+      expect(JSON.parse(remote!.extras_json || "{}").host).toBe("mac-remote");
+      expect(remote!.last_assistant_text_at).toBeGreaterThan(0);
+      const recent = real.listRecent(10, true, { requireReply: true });
+      expect(recent.some((s) => s.session_id === S_CLAUDE_REMOTE)).toBe(true);
+    } finally {
+      real.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

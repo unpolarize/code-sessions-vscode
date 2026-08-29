@@ -1,40 +1,14 @@
-# Architecture
+# Architecture (extension internals)
 
-This extension has three TreeViews + one Webview. Everything reads from local sources — no network, no auth.
+> **Suite-level architecture** (how CSV relates to the CS daemon, Code Build, KP, and where the
+> indexer/cache are heading) lives in the **private** `unpolarize/architecture` repo —
+> `../architecture/tools/` next to this clone (symlink `docs/suite-architecture`). This document
+> covers only what is specific to this extension. The pre-1.0 "Claude Activity" diagram that used
+> to sit here (session-center.sh, jq walks) is obsolete and was removed on 2026-08-29.
 
-```
-                         ┌────────────────────────────────┐
-                         │  VS Code Activity Bar           │
-                         │  "Claude Activity"              │
-                         └────────────────────────────────┘
-                                       │
-       ┌───────────────────────────────┼───────────────────────────────┐
-       ▼                               ▼                               ▼
- ┌───────────────┐              ┌──────────────┐              ┌──────────────────┐
- │ SessionsTree  │              │ KbChangesTree│              │ ProjectsActivity │
- │ Provider      │              │ Provider     │              │ TreeProvider     │
- └───────────────┘              └──────────────┘              └──────────────────┘
-        │                              │                              │
-        ▼                              ▼                              ▼
- session-center.sh                git log on                    git log on each
- (~/.claude/skills/...)           ~/docs                        repo path +
-        │                              │                       auto-discover
-        ▼                              ▼                              │
- ~/.claude/projects/             ~/docs/                              ▼
- *.jsonl                                                         ~/projects/**
-                                                                                                  
-        │
-        │ "🔍 View conversation"
-        ▼
- ┌──────────────────────────────────────────────────────────────┐
- │ Conversation Viewer (Webview)                                │
- │                                                              │
- │  parseConversation(jsonlPath)                                │
- │       │                                                      │
- │       ▼                                                      │
- │  Turn[]  →  HTML (theme-variable CSS, no scripts)            │
- └──────────────────────────────────────────────────────────────┘
-```
+Three activity-bar containers (Sessions / KB changes / Projects, plus Planning), an insights
+dashboard, and a conversation viewer webview. All sources are local files and git; the only
+network egress is a local Ollama daemon (and optionally the `claude` CLI).
 
 ## Source layout
 
@@ -149,15 +123,14 @@ On change / create we queue a debounced refresh of the Sessions provider (1.5 s)
 
 ## Performance
 
-- `session-center.sh` walks all ~1300 sessions in ~9 s by pre-filtering on mtime and only invoking `jq` on the top N (default 100).
-- The parser reads one JSONL synchronously (`fs.readFileSync`) and processes line by line. A 1500-turn session (~5 MB) takes well under a second.
-- HTML render is a single template-literal pass.
+Measured budgets, ranked improvements, and the tracking table are in the private architecture
+repo: `docs/suite-architecture/tools/performance.md`. Known problem (2026-08-29): the in-process
+`node-sqlite3-wasm` indexer runs on the extension-host thread and is the main cause of
+"extension host unresponsive" events; target is to query the CS daemon instead
+(`tools/target.md`).
 
-## Testing approach (future)
+## Testing
 
-There aren't formal tests yet. The natural seams:
-
-- `parseConversation()` is pure — feed it any JSONL fixture and assert on `Turn[]`.
-- `gitChanges(repoPath, days)` is pure — feed it a fixture repo (git init + N commits) and assert.
-- `formatRelative` / `formatDurationSec` / `formatTokens` are obvious unit-test targets.
-- TreeView providers can be exercised via VS Code's extension-test runner. Not currently wired.
+See `docs/suite-architecture/tools/testing.md` for the layer strategy (pure logic → vitest;
+host contract tests against a fake daemon; webviews in a browser via Playwright with recorded
+fixtures). Current suites: `npm test` (compile + wasm/git/codex node tests + vitest).

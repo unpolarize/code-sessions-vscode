@@ -113,6 +113,18 @@
         "category": "Planning"
       },
       {
+        "command": "codePlanning.openFleet",
+        "title": "Planning: Open session fleet",
+        "icon": "$(organization)",
+        "category": "Planning"
+      },
+      {
+        "command": "codeSessions.openFleet",
+        "title": "Open session fleet (laptops × sessions)",
+        "icon": "$(organization)",
+        "category": "Code Sessions"
+      },
+      {
         "command": "codePlanning.openCanvas",
         "title": "Planning: Open Excalidraw canvas",
         "icon": "$(edit)",
@@ -413,6 +425,24 @@
         "category": "Code Sessions"
       },
       {
+        "command": "codeSessions.deleteSession",
+        "title": "Delete session…",
+        "icon": "$(trash)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.showAutomatedSessions",
+        "title": "Show automated sessions",
+        "icon": "$(watch)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.hideAutomatedSessions",
+        "title": "Hide automated sessions",
+        "icon": "$(eye)",
+        "category": "Code Sessions"
+      },
+      {
         "command": "codeSessions.renameSession",
         "title": "Rename session…",
         "icon": "$(edit)",
@@ -457,6 +487,11 @@
           "group": "navigation@0"
         },
         {
+          "command": "codePlanning.openFleet",
+          "when": "view == codePlanningToday || view == codePlanningInbox || view == codePlanningProjects || view == codeSessions",
+          "group": "navigation@0.5"
+        },
+        {
           "command": "codePlanning.capture",
           "when": "view == codePlanningToday || view == codePlanningInbox || view == codePlanningProjects",
           "group": "navigation@1"
@@ -480,6 +515,16 @@
           "command": "codeSessions.chooseFilter",
           "when": "view == codeSessions",
           "group": "navigation@0"
+        },
+        {
+          "command": "codeSessions.showAutomatedSessions",
+          "when": "view == codeSessions && !codeSessions.showAutomated",
+          "group": "navigation@0.5"
+        },
+        {
+          "command": "codeSessions.hideAutomatedSessions",
+          "when": "view == codeSessions && codeSessions.showAutomated",
+          "group": "navigation@0.5"
         },
         {
           "command": "codeSessions.openLiveMonitor",
@@ -604,6 +649,11 @@
           "group": "navigation@3"
         },
         {
+          "command": "codeSessions.deleteSession",
+          "when": "view == codeSessions && viewItem =~ /^session/",
+          "group": "navigation@3.5"
+        },
+        {
           "command": "codeKbChanges.diff",
           "when": "view == codeKbChanges && viewItem == fileChange",
           "group": "inline"
@@ -660,6 +710,12 @@
         "command": "codePlanning.openDashboard",
         "key": "ctrl+alt+shift+b",
         "mac": "ctrl+shift+cmd+b"
+      },
+      {
+        "command": "codePlanning.openFleet",
+        "key": "ctrl+alt+shift+f",
+        "mac": "ctrl+shift+cmd+f",
+        "when": "!isComposing"
       }
     ],
     "configuration": {
@@ -711,7 +767,43 @@
         "codeSessions.showAutomated": {
           "type": "boolean",
           "default": false,
-          "description": "Show automated / cron-triggered sessions (entrypoint = sdk-cli, sdk, routine, etc.). Hidden by default since they're usually scheduled jobs (Google Doc digests, KB ingest, daily reports) rather than interactive work."
+          "description": "Show automated / cron / night-loop sessions (DB flag, extra entrypoints, prompt signatures, extras.labels). Hidden by default so KP/CSV/CS jobs don't pollute the tree. Title-bar watch icon toggles this."
+        },
+        "codeSessions.automation.titlePatterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "you are an autonomous overnight",
+            "you are an autonomous",
+            "night implement",
+            "night ideate",
+            "night-implement",
+            "night-ideate",
+            "/daily-digest",
+            "run /daily-digest",
+            "run /grok-gmail-scan",
+            "run the /planning-discover",
+            "this is running via cron",
+            "automated hourly sync",
+            "implementation phase, scheduled",
+            "ideation phase of a 5-hour",
+            "no user interaction",
+            "kp implementable",
+            "grok-ideate"
+          ],
+          "description": "Case-insensitive substrings matched against session title + first user message. Hits are treated as automated (hidden unless Show Automated is on). Covers night-loop / cron prompts that record entrypoint sdk-cli like Code Build."
+        },
+        "codeSessions.automation.extraEntrypoints": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["sdk", "routine", "headless", "cron", "launchd", "api"],
+          "description": "Entrypoints treated as automated in addition to anything outside the interactive allow-list (cli, claude-code, claude-vscode, claude-jetbrains, sdk-cli)."
+        },
+        "codeSessions.automation.labels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["cron", "automated", "headless", "launchd", "fleet", "night-loop", "night-ideate", "night-implement"],
+          "description": "Git-store extras.labels values that mark a session as automated."
         },
         "codeSessions.showHidden": {
           "type": "boolean",
@@ -983,6 +1075,8 @@
     "test": "npm run compile && node --expose-gc test/wasm-stmt-leak.test.js && node test/wasm-stmt-cache.test.js && node test/wasm-search-tokenize.test.js && node test/storeSyncGit.test.js && node test/codexIndexer.test.js && npm run test:unit",
     "test:unit": "vitest run",
     "package": "npm run compile && vsce package --allow-missing-repository",
+    "install-extension": "code --install-extension code-sessions-$npm_package_version.vsix --force",
+    "ship": "npm run package && npm run install-extension",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
@@ -997,7 +1091,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@unpolarize/knowledge-planning": "^0.4.0",
+    "@unpolarize/knowledge-planning": "^0.5.0",
     "node-sqlite3-wasm": "^0.8.57",
     "umap-js": "^1.4.0"
   }

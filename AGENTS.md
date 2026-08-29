@@ -25,14 +25,14 @@ The bumping rules — `MAJOR.MINOR.PATCH` (SemVer):
    ```
 
 4. Stage `package.json`, `CHANGELOG.md`, and the code changes in the same commit.
-5. Optionally package the .vsix locally for sanity install:
+5. **Ship (required after a landed feature):**
 
    ```bash
-   npm run package
-   code --install-extension code-sessions-X.Y.Z.vsix --force
+   npm run ship
    ```
 
-   The user reloads their VS Code window to pick up the new build.
+   Compile + vsce package + `code --install-extension code-sessions-$version.vsix --force`.
+   **Do not reload the working Code Build chat.** Verify in a **second window**. Host-trace: Output → **Code Sessions**; file `~/.sessions/.daemon/host-trace.ndjson` (`../architecture/tools/observability.md`).
 
 **Do not publish to the Marketplace from an agent session.** Publishing is a user-initiated step; the agent's job is to bump the version, update the changelog, and produce a clean .vsix.
 
@@ -61,6 +61,18 @@ Migrations live in `MIGRATIONS[]` in [`src/db.ts`](src/db.ts) and are applied in
 - **Tree** (`src/extension.ts`): `SessionsProvider` builds the activity-bar tree. Day buckets aggregate per-day token + cost totals from `turn.input_tokens` / `turn.output_tokens` / `turn.cost_usd` (per-turn columns added in migrations v11 / v12).
 - **Insights / trajectory views**: separate webviews (`src/insightsView.ts`, `src/trajectoryView.ts`).
 - **Classifier**: topic classification runs lazily in the background (`src/backgroundClassifier.ts`) and feeds the search view.
+- **Direction**: the in-extension indexers + wasm cache are slated to be replaced by queries to the CS daemon (see suite architecture below). Do not add new synchronous indexing on the extension-host thread.
+
+## Suite architecture (private repo — read before cross-component work)
+
+Suite-level design (CS · CSV · CB · KP), target architecture, performance tracking table, testing
+strategy and the cross-project issues table live in the **private** `unpolarize/architecture` repo,
+cloned next to this one at `../architecture` (symlink: [`docs/suite-architecture`](docs/suite-architecture)).
+Private by design — link by path, never copy its content into this public repo.
+
+- Before changes touching indexers, the cache, git sync, or CB/KP command contracts: read `tools/target.md` and follow `WORKFLOW.md` there.
+- Bugs: claim your row in `tools/issues.md` before starting; perf work: claim the row in `tools/performance.md` and record before → after numbers.
+- Repo-local internals: [`docs/architecture.md`](docs/architecture.md), on-disk formats: [`docs/DATA-STORES.md`](docs/DATA-STORES.md).
 
 ## Publishing checklist (user-driven)
 

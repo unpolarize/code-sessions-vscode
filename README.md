@@ -55,6 +55,8 @@ A tree of every Claude Code session (read from `~/.claude/projects/*/`), grouped
   - **🔍 View conversation** — opens the per-turn timeline webview
   - **▶ Resume in Claude** — uses `claude-vscode.primaryEditor.open(sessionId)` to open the session in the official Claude Code extension panel; falls back to a terminal `claude --resume <uuid>` if the official extension isn't installed
   - **📜 Open raw JSONL** — opens the underlying session file in a regular editor
+- Automated / cron / night-loop sessions (KP/CSV/CS jobs, digests, fleet) are **hidden by default**. Toggle with the title-bar watch icon, the Filter picker, or `codeSessions.showAutomated`.
+- Right-click a session → **Delete session…** to remove the cache row and on-disk transcripts (native JSONL and the `~/.sessions` copy). Soft-hide (`Hide session`) still exists for rows you just don't want to see.
 
 ### KB changes pane
 

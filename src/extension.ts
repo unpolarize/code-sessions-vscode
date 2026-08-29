@@ -15,9 +15,18 @@ import { taggedEmbeddingModel } from "./embedText";
 import { kickReembed } from "./reembedJob";
 import type { EmbedConfig } from "./embedding";
 import { syncToStore } from "./jsonlIndexer";
-import { syncGrokToStore } from "./grokIndexer";
+import { locateGrokChatHistory, syncGrokToStore } from "./grokIndexer";
 import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
+import { daemonIsUp, refreshDaemonSessions } from "./daemonClient";
+import { startEventLoopLagMonitor } from "./eventLoopLag";
+import { IndexCoalesce } from "./indexCoalesce";
+import {
+  addTraceSink,
+  initTrace,
+  startFileSink,
+  startSpan,
+} from "./hostTrace";
 import { IndexDiagnostics } from "./indexDiagnostics";
 import { StoreSyncManager, setSyncBridge, type SyncStatus } from "./storeSync";
 import { classifySession } from "./topicClassifier";
@@ -35,6 +44,14 @@ import {
   linkTargetFromArg,
   openSessionFromLink,
 } from "./openSessionLink";
+import {
+  isAutomatedSession,
+  DEFAULT_TITLE_PATTERNS,
+  DEFAULT_EXTRA_ENTRYPOINTS,
+  DEFAULT_AUTO_LABELS,
+  type AutomationConfig,
+} from "./automation";
+import { deleteSessionArtifacts } from "./sessionDelete";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -415,6 +432,8 @@ interface SessionRow {
   project: string;
   project_path: string | null;
   session: string;
+  /** Native transcript path when known — skip a full ~/.claude walk on resume. */
+  jsonl_path?: string | null;
   modified: string;
   messages: number;
   tokens_input: number;
@@ -424,6 +443,8 @@ interface SessionRow {
   tokens_total: number;
   cost_usd: number;
   title: string;
+  /** First user prompt (truncated). Used by the automation predicate. */
+  first_user_msg?: string;
   subagents: number;
   projects_touched: string[];
   first_ts_epoch?: number;
@@ -499,6 +520,32 @@ function formatDurationSec(sec: number): string {
   return remHr > 0 ? `${day}d ${remHr}h` : `${day}d`;
 }
 
+function readAutomationConfig(): AutomationConfig {
+  const cfg = vscode.workspace.getConfiguration("codeSessions");
+  return {
+    honorDbFlag: true,
+    extraEntrypoints: cfg.get<string[]>("automation.extraEntrypoints", DEFAULT_EXTRA_ENTRYPOINTS),
+    titlePatterns: cfg.get<string[]>("automation.titlePatterns", DEFAULT_TITLE_PATTERNS),
+    extraLabels: cfg.get<string[]>("automation.labels", DEFAULT_AUTO_LABELS),
+  };
+}
+
+function rowIsAutomated(r: {
+  is_automated?: boolean;
+  entrypoint?: string;
+  title?: string;
+  first_user_msg?: string;
+  extras_json?: string | null;
+  kind?: string;
+}): boolean {
+  return isAutomatedSession(r, readAutomationConfig());
+}
+
+async function syncShowAutomatedContext(): Promise<void> {
+  const on = vscode.workspace.getConfiguration("codeSessions").get<boolean>("showAutomated", false);
+  await vscode.commands.executeCommand("setContext", "codeSessions.showAutomated", on);
+}
+
 function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
   return {
     source: r.source,
@@ -509,6 +556,7 @@ function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
     project: r.project_id || "",
     project_path: r.project_path ?? null,
     session: r.session_id,
+    jsonl_path: r.jsonl_path ?? null,
     modified: r.ended_at
       ? new Date(r.ended_at).toISOString().slice(0, 16)
       : new Date(r.mtime_ns / 1e6).toISOString().slice(0, 16),
@@ -521,6 +569,7 @@ function dbRowToSessionRow(r: import("./db").SessionRow): SessionRow {
     cost_usd: r.cost_usd,
     own_cost_usd: r.cost_usd,
     title: r.title || (r.first_user_msg ?? "").slice(0, 70),
+    first_user_msg: r.first_user_msg ?? "",
     subagents: r.subagent_count,
     projects_touched: r.projects_touched,
     first_ts_epoch: r.started_at ? Math.floor(r.started_at / 1000) : 0,
@@ -722,8 +771,15 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
    * the "Filter sessions" QuickPick. */
   folderOverride: string | null = null;
   hostOverride: string | null = null;
+  /** Instant toggle while the settings.json write is in flight. */
+  showAutomatedOverride: boolean | null = null;
 
   constructor(private readonly store: SessionStore | null) {}
+
+  showAutomatedNow(): boolean {
+    if (this.showAutomatedOverride !== null) return this.showAutomatedOverride;
+    return vscode.workspace.getConfiguration("codeSessions").get<boolean>("showAutomated", false) ?? false;
+  }
 
   refresh(): Promise<void> {
     return this.load().then(() => this._onDidChange.fire());
@@ -737,7 +793,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     // Fast path: SQLite cache.
     if (cacheEnabled && this.store) {
       try {
-        const dbRows = this.store.listRecent(limit, true);
+        const dbRows = this.store.listRecent(limit, true, { requireReply: true });
         const childRollup = this.store.childRollupByParent();
         this.rows = dbRows
           .filter((r) => r.kind === "session" || !r.kind)
@@ -904,10 +960,10 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
    * "Filter sessions" QuickPick counts folders and hosts over. */
   private filterCandidates(rows: SessionRow[]): SessionRow[] {
     const cfg = vscode.workspace.getConfiguration("codeSessions");
-    const showAutomated = cfg.get<boolean>("showAutomated", false);
+    const showAutomated = this.showAutomatedNow();
     const showHidden = cfg.get<boolean>("showHidden", false);
     return rows
-      .filter((r) => showAutomated || !r.is_automated)
+      .filter((r) => showAutomated || !rowIsAutomated(r))
       .filter((r) => showHidden || !r.is_hidden)
       .filter((r) => (r.last_response_epoch ?? 0) > 0);
   }
@@ -925,6 +981,14 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   /** Rows the QuickPick should offer folders/hosts from (scope-unfiltered). */
   candidateRows(): SessionRow[] {
     return this.filterCandidates(this.rows);
+  }
+
+  /** Sessions suppressed only by the automation filter (in scope, not user-hidden). */
+  automatedHiddenCount(): number {
+    const cfg = vscode.workspace.getConfiguration("codeSessions");
+    if (this.showAutomatedNow()) return 0;
+    const showHidden = cfg.get<boolean>("showHidden", false);
+    return this.rows.filter((r) => rowIsAutomated(r) && (showHidden || !r.is_hidden) && this.inScope(r)).length;
   }
 
   /** Returns the epoch-second timestamp we treat as the session's
@@ -1023,7 +1087,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
    * source-derived default icon. */
   private buildRootChildren(): vscode.TreeItem[] {
     const cfg = vscode.workspace.getConfiguration("codeSessions");
-    const showAutomated = cfg.get<boolean>("showAutomated", false);
+    const showAutomated = this.showAutomatedNow();
     const showHidden = cfg.get<boolean>("showHidden", false);
     const wsFilter = this.workspaceFilter();
     const hostFilter = this.hostFilter();
@@ -1036,16 +1100,16 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     // suppressed only by the named axis, so the user sees actionable
     // numbers instead of cumulative hides.
     const automatedCount = showAutomated ? 0 :
-      allRows.filter((r) => r.is_automated && (showHidden || !r.is_hidden)
+      allRows.filter((r) => rowIsAutomated(r) && (showHidden || !r.is_hidden)
         && this.inScope(r)).length;
     const hiddenCount = showHidden ? 0 :
-      allRows.filter((r) => r.is_hidden && (showAutomated || !r.is_automated)
+      allRows.filter((r) => r.is_hidden && (showAutomated || !rowIsAutomated(r))
         && this.inScope(r)).length;
 
     const out: vscode.TreeItem[] = [];
 
     if (wsFilter || hostFilter) {
-      const hiddenByScope = allRows.filter((r) => (showAutomated || !r.is_automated)
+      const hiddenByScope = allRows.filter((r) => (showAutomated || !rowIsAutomated(r))
         && (showHidden || !r.is_hidden)
         && (r.last_response_epoch ?? 0) > 0
         && !this.inScope(r)).length;
@@ -1118,9 +1182,13 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       );
       tip.iconPath = new vscode.ThemeIcon("watch");
       tip.tooltip = new vscode.MarkdownString(
-        "Sessions whose `entrypoint` is not interactive (e.g. `sdk-cli`) are hidden.\n\nToggle **Settings → Code Sessions: Show Automated** to include them.",
+        "Cron, night-loop, fleet, and other suite-automation sessions are hidden.\n\nClick this row (or the title-bar watch icon) to show them.",
       );
       tip.contextValue = "automatedHidden";
+      tip.command = {
+        command: "codeSessions.showAutomatedSessions",
+        title: "Show automated sessions",
+      };
       out.push(tip);
     }
     if (!showHidden && hiddenCount > 0) {
@@ -1304,12 +1372,13 @@ class SessionItem extends vscode.TreeItem {
     // disappear once `showHidden` flips off; source default (`rocket` for
     // grok, `comment-discussion` for claude) carries the source signal in
     // the default state, doubling up with the `[C]` / `[G]` label prefix.
+    const automated = rowIsAutomated(row);
     this.iconPath = new vscode.ThemeIcon(
       row.is_hidden
         ? "eye-closed"
         : row.is_starred
           ? "star-full"
-          : row.is_automated
+          : automated
             ? "watch"
             : row.active === "*"
               ? "pulse"
@@ -1319,7 +1388,7 @@ class SessionItem extends vscode.TreeItem {
                   ? "terminal"
                   : "comment-discussion",
     );
-    const base = row.is_automated ? "sessionAutomated" : "session";
+    const base = automated ? "sessionAutomated" : "session";
     const starred = row.is_starred ? `${base}-starred` : base;
     this.contextValue = row.is_hidden ? `${starred}-hidden` : starred;
     // No `command` here: clicking expands the children. Use the explicit
@@ -2088,10 +2157,26 @@ async function migrateSettingsToCodeNamespace(
 }
 
 export function activate(ctx: vscode.ExtensionContext) {
+  const ver = String(
+    vscode.extensions.getExtension("zhirafovod.code-sessions")?.packageJSON?.version ?? "0",
+  );
+  initTrace("csv", ver);
   // Output channel for diagnostics — visible under View → Output → "Code Sessions".
   const log = vscode.window.createOutputChannel("Code Sessions");
-  ctx.subscriptions.push(log);
+  ctx.subscriptions.push(
+    log,
+    startEventLoopLagMonitor((line) => log.appendLine(line)),
+    { dispose: addTraceSink((human) => log.appendLine(human)) },
+    { dispose: startFileSink() },
+  );
+  const act = startSpan("csv.activate");
   log.appendLine(`[activate] code-sessions starting (VS Code ${vscode.version})`);
+  void (async () => {
+    const hello = startSpan("csv.daemon.hello");
+    const ok = await refreshDaemonSessions();
+    hello.end({ ok });
+    log.appendLine(`[daemon] session API ${ok ? "connected (git import skipped)" : "unavailable — local indexers + git import"}`);
+  })();
 
   // Indexer failure surface: per-file path+reason on the channel, debounced
   // toast once per changed error count (see indexDiagnostics.ts).
@@ -2102,24 +2187,47 @@ export function activate(ctx: vscode.ExtensionContext) {
   // Declared early so runIndexSync can close over it; assigned when the cache opens.
   let store: SessionStore | null = null;
 
+  const indexGate = new IndexCoalesce();
+  const emptyIndexResult = {
+    totalErrors: 0,
+    claudeParsed: 0,
+    grokParsed: 0,
+    codexParsed: 0,
+    gitParsed: 0,
+    elapsed_ms: 0,
+  };
+
   /** Run all enabled indexers, log failures, toast if error count changed.
    *  `includeGit` defaults true (activate/refresh/full); the 10s tick
-   *  passes false to match the pre-diagnostics quiet poll. */
+   *  passes false to match the pre-diagnostics quiet poll. Watcher and timer
+   *  share `indexGate` (≥ 5 s) so live agents don't stack wasm passes. */
   function runIndexSync(opts: {
     force?: boolean;
     forceRecentN?: number;
     includeGit?: boolean;
+    includeClaude?: boolean;
+    includeGrok?: boolean;
+    includeCodex?: boolean;
     onClaudeProgress?: (done: number, total: number) => void;
     onGrokProgress?: (done: number, total: number) => void;
     onCodexProgress?: (done: number, total: number) => void;
     onGitProgress?: (done: number, total: number) => void;
   } = {}): { totalErrors: number; claudeParsed: number; grokParsed: number; codexParsed: number; gitParsed: number; elapsed_ms: number } {
     if (!store) {
-      return { totalErrors: 0, claudeParsed: 0, grokParsed: 0, codexParsed: 0, gitParsed: 0, elapsed_ms: 0 };
+      return { ...emptyIndexResult };
     }
+    const force = opts.force === true || (opts.forceRecentN != null && opts.forceRecentN > 0);
+    if (!indexGate.tryStart({ force })) {
+      return { ...emptyIndexResult };
+    }
+    const indexSpan = startSpan("csv.index");
+    try {
     const s = store;
     const cfg = vscode.workspace.getConfiguration("codeSessions");
     const includeGit = opts.includeGit !== false;
+    const includeClaude = opts.includeClaude !== false;
+    const includeGrok = opts.includeGrok !== false;
+    const includeCodex = opts.includeCodex !== false;
     const forceOpts = {
       ...(opts.force ? { force: true as const } : {}),
       ...(opts.forceRecentN && opts.forceRecentN > 0 ? { forceRecentN: opts.forceRecentN } : {}),
@@ -2131,6 +2239,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     let gitParsed = 0;
     let elapsed_ms = 0;
 
+    if (includeClaude) {
     try {
       const stats = syncToStore(s, {
         ...forceOpts,
@@ -2139,6 +2248,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       claudeParsed = stats.parsed;
       elapsed_ms = Math.max(elapsed_ms, stats.elapsed_ms);
       totalErrors += indexDiag.reportSource("claude", stats);
+      indexSpan.mark("claude", { parsed: stats.parsed, elapsed_ms: stats.elapsed_ms });
       console.log(`[code-sessions] claude sync: ${JSON.stringify({ errors: stats.errors, parsed: stats.parsed, elapsed_ms: stats.elapsed_ms })}`);
     } catch (e: unknown) {
       const reason = e instanceof Error ? e.message : String(e);
@@ -2146,8 +2256,9 @@ export function activate(ctx: vscode.ExtensionContext) {
       totalErrors += 1;
       console.error("[code-sessions] claude sync failed:", e);
     }
+    }
 
-    if (cfg.get<boolean>("grok.enabled", true)) {
+    if (includeGrok && cfg.get<boolean>("grok.enabled", true)) {
       try {
         const grokStats = syncGrokToStore(s, {
           ...forceOpts,
@@ -2156,6 +2267,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         grokParsed = grokStats.parsed;
         elapsed_ms = Math.max(elapsed_ms, grokStats.elapsed_ms);
         totalErrors += indexDiag.reportSource("grok", grokStats);
+        indexSpan.mark("grok", { parsed: grokStats.parsed, elapsed_ms: grokStats.elapsed_ms });
         console.log(`[code-sessions] grok sync: ${JSON.stringify({ errors: grokStats.errors, parsed: grokStats.parsed })}`);
       } catch (e: unknown) {
         const reason = e instanceof Error ? e.message : String(e);
@@ -2165,7 +2277,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
     }
 
-    if (cfg.get<boolean>("codex.enabled", true)) {
+    if (includeCodex && cfg.get<boolean>("codex.enabled", true)) {
       try {
         const codexStats = syncCodexToStore(s, {
           ...forceOpts,
@@ -2174,6 +2286,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         codexParsed = codexStats.parsed;
         elapsed_ms = Math.max(elapsed_ms, codexStats.elapsed_ms);
         totalErrors += indexDiag.reportSource("codex", codexStats);
+        indexSpan.mark("codex", { parsed: codexStats.parsed, elapsed_ms: codexStats.elapsed_ms });
         console.log(`[code-sessions] codex sync: ${JSON.stringify({ errors: codexStats.errors, parsed: codexStats.parsed })}`);
       } catch (e: unknown) {
         const reason = e instanceof Error ? e.message : String(e);
@@ -2183,7 +2296,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
     }
 
-    if (includeGit && cfg.get<boolean>("git.enabled", true)) {
+    if (includeGit && cfg.get<boolean>("git.enabled", true) && !daemonIsUp()) {
       try {
         const gitStats = syncGitToStore(s, {
           includeLocalHost: cfg.get<boolean>("git.includeLocalHost", false),
@@ -2193,6 +2306,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         gitParsed = gitStats.parsed;
         elapsed_ms = Math.max(elapsed_ms, gitStats.elapsed_ms);
         totalErrors += indexDiag.reportSource("git", gitStats);
+        indexSpan.mark("git", { parsed: gitStats.parsed, elapsed_ms: gitStats.elapsed_ms });
         console.log(`[code-sessions] git store sync: ${JSON.stringify({ errors: gitStats.errors, parsed: gitStats.parsed })}`);
       } catch (e: unknown) {
         const reason = e instanceof Error ? e.message : String(e);
@@ -2203,12 +2317,17 @@ export function activate(ctx: vscode.ExtensionContext) {
     }
 
     indexDiag.maybeToast(totalErrors);
+    indexSpan.end({ totalErrors, claudeParsed, grokParsed, codexParsed, gitParsed, elapsed_ms });
     return { totalErrors, claudeParsed, grokParsed, codexParsed, gitParsed, elapsed_ms };
+    } finally {
+      indexGate.finish();
+    }
   }
 
   // Interactive Planning mode (knowledge-planning store via the `kp` CLI):
   // Today / Inbox / Projects trees, kanban board + graph webviews, status bar.
   registerPlanning(ctx, log);
+  act.mark("planning");
 
   // One-time settings migration: copy any values the user set under the old
   // `coderSessions.*` / `claudeSessions.*` (and the KbChanges/ProjectsActivity/
@@ -2228,6 +2347,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       .get<boolean>("cacheEnabled", true);
     if (cacheEnabled) {
       store = SessionStore.open(ctx.globalStorageUri.fsPath);
+      act.mark("store.open");
       log.appendLine(`[activate] SQLite cache opened at ${ctx.globalStorageUri.fsPath}`);
 
       // Auto-recovery from disk corruption — the cache file is
@@ -2289,7 +2409,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   sessions.hostOverride = ctx.workspaceState.get<string | null>(HOST_OVERRIDE_KEY, null);
   // Feed the planning dashboard's Sessions view from the CS index (recent + rich);
   // it falls back to the ~/.sessions git store when the cache is disabled.
-  setSessionProvider(() => (store ? (store.listRecent(500, true) as unknown as never[]) : null));
+  setSessionProvider(() => (store ? (store.listRecent(500, true, { requireReply: true }) as unknown as never[]) : null));
   ctx.subscriptions.push({ dispose: () => setSessionProvider(undefined) });
   const kb = new KbChangesProvider();
   const projects = new ProjectsActivityProvider();
@@ -2301,8 +2421,11 @@ export function activate(ctx: vscode.ExtensionContext) {
   const openViewerPanels = new Map<string, vscode.WebviewPanel>();
 
   sessions.refresh();
+  act.mark("trees.sessions");
   kb.refresh();
+  act.mark("trees.kb");
   projects.refresh();
+  act.mark("trees.projects");
   tasks.refresh();
   memory.refresh();
 
@@ -2356,6 +2479,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     treeDataProvider: sessions,
     showCollapseAll: true,
   });
+  void syncShowAutomatedContext();
   ctx.subscriptions.push(
     sessionsTreeView,
     vscode.window.registerTreeDataProvider("codeProjectsActivity", projects),
@@ -2462,7 +2586,7 @@ export function activate(ctx: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand("codeSessions.chooseFilter", async () => {
       type FilterPick = vscode.QuickPickItem & {
-        axis?: "folder" | "host";
+        axis?: "folder" | "host" | "automation";
         value?: string | null; // null = default, "*" = all, else explicit
       };
       const localHost = os.hostname();
@@ -2529,20 +2653,40 @@ export function activate(ctx: vscode.ExtensionContext) {
             description: `${e.n} session${e.n === 1 ? "" : "s"}`
               + activeMark(ho != null && normalizeHost(ho) === key),
           })),
+        { label: "Automation", kind: vscode.QuickPickItemKind.Separator },
+        {
+          axis: "automation", value: "hide",
+          label: "$(watch) Hide automated",
+          description: `${sessions.automatedHiddenCount()} hidden` +
+            activeMark(!vscode.workspace.getConfiguration("codeSessions").get<boolean>("showAutomated", false)),
+        },
+        {
+          axis: "automation", value: "show",
+          label: "$(eye) Show automated",
+          description: "include cron / night-loop / KP·CSV·CS jobs" +
+            activeMark(!!vscode.workspace.getConfiguration("codeSessions").get<boolean>("showAutomated", false)),
+        },
       ];
       const pick = await vscode.window.showQuickPick(items, {
-        title: "Filter sessions — pick a folder or a host",
+        title: "Filter sessions — pick a folder, host, or automation",
         placeHolder:
-          "Defaults: current workspace + this host. Pick again to change the other axis.",
+          "Defaults: current workspace + this host + hide automated. Pick again to change another axis.",
         matchOnDescription: true,
       });
       if (!pick || !pick.axis) return;
       if (pick.axis === "folder") {
         sessions.folderOverride = pick.value ?? null;
         await ctx.workspaceState.update(FOLDER_OVERRIDE_KEY, sessions.folderOverride);
-      } else {
+      } else if (pick.axis === "host") {
         sessions.hostOverride = pick.value ?? null;
         await ctx.workspaceState.update(HOST_OVERRIDE_KEY, sessions.hostOverride);
+      } else if (pick.axis === "automation") {
+        await vscode.workspace.getConfiguration("codeSessions").update(
+          "showAutomated",
+          pick.value === "show",
+          vscode.ConfigurationTarget.Global,
+        );
+        await syncShowAutomatedContext();
       }
       sessions.refresh();
     }),
@@ -2996,6 +3140,60 @@ export function activate(ctx: vscode.ExtensionContext) {
       store.setHidden(row.session, false);
       sessions.refresh();
     }),
+    vscode.commands.registerCommand("codeSessions.showAutomatedSessions", async () => {
+      sessions.showAutomatedOverride = true;
+      await vscode.commands.executeCommand("setContext", "codeSessions.showAutomated", true);
+      await sessions.refresh();
+      void vscode.workspace.getConfiguration("codeSessions").update(
+        "showAutomated", true, vscode.ConfigurationTarget.Global,
+      ).then(() => { sessions.showAutomatedOverride = null; });
+    }),
+    vscode.commands.registerCommand("codeSessions.hideAutomatedSessions", async () => {
+      sessions.showAutomatedOverride = false;
+      await vscode.commands.executeCommand("setContext", "codeSessions.showAutomated", false);
+      await sessions.refresh();
+      void vscode.workspace.getConfiguration("codeSessions").update(
+        "showAutomated", false, vscode.ConfigurationTarget.Global,
+      ).then(() => { sessions.showAutomatedOverride = null; });
+    }),
+    vscode.commands.registerCommand("codeSessions.deleteSession", async (arg: SessionRow | SessionItem | undefined) => {
+      if (!store) {
+        vscode.window.showWarningMessage("Delete requires the SQLite cache. Enable codeSessions.cacheEnabled.");
+        return;
+      }
+      const row = unwrapRow(arg);
+      if (!row?.session) return;
+      const title = (row.title || row.session).slice(0, 80);
+      const choice = await vscode.window.showWarningMessage(
+        `Delete session “${title}”? This removes the cache row and on-disk transcripts (native JSONL and the ~/.sessions copy). Cannot be undone from this extension.`,
+        { modal: true },
+        "Delete",
+      );
+      if (choice !== "Delete") return;
+      const dbRow = store.getById(row.session);
+      const result = await deleteSessionArtifacts({
+        session_id: row.session,
+        source: row.source,
+        jsonl_path: dbRow?.jsonl_path ?? null,
+        mtime_epoch: row.mtime_epoch,
+      }, {
+        locateClaudeJsonl: (id) => locateSessionJsonl(id),
+        locateGrokSummary: () => locateGrokSummary(row),
+        locateStoreTurns,
+        gitSessionsRoot,
+      });
+      if (!result.ok) {
+        vscode.window.showErrorMessage(`Delete failed: ${result.error}`);
+        return;
+      }
+      store.deleteSession(row.session);
+      sessions.refresh();
+      const n = result.deleted.length;
+      vscode.window.setStatusBarMessage(
+        `Deleted “${title}” (${n} path${n === 1 ? "" : "s"}${result.gitCommitted ? ", committed in ~/.sessions" : ""}).`,
+        5000,
+      );
+    }),
     vscode.commands.registerCommand("codeSessions.renameSession", async (arg: SessionRow | SessionItem | undefined) => {
       if (!store) {
         vscode.window.showWarningMessage("Rename requires the SQLite cache. Enable codeSessions.cacheEnabled.");
@@ -3021,6 +3219,9 @@ export function activate(ctx: vscode.ExtensionContext) {
       // Optimistic cache update — the next indexer pass will re-derive the
       // same value from the file we just wrote.
       try { store.updateSessionTitle(row.session, next); } catch { /* indexer will fix */ }
+      try {
+        await vscode.commands.executeCommand("codeBuild.setSessionTitle", { id: row.session, title: next });
+      } catch { /* CB not installed or different id */ }
       sessions.refresh();
       vscode.window.setStatusBarMessage(
         `Renamed session — the native ${row.source === "grok" ? "grok" : "claude"} CLI will show the new title next time you resume.`,
@@ -3045,20 +3246,9 @@ export function activate(ctx: vscode.ExtensionContext) {
   const queueRefresh = () => {
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
-      // Re-sync only the changed JSONLs into SQLite, then refresh the view.
-      if (store) {
-        try {
-          syncToStore(store);
-          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
-            syncGrokToStore(store);
-          }
-          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
-            syncCodexToStore(store);
-          }
-        } catch (e: any) {
-          console.error("[code-sessions] sync failed in watcher:", e);
-        }
-      }
+      // Same gate as the 10 s timer — at most one wasm pass per 5 s.
+      // Claude JSONL watcher: do not pull grok/codex (6–7 s wasm each).
+      runIndexSync({ includeGit: false, includeGrok: false, includeCodex: false });
       sessions.refresh();
     }, 1500);
   };
@@ -3066,10 +3256,45 @@ export function activate(ctx: vscode.ExtensionContext) {
   watcher.onDidCreate(queueRefresh);
   ctx.subscriptions.push(watcher);
 
+  // Grok history lives under ~/.grok/sessions, not ~/.claude/projects. Watch
+  // chat_history.jsonl and index **only those files** so View Conversation /
+  // the tree stay current without a 6 s full grok wasm pass on every Claude tick.
+  const grokRoot = path.join(os.homedir(), ".grok", "sessions");
+  const grokWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(vscode.Uri.file(grokRoot), "**/chat_history.jsonl"),
+  );
+  const pendingGrok = new Set<string>();
+  let grokTimer: NodeJS.Timeout | undefined;
+  const queueGrok = (uri: vscode.Uri) => {
+    pendingGrok.add(uri.fsPath);
+    if (grokTimer) clearTimeout(grokTimer);
+    grokTimer = setTimeout(() => {
+      const paths = [...pendingGrok];
+      pendingGrok.clear();
+      if (!store || paths.length === 0) return;
+      const span = startSpan("csv.index.grok");
+      try {
+        const stats = syncGrokToStore(store, { onlyPaths: paths });
+        span.end({ parsed: stats.parsed, elapsed_ms: stats.elapsed_ms });
+        indexDiag.reportSource("grok", stats);
+      } catch (e: unknown) {
+        span.end({ err: true });
+        log.appendLine(`[index:grok] watcher ERROR ${e instanceof Error ? e.message : String(e)}`);
+      }
+      sessions.refresh();
+    }, 1500);
+  };
+  grokWatcher.onDidChange(queueGrok);
+  grokWatcher.onDidCreate(queueGrok);
+  ctx.subscriptions.push(grokWatcher);
+
   // Re-render trees when relevant settings flip (e.g. showAutomated).
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("codeSessions")) sessions.refresh();
+      if (e.affectsConfiguration("codeSessions")) {
+        void syncShowAutomatedContext();
+        sessions.refresh();
+      }
       if (e.affectsConfiguration("codeKbChanges")) {
         kb.refresh();
         if (e.affectsConfiguration("codeKbChanges.repoPath")) refreshKbTitle();
@@ -3119,7 +3344,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     repos: () => {
       const set = new Set<string>();
       set.add(resolveKbRepoPath()); // ~/docs — covers KB + planning/
-      set.add(sessionsRoot); // ~/.sessions
+      // Daemon owns ~/.sessions git; pulling it here stalls disk for 8–11 s.
+      if (!daemonIsUp()) set.add(sessionsRoot);
       for (const extra of vscode.workspace
         .getConfiguration("codeSessions.sync")
         .get<string[]>("extraRepos", [])) {
@@ -3130,7 +3356,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     onChanged: (changed) => {
       // A pull advanced HEAD somewhere — reload the affected views. Refreshes
       // are cheap re-reads, so we refresh broadly rather than diffing repos.
-      if (changed.some((r) => r === sessionsRoot) && store) {
+      if (changed.some((r) => r === sessionsRoot) && store && !daemonIsUp()) {
         try {
           syncGitToStore(store, {
             includeLocalHost: vscode.workspace
@@ -3206,24 +3432,22 @@ export function activate(ctx: vscode.ExtensionContext) {
   }, 60_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(dayRolloverTimer) });
 
-  // Sessions view: incremental re-sync + re-render every 10 s so the
-  // leading "time since last activity" column stays close to real-time.
-  // syncToStore is incremental — it only re-parses JSONLs whose (mtime,size)
-  // changed, so the cost when nothing has happened is essentially a stat()
-  // per known session. Failures go to the Output channel + debounced toast.
+  // Sessions view: re-render every 10 s from the cache. Do **not** index
+  // here — grok wasm was 6–7 s every cycle and froze the whole window.
   const sessionsTimer = setInterval(() => {
-    if (store) {
-      // Quiet poll: native indexers only (git store is heavier; refresh/full cover it).
-      runIndexSync({ includeGit: false });
-    }
     sessions.refresh();
-    // Give the background classifier a nudge so newly-detected turns get
-    // queued without waiting for its own discovery interval.
     bgClassifier?.notifySyncCompleted();
-    // Refresh the daily cost budget tile alongside the live tile.
     costBudgetTick?.();
   }, 10_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(sessionsTimer) });
+
+  // Grok/codex (and a quiet claude pass) at most once a minute. Watcher covers
+  // live Claude JSONL; Refresh/full still force a pass.
+  const heavyIndexTimer = setInterval(() => {
+    if (store) runIndexSync({ includeGit: false });
+  }, 60_000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(heavyIndexTimer) });
+  act.end();
 }
 
 async function openChangedFile(c: FileChange) {
@@ -3288,11 +3512,23 @@ function unwrapRow(arg: SessionRow | SessionItem | undefined): SessionRow | null
 /** Open the session in zhirafovod.code-build-vscode's chat UI. Falls back
  * to the native per-source extension when code-build isn't installed. */
 async function resumeInCodeBuild(row: SessionRow): Promise<void> {
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `Opening ${row.source} session…` },
+    () => resumeInCodeBuildInner(row),
+  );
+}
+
+async function resumeInCodeBuildInner(row: SessionRow): Promise<void> {
   const cwd = SessionsProvider.sessionCwd(row) ?? undefined;
   const codeBuildExt = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
-  // Cross-device: no native transcript on this machine → native resume can't
-  // reach it. Seed a fresh Code Build conversation with the store transcript.
-  const nativeJsonl = await locateSessionJsonl(row.session);
+  // Prefer the indexed jsonl_path — walking ~/.claude/projects for a Grok id
+  // is why "Open in Code Build" felt frozen.
+  const nativeJsonl =
+    row.jsonl_path && fs.existsSync(row.jsonl_path)
+      ? row.jsonl_path
+      : row.source === "claude"
+        ? await locateSessionJsonl(row.session)
+        : null;
   if (!nativeJsonl) {
     const storeRef = locateStoreTurns(row.session);
     if (storeRef) {
@@ -3444,15 +3680,16 @@ async function renameSessionFile(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const text = newTitle.trim();
   if (!text) return { ok: false, error: "Empty title — nothing to write." };
+  if (row.source === "grok") {
+    // summary.json rewrite is not O_APPEND — skip the claude idle guard.
+    return renameGrokSession(row, text);
+  }
   const ageSec = Math.max(0, Math.floor(Date.now() / 1000 - row.mtime_epoch));
   if (ageSec < RENAME_MIN_IDLE_SECONDS) {
     return {
       ok: false,
       error: `Session was active ${ageSec}s ago. Wait at least ${RENAME_MIN_IDLE_SECONDS}s after the last turn before renaming, so an in-flight write isn't lost.`,
     };
-  }
-  if (row.source === "grok") {
-    return renameGrokSession(row, text);
   }
   if (row.source === "codex") {
     // Guard: codex rollouts have no rename affordance yet, and falling through
@@ -3567,6 +3804,11 @@ async function resolveTranscriptPath(
   if (row && row.source !== "git" && row.jsonl_path && fs.existsSync(row.jsonl_path)) {
     return row.jsonl_path;
   }
+  // Grok transcripts are never under ~/.claude/projects. Find them on disk
+  // even when the wasm indexer has not run yet (1.46.3 skip-grok-on-timer).
+  const grok = locateGrokChatHistory(sessionId);
+  if (grok) return grok;
+  if (row?.source === "grok") return null;
   return locateSessionJsonl(sessionId);
 }
 

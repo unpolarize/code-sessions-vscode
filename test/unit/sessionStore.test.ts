@@ -127,4 +127,72 @@ describe("SessionStore round-trip", () => {
     expect(removed).toBe(1);
     expect(store.getById("77777777-7777-4777-8777-777777777777")).toBeNull();
   });
+
+  it("deleteSession cascades turns, star, and hide", () => {
+    const id = "88888888-8888-4888-8888-888888888888";
+    store.upsertSession(sessionRow({
+      session_id: id,
+      jsonl_path: "/Users/tester/.claude/projects/demo/other.jsonl",
+    }));
+    store.upsertTurns([turnRow({ session_id: id, turn_uuid: "turn-del-1" })]);
+    store.starSession(id);
+    store.setHidden(id, true);
+    expect(store.getById(id)).not.toBeNull();
+    expect(store.turnsForSession(id).length).toBe(1);
+    expect(store.starredSessionIds().has(id)).toBe(true);
+    expect(store.hiddenSessionIds().has(id)).toBe(true);
+    expect(store.deleteSession(id)).toBe(1);
+    expect(store.getById(id)).toBeNull();
+    expect(store.turnsForSession(id).length).toBe(0);
+    expect(store.starredSessionIds().has(id)).toBe(false);
+    expect(store.hiddenSessionIds().has(id)).toBe(false);
+  });
+});
+
+describe("listRecent requireReply window", () => {
+  it("does not let empty jsonl-opens occupy the limit ahead of real chats", () => {
+    const now = Date.parse("2026-08-26T18:00:00.000Z");
+    const day = 86_400_000;
+    // 80 newest-mtime rows never got a reply (panel open).
+    for (let i = 0; i < 80; i++) {
+      store.upsertSession(
+        sessionRow({
+          session_id: `empty-${String(i).padStart(4, "0")}-0000-4000-8000-000000000000`,
+          jsonl_path: `/tmp/empty-${i}.jsonl`,
+          mtime_ns: (now - i * 1000) * 1e6,
+          last_assistant_text_at: null,
+          title: `empty ${i}`,
+        }),
+      );
+    }
+    const older = sessionRow({
+      session_id: "aaaa1111-0000-4000-8000-00000000old1",
+      jsonl_path: "/tmp/old-human.jsonl",
+      mtime_ns: (now - 10 * day) * 1e6,
+      last_assistant_text_at: now - 10 * day,
+      title: "week-ago human chat",
+      is_automated: false,
+    });
+    const today = sessionRow({
+      session_id: "aaaa1111-0000-4000-8000-00000000tod1",
+      jsonl_path: "/tmp/today-human.jsonl",
+      mtime_ns: now * 1e6,
+      last_assistant_text_at: now,
+      title: "today human chat",
+      is_automated: false,
+    });
+    store.upsertSession(older);
+    store.upsertSession(today);
+
+    const byMtime = store.listRecent(10, true);
+    expect(byMtime.every((r) => r.title?.startsWith("empty") || r.title === "today human chat")).toBe(true);
+    expect(byMtime.some((r) => r.title === "week-ago human chat")).toBe(false);
+
+    const byReply = store.listRecent(10, true, { requireReply: true });
+    const titles = byReply.map((r) => r.title);
+    expect(titles).toContain("today human chat");
+    expect(titles).toContain("week-ago human chat");
+    expect(titles.some((t) => t?.startsWith("empty"))).toBe(false);
+    expect(byReply[0].title).toBe("today human chat");
+  });
 });

@@ -15,6 +15,7 @@ import { classifySession } from "./topicClassifier";
 import { locateStoreTurns, turnsToConversation } from "./storeTranscript";
 import { formatReasoningShare } from "./reasoningTokens";
 import * as fs from "fs";
+import { startSpan } from "./hostTrace";
 
 function fmtClock(ms: number): string {
   if (!ms) return "—";
@@ -346,6 +347,7 @@ export function openConversationViewer(
 ): vscode.WebviewPanel {
   // Native transcript missing (session ran on another laptop)? Fall back to the
   // git-synced ~/.sessions turns store so it can still be reviewed here.
+  const span = startSpan("csv.conversation");
   const nativeExists = !!jsonlPath && fs.existsSync(jsonlPath);
   const storeRef = nativeExists ? null : locateStoreTurns(sessionId);
   const panelTitle = `${title || sessionId.slice(0, 8)} · conversation`;
@@ -386,6 +388,7 @@ export function openConversationViewer(
     }
   };
   render();
+  span.end();
   // Expose a refresh hook so the classifier command can re-render after
   // upserting topics.
   (panel as any).__refresh = render;

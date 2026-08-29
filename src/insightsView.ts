@@ -15,6 +15,12 @@ import * as os from "os";
 import { execFile } from "child_process";
 import { parseConversation, ParsedConversation } from "./conversationParser";
 import { renderDoctorCardHtml, runRulesDoctor, type DoctorRunResult } from "./rulesDoctor";
+import {
+  isAutomatedSession,
+  DEFAULT_TITLE_PATTERNS,
+  DEFAULT_EXTRA_ENTRYPOINTS,
+  DEFAULT_AUTO_LABELS,
+} from "./automation";
 
 interface SessionRow {
   /** Source CLI that produced the session. Defaults to 'claude' when absent
@@ -35,6 +41,9 @@ interface SessionRow {
   tokens_total: number;
   cost_usd: number;
   title: string;
+  first_user_msg?: string;
+  extras_json?: string | null;
+  kind?: string;
   subagents: number;
   projects_touched: string[];
   first_ts_epoch?: number;
@@ -881,6 +890,9 @@ export async function openInsightsView(
         tokens_total: r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_write_tokens,
         cost_usd: r.cost_usd,
         title: r.title || (r.first_user_msg ?? "").slice(0, 70),
+        first_user_msg: r.first_user_msg ?? "",
+        extras_json: r.extras_json ?? null,
+        kind: r.kind,
         subagents: r.subagent_count,
         projects_touched: r.projects_touched,
         first_ts_epoch: r.started_at ? Math.floor(r.started_at / 1000) : 0,
@@ -937,7 +949,13 @@ export async function openInsightsView(
 
   // Filter to interactive vs. include automated based on the same setting the
   // tree uses, so the dashboard tells the user about the work they actually drove.
-  const filtered = allRows.filter((r) => showAutomated || !r.is_automated);
+  const autoCfg = {
+    honorDbFlag: true,
+    extraEntrypoints: cfg.get<string[]>("automation.extraEntrypoints", DEFAULT_EXTRA_ENTRYPOINTS),
+    titlePatterns: cfg.get<string[]>("automation.titlePatterns", DEFAULT_TITLE_PATTERNS),
+    extraLabels: cfg.get<string[]>("automation.labels", DEFAULT_AUTO_LABELS),
+  };
+  const filtered = allRows.filter((r) => showAutomated || !isAutomatedSession(r, autoCfg));
 
   // Limit to the lookback window (cost / heatmap / etc.).
   const nowSec = Math.floor(Date.now() / 1000);
