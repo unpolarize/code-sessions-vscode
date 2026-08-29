@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.45.0 — 2026-08-29
+
+### Fleet reads the sessions daemon (phase 1)
+
+- On activate, CSV calls daemon `hello` + `session.list`. When the daemon is up, Fleet/Planning merge those rows (hasContent only) and **skip** `syncGitToStore` — the daemon owns the `~/.sessions` git loop.
+- If the daemon is down, previous local indexers + git import still run (feature-detect fallback).
+- Native Claude/Grok/Codex wasm indexers remain until the daemon index covers those sources for Search/Insights.
+
 ## 1.44.9 — 2026-08-26
 
 ### Grok Build sessions are interactive; Ask picks provider; resume doesn't walk disk

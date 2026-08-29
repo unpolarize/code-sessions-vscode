@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   classifyStatus,
+  daemonRowsToFleet,
   localLiveIds,
   mergeFleetSessions,
   parseExtras,
@@ -114,5 +115,37 @@ describe("mergeFleetSessions", () => {
     expect(merged).toHaveLength(2);
     expect(merged.find((s) => s.uuid.startsWith("aaaa"))?.status).toBe("live-local");
     expect(merged.find((s) => s.uuid.startsWith("bbbb"))?.status).toBe("open");
+  });
+});
+
+describe("daemonRowsToFleet", () => {
+  it("keeps hasContent rows and drops empty creates; cwd is projectPath", () => {
+    const rows = daemonRowsToFleet(
+      [
+        {
+          id: "live-1",
+          host: "air-15",
+          agent: "grok",
+          cwd: "/Users/me/docs",
+          title: "docs work",
+          hasContent: true,
+          startedAt: new Date(NOW - 60_000).toISOString(),
+          turnCount: 4,
+        },
+        {
+          id: "empty-1",
+          host: "air-15",
+          agent: "codebuild",
+          cwd: "/Users/me/other",
+          hasContent: false,
+          turnCount: 0,
+        },
+      ],
+      { now: NOW, localHost: "air" },
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.uuid).toBe("live-1");
+    expect(rows[0]?.projectPath).toBe("/Users/me/docs");
+    expect(rows[0]?.source).toBe("git");
   });
 });

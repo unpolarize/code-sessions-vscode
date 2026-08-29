@@ -18,6 +18,7 @@ import { ReloadGate } from "./reloadGate";
 import { syncBridge } from "./storeSync";
 import {
   localLiveIds,
+  daemonRowsToFleet,
   mergeFleetSessions,
   parseExtras,
   shortHost,
@@ -27,6 +28,7 @@ import {
 import { buildExplainPrompt, invokeClaudeP, parseLabelJson } from "./sessionExplain";
 import { invokeAskAgent, pickAskRuntime } from "./askAgent";
 import { isAutomatedSession } from "./automation";
+import { cachedDaemonSessions } from "./daemonClient";
 import {
   actionLabel,
   buildFleetChatPrompt,
@@ -124,6 +126,10 @@ function listSessionsRich(): FleetSession[] {
       { now, localHost, localLiveIds: liveIds },
     );
   });
+  const daemonRows = cachedDaemonSessions();
+  if (daemonRows.length > 0) {
+    return mergeFleetSessions([...fromIndex, ...daemonRowsToFleet(daemonRows, { now, localHost })]);
+  }
   const fromGit = listGitStoreSessions().map((s) =>
     toFleetSession(
       {

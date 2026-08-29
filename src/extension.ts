@@ -17,6 +17,7 @@ import { syncToStore } from "./jsonlIndexer";
 import { syncGrokToStore } from "./grokIndexer";
 import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
+import { daemonIsUp, refreshDaemonSessions } from "./daemonClient";
 import { IndexDiagnostics } from "./indexDiagnostics";
 import { StoreSyncManager, setSyncBridge, type SyncStatus } from "./storeSync";
 import { classifySession } from "./topicClassifier";
@@ -2151,6 +2152,9 @@ export function activate(ctx: vscode.ExtensionContext) {
   const log = vscode.window.createOutputChannel("Code Sessions");
   ctx.subscriptions.push(log);
   log.appendLine(`[activate] code-sessions starting (VS Code ${vscode.version})`);
+  void refreshDaemonSessions().then((ok) => {
+    log.appendLine(`[daemon] session API ${ok ? "connected (git import skipped)" : "unavailable — local indexers + git import"}`);
+  });
 
   // Indexer failure surface: per-file path+reason on the channel, debounced
   // toast once per changed error count (see indexDiagnostics.ts).
@@ -2242,7 +2246,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
     }
 
-    if (includeGit && cfg.get<boolean>("git.enabled", true)) {
+    if (includeGit && cfg.get<boolean>("git.enabled", true) && !daemonIsUp()) {
       try {
         const gitStats = syncGitToStore(s, {
           includeLocalHost: cfg.get<boolean>("git.includeLocalHost", false),
@@ -3222,7 +3226,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     onChanged: (changed) => {
       // A pull advanced HEAD somewhere — reload the affected views. Refreshes
       // are cheap re-reads, so we refresh broadly rather than diffing repos.
-      if (changed.some((r) => r === sessionsRoot) && store) {
+      if (changed.some((r) => r === sessionsRoot) && store && !daemonIsUp()) {
         try {
           syncGitToStore(store, {
             includeLocalHost: vscode.workspace

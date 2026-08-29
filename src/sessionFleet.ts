@@ -150,6 +150,44 @@ export function toFleetSession(
   };
 }
 
+/** Map daemon session.list rows onto FleetSession (phase 1 git-store replacement). */
+export function daemonRowsToFleet(
+  rows: Array<{
+    id: string;
+    host: string;
+    agent: string;
+    cwd: string;
+    title?: string;
+    hasContent: boolean;
+    startedAt?: string;
+    turnCount: number;
+  }>,
+  opts: { now: number; localHost: string },
+): FleetSession[] {
+  return rows
+    .filter((r) => r.hasContent)
+    .map((r) => {
+      const startedAt = r.startedAt ? Date.parse(r.startedAt) : 0;
+      const t = Number.isFinite(startedAt) ? startedAt : 0;
+      return toFleetSession(
+        {
+          uuid: r.id,
+          title: r.title,
+          agent: r.agent,
+          host: r.host,
+          projectPath: r.cwd,
+          source: "git",
+          startedAt: t,
+          mtime: t,
+          lastActivity: t,
+          turns: r.turnCount,
+          planningRefs: [],
+        },
+        opts,
+      );
+    });
+}
+
 /** Merge SQLite-index rows with git-store rows by uuid. Git-only rows are
  * other-laptop sessions that never had a native transcript here. */
 export function mergeFleetSessions(parts: FleetSession[]): FleetSession[] {
