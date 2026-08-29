@@ -2563,6 +2563,10 @@ export function activate(ctx: vscode.ExtensionContext) {
     // command-URI click-to-open for an absolute transcript path.
     vscode.commands.registerCommand("codeSessions.openAbsoluteFile", async (absPath: string) => {
       if (!absPath || typeof absPath !== "string") return;
+      if (!path.isAbsolute(absPath)) {
+        vscode.window.showWarningMessage(`Cannot open ${absPath}: not an absolute path.`);
+        return;
+      }
       try {
         await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(absPath));
       } catch (e: any) {

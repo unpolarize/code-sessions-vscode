@@ -419,6 +419,10 @@ export interface WriteSurfaceCardOpts {
   commandUris?: boolean;
   /** Max paths listed before the `+K more` overflow row (default 25). */
   cap?: number;
+  /** Session project root. Codex rollouts record repo-relative paths; the
+   * click-to-open href joins them here. Relative paths with no root render
+   * as plain text (never a link to the wrong place). */
+  rootDir?: string | null;
 }
 
 function escapeCardHtml(s: string): string {
@@ -436,6 +440,9 @@ function escapeCardHtml(s: string): string {
 export function renderWriteSurfaceCardHtml(surface: WriteSurface, opts?: WriteSurfaceCardOpts): string {
   const commandUris = opts?.commandUris !== false;
   const cap = Math.max(1, opts?.cap ?? WRITE_SURFACE_CAP);
+  const rootDir = opts?.rootDir ?? null;
+  const openTarget = (p: string): string | null =>
+    path.isAbsolute(p) ? p : rootDir ? path.join(rootDir, p) : null;
   const n = surface.untestedWrites.length;
   const subtitle = `<div class="ws-sub">${escapeCardHtml(WRITE_SURFACE_SUBTITLE)}</div>`;
   const caveats =
@@ -463,8 +470,9 @@ export function renderWriteSurfaceCardHtml(surface: WriteSurface, opts?: WriteSu
     const rows = shown
       .map((w) => {
         const label = escapeCardHtml(w.path);
-        const link = commandUris
-          ? `<a class="ws-path" href="command:${OPEN_ABSOLUTE_FILE_COMMAND}?${encodeURIComponent(JSON.stringify([w.path]))}" title="${label}">${label}</a>`
+        const target = openTarget(w.path);
+        const link = commandUris && target
+          ? `<a class="ws-path" href="command:${OPEN_ABSOLUTE_FILE_COMMAND}?${encodeURIComponent(JSON.stringify([target]))}" title="${escapeCardHtml(target)}">${label}</a>`
           : `<span class="ws-path" title="${label}">${label}</span>`;
         const badge = w.note ? ` <span class="ws-badge" title="${escapeCardHtml(w.note)}">${escapeCardHtml(w.note)}</span>` : "";
         return `<li>${link}${badge}</li>`;

@@ -431,3 +431,22 @@ describe("renderWriteSurfaceCardHtml", () => {
     expect(html).toContain("session source unknown");
   });
 });
+
+describe("renderWriteSurfaceCardHtml — relative (Codex) paths", () => {
+  it("joins repo-relative paths to rootDir for the open link, keeps the display label relative", () => {
+    const html = renderWriteSurfaceCardHtml(
+      surfaceWith({ untestedWrites: [{ path: "src/foo.ts", note: null }] }),
+      { rootDir: "/repo" },
+    );
+    const joined = `${"/repo"}${path.sep}src${path.sep}foo.ts`;
+    expect(html).toContain(encodeURIComponent(JSON.stringify([joined])));
+    expect(html).toContain(">src/foo.ts</a>");
+  });
+
+  it("renders a relative path as plain text when no rootDir is known (never a wrong-place link)", () => {
+    const html = renderWriteSurfaceCardHtml(surfaceWith({ untestedWrites: [{ path: "src/foo.ts", note: null }] }));
+    expect(html).not.toContain("command:");
+    expect(html).toContain('<span class="ws-path"');
+    expect(html).toContain("src/foo.ts");
+  });
+});

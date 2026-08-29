@@ -409,17 +409,17 @@ export function openConversationViewer(
       setTimeout(() => {
         if (disposed || gen !== generation) return;
         let card = "";
+        const wsSpan = startSpan("csv.conversation.writeSurface");
         try {
-          const wsSpan = startSpan("csv.conversation.writeSurface");
-          const surface = computeWriteSurface({
-            source: storeRef ? null : (row?.source ?? null),
-            jsonl_path: jsonlPath,
-          });
-          card = renderWriteSurfaceCardHtml(surface);
-          wsSpan.end();
+          // Store-fallback / missing transcript resolve to 'unavailable' inside
+          // computeWriteSurface with the honest reason (never "source unknown").
+          const surface = computeWriteSurface({ source: row?.source ?? null, jsonl_path: jsonlPath });
+          card = renderWriteSurfaceCardHtml(surface, { rootDir: row?.project_path ?? null });
         } catch {
           // Card is best-effort; the transcript view already painted.
           return;
+        } finally {
+          wsSpan.end();
         }
         if (disposed || gen !== generation) return;
         panel.webview.html = renderHtml(parsed, jsonlPath ?? "", topics, project, row, srcInfo, card);
