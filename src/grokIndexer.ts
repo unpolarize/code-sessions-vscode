@@ -23,7 +23,45 @@ import * as path from "path";
 import { SessionStore, SessionRow, TurnRow } from "./db";
 import { GrokTurn, parseGrokConversation } from "./grokConversationParser";
 
-const GROK_SESSIONS_ROOT = path.join(os.homedir(), ".grok", "sessions");
+export const GROK_SESSIONS_ROOT = path.join(os.homedir(), ".grok", "sessions");
+
+/** Find `chat_history.jsonl` for a grok session id without the SQLite index.
+ * Layout is `~/.grok/sessions/<urlencoded-cwd>/<uuid>/chat_history.jsonl`. */
+export function locateGrokChatHistory(sessionId: string, root = GROK_SESSIONS_ROOT): string | null {
+  if (!sessionId || !fs.existsSync(root)) return null;
+  const direct = path.join(root, sessionId, "chat_history.jsonl");
+  if (fs.existsSync(direct)) return direct;
+  let cwdDirs: fs.Dirent[];
+  try {
+    cwdDirs = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const cwdDir of cwdDirs) {
+    if (!cwdDir.isDirectory()) continue;
+    const chatPath = path.join(root, cwdDir.name, sessionId, "chat_history.jsonl");
+    if (fs.existsSync(chatPath)) return chatPath;
+  }
+  return null;
+}
+
+function sessionInfoFromChatPath(chatPath: string): GrokSessionInfo | null {
+  const sessionDir = path.dirname(chatPath);
+  const summaryPath = path.join(sessionDir, "summary.json");
+  if (!fs.existsSync(chatPath) || !fs.existsSync(summaryPath)) return null;
+  try {
+    const st = fs.statSync(chatPath);
+    return {
+      sessionDir,
+      chatPath,
+      summaryPath,
+      mtime_ns: st.mtimeMs * 1e6,
+      size_bytes: st.size,
+    };
+  } catch {
+    return null;
+  }
+}
 
 // Truncations match the claude indexer so the downstream classifier sees
 // comparable text lengths regardless of source.
@@ -400,10 +438,15 @@ export function syncGrokToStore(
     onProgress?: (done: number, total: number) => void;
     force?: boolean;
     forceRecentN?: number;
+    /** Index only these chat_history.jsonl paths (watcher). Does not scan the rest. */
+    onlyPaths?: string[];
   } = {},
 ): GrokSyncStats {
   const t0 = Date.now();
-  const disk = listAllGrokSessions();
+  const disk =
+    opts.onlyPaths && opts.onlyPaths.length > 0
+      ? opts.onlyPaths.map(sessionInfoFromChatPath).filter((x): x is GrokSessionInfo => x != null)
+      : listAllGrokSessions();
   // We key the cache on chat_history.jsonl path, same shape as the claude
   // cache. `knownPaths` returns rows for both sources, so we filter to the
   // ones whose path starts with the grok root to avoid cross-source
@@ -434,7 +477,9 @@ export function syncGrokToStore(
 
   const diskPaths = new Set(disk.map((d) => d.chatPath));
   const removedPaths: string[] = [];
-  for (const p of known.keys()) if (!diskPaths.has(p)) removedPaths.push(p);
+  if (!opts.onlyPaths?.length) {
+    for (const p of known.keys()) if (!diskPaths.has(p)) removedPaths.push(p);
+  }
 
   let parsed = 0;
   let errors = 0;

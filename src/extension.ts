@@ -14,7 +14,7 @@ import { taggedEmbeddingModel } from "./embedText";
 import { kickReembed } from "./reembedJob";
 import type { EmbedConfig } from "./embedding";
 import { syncToStore } from "./jsonlIndexer";
-import { syncGrokToStore } from "./grokIndexer";
+import { locateGrokChatHistory, syncGrokToStore } from "./grokIndexer";
 import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
 import { daemonIsUp, refreshDaemonSessions } from "./daemonClient";
@@ -3207,6 +3207,38 @@ export function activate(ctx: vscode.ExtensionContext) {
   watcher.onDidCreate(queueRefresh);
   ctx.subscriptions.push(watcher);
 
+  // Grok history lives under ~/.grok/sessions, not ~/.claude/projects. Watch
+  // chat_history.jsonl and index **only those files** so View Conversation /
+  // the tree stay current without a 6 s full grok wasm pass on every Claude tick.
+  const grokRoot = path.join(os.homedir(), ".grok", "sessions");
+  const grokWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(vscode.Uri.file(grokRoot), "**/chat_history.jsonl"),
+  );
+  const pendingGrok = new Set<string>();
+  let grokTimer: NodeJS.Timeout | undefined;
+  const queueGrok = (uri: vscode.Uri) => {
+    pendingGrok.add(uri.fsPath);
+    if (grokTimer) clearTimeout(grokTimer);
+    grokTimer = setTimeout(() => {
+      const paths = [...pendingGrok];
+      pendingGrok.clear();
+      if (!store || paths.length === 0) return;
+      const span = startSpan("csv.index.grok");
+      try {
+        const stats = syncGrokToStore(store, { onlyPaths: paths });
+        span.end({ parsed: stats.parsed, elapsed_ms: stats.elapsed_ms });
+        indexDiag.reportSource("grok", stats);
+      } catch (e: unknown) {
+        span.end({ err: true });
+        log.appendLine(`[index:grok] watcher ERROR ${e instanceof Error ? e.message : String(e)}`);
+      }
+      sessions.refresh();
+    }, 1500);
+  };
+  grokWatcher.onDidChange(queueGrok);
+  grokWatcher.onDidCreate(queueGrok);
+  ctx.subscriptions.push(grokWatcher);
+
   // Re-render trees when relevant settings flip (e.g. showAutomated).
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -3723,6 +3755,11 @@ async function resolveTranscriptPath(
   if (row && row.source !== "git" && row.jsonl_path && fs.existsSync(row.jsonl_path)) {
     return row.jsonl_path;
   }
+  // Grok transcripts are never under ~/.claude/projects. Find them on disk
+  // even when the wasm indexer has not run yet (1.46.3 skip-grok-on-timer).
+  const grok = locateGrokChatHistory(sessionId);
+  if (grok) return grok;
+  if (row?.source === "grok") return null;
   return locateSessionJsonl(sessionId);
 }
 

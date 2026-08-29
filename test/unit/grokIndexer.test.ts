@@ -3,7 +3,7 @@
 // tree under test/fixtures/grokstore (cwd-encoded parent / uuid dir) — no home-dir access.
 import { describe, it, expect } from "vitest";
 import * as path from "path";
-import { listAllGrokSessions, buildGrokRows } from "../../src/grokIndexer";
+import { listAllGrokSessions, buildGrokRows, locateGrokChatHistory } from "../../src/grokIndexer";
 
 const ROOT = path.resolve(__dirname, "../fixtures/grokstore");
 
@@ -33,6 +33,15 @@ describe("listAllGrokSessions", () => {
 
   it("missing root → empty list, no throw", () => {
     expect(listAllGrokSessions(path.join(ROOT, "does-not-exist"))).toEqual([]);
+  });
+});
+
+describe("locateGrokChatHistory", () => {
+  it("finds chat_history.jsonl under a cwd-encoded parent without the sqlite index", () => {
+    const p = locateGrokChatHistory(S_VALID, ROOT);
+    expect(p).toBeTruthy();
+    expect(p!.endsWith(`${S_VALID}/chat_history.jsonl`)).toBe(true);
+    expect(locateGrokChatHistory("no-such-session", ROOT)).toBeNull();
   });
 });
 

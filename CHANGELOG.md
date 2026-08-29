@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.46.4 — 2026-08-29
+
+### Grok Build chat history loads without a full wasm index
+
+- **View Conversation** finds `~/.grok/sessions/<cwd>/<id>/chat_history.jsonl` on disk even when the SQLite indexer has not run (1.46.3 skipped grok on the 10 s timer).
+- File watcher on grok `chat_history.jsonl` indexes **only the changed files**, not all 338 sessions.
+
 ## 1.46.3 — 2026-08-29
 
 ### Stop freezing VS Code on grok index
