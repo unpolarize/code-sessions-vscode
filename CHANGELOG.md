@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.48.0 — 2026-08-29
+
+### Rules doctor Insights card + checklist export
+
+- **Insights dashboard** gains a workspace-scoped **Rules doctor** card (4 buckets: Candidates / Protected / Unscorable / Scored-with-hits) joined against the last N indexed multi-backend sessions for the active folder.
+  - Click a section → opens the rule file at the heading (`codeSessions.openRulesDoctorSection`).
+  - **Copy checklist** command URI + palette command (`codeSessions.copyRulesDoctorChecklist`) writes the hedged markdown checklist (never "delete these").
+  - Setting `codeSessions.rulesDoctorSessionLimit` (default 30); turn scan capped; read-only — never writes rule files.
+- `runRulesDoctor` / `renderDoctorCardHtml` land in `src/rulesDoctor.ts` (store surface stays injectable; no vscode import in the pure module).
+- Slice of ideas/csv-never-referenced-rules-doctor-card-join-proj (UI + commands; core parser landed in 1.43.0).
+
 ## 1.47.0 — 2026-08-28
 
 ### Plan-assumption checklist core

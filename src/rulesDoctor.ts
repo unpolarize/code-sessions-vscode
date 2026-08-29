@@ -481,3 +481,280 @@ export function exportChecklist(report: DoctorReport): string {
   }
   return lines.join("\n") + "\n";
 }
+
+// ---------------------------------------------------------------------------
+// Disk load + store orchestration (still pure — no vscode import)
+// ---------------------------------------------------------------------------
+
+/** Hard cap on turns scanned per Insights open so WASM sqlite stays responsive. */
+export const MAX_DOCTOR_TURNS = 3000;
+
+/** Minimal store surface the doctor needs — SessionStore satisfies this. */
+export interface DoctorTurnSource {
+  listRecent(
+    limit: number,
+    includeAutomated: boolean
+  ): Array<JoinableSession & { mtime_ns: number; ended_at?: number | null; started_at?: number | null }>;
+  turnsForSession(sessionId: string): Array<{
+    user_text: string | null;
+    assistant_full: string | null;
+    assistant_excerpt: string | null;
+  }>;
+}
+
+export interface DoctorRunResult {
+  report: DoctorReport;
+  rootDir: string;
+  /** ISO date of oldest / newest scoped top-level session activity (if any). */
+  windowStart: string | null;
+  windowEnd: string | null;
+  emptyReason?: "no-workspace" | "no-rules" | "no-store" | "no-sessions";
+}
+
+/** Read + parse every discovered rule file under `rootDir`. */
+export function loadRuleSections(rootDir: string): RuleSection[] {
+  const out: RuleSection[] = [];
+  for (const f of discoverRuleFiles(rootDir)) {
+    try {
+      const text = fs.readFileSync(f.absPath, "utf8");
+      out.push(...parseRuleSections(text, f.relPath));
+    } catch {
+      /* unreadable — skip */
+    }
+  }
+  return out;
+}
+
+function activityMs(s: {
+  mtime_ns: number;
+  ended_at?: number | null;
+  started_at?: number | null;
+}): number {
+  if (s.ended_at && s.ended_at > 0) return s.ended_at;
+  if (s.started_at && s.started_at > 0) return s.started_at;
+  return Math.floor(s.mtime_ns / 1e6);
+}
+
+function isoDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Join workspace rule files against the last `sessionLimit` top-level sessions
+ * for `rootDir`. Read-only; never writes rules or the DB.
+ */
+export function runRulesDoctor(
+  rootDir: string,
+  store: DoctorTurnSource | null | undefined,
+  sessionLimit = 30
+): DoctorRunResult {
+  if (!rootDir) {
+    return {
+      report: emptyReport(0),
+      rootDir: "",
+      windowStart: null,
+      windowEnd: null,
+      emptyReason: "no-workspace",
+    };
+  }
+  if (!store) {
+    return {
+      report: emptyReport(0),
+      rootDir,
+      windowStart: null,
+      windowEnd: null,
+      emptyReason: "no-store",
+    };
+  }
+  if (discoverRuleFiles(rootDir).length === 0) {
+    return {
+      report: emptyReport(0),
+      rootDir,
+      windowStart: null,
+      windowEnd: null,
+      emptyReason: "no-rules",
+    };
+  }
+  const sections = loadRuleSections(rootDir);
+
+  const poolLimit = Math.max(sessionLimit * 20, 400);
+  const pool = store.listRecent(poolLimit, true);
+  const matched = filterWorkspaceSessions(pool, rootDir);
+  const topLevel = matched
+    .filter((s) => (s.kind ?? "session") === "session")
+    .sort((a, b) => b.mtime_ns - a.mtime_ns)
+    .slice(0, Math.max(1, sessionLimit));
+  const topIds = new Set(topLevel.map((s) => s.session_id));
+  const scoped = matched.filter(
+    (s) => topIds.has(s.session_id) || (s.parent_session_id != null && topIds.has(s.parent_session_id))
+  );
+
+  if (topLevel.length === 0) {
+    return {
+      report: buildDoctorReport(sections, [], 0),
+      rootDir,
+      windowStart: null,
+      windowEnd: null,
+      emptyReason: "no-sessions",
+    };
+  }
+
+  const turns: TurnText[] = [];
+  let budget = MAX_DOCTOR_TURNS;
+  for (const s of scoped) {
+    if (budget <= 0) break;
+    for (const t of store.turnsForSession(s.session_id)) {
+      if (budget <= 0) break;
+      const text = [t.user_text, t.assistant_full || t.assistant_excerpt]
+        .filter((x): x is string => !!x && x.length > 0)
+        .join("\n");
+      if (!text) continue;
+      turns.push({ sessionId: s.session_id, text });
+      budget -= 1;
+    }
+  }
+
+  const times = topLevel.map(activityMs).filter((n) => n > 0);
+  const windowStart = times.length ? isoDay(Math.min(...times)) : null;
+  const windowEnd = times.length ? isoDay(Math.max(...times)) : null;
+  return {
+    report: buildDoctorReport(sections, turns, topLevel.length),
+    rootDir,
+    windowStart,
+    windowEnd,
+  };
+}
+
+function emptyReport(sessionCount: number): DoctorReport {
+  return {
+    candidates: [],
+    protected: [],
+    unscorable: [],
+    scoredWithHits: [],
+    sessionCount,
+    files: [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Insights card HTML (script-free; command URIs for open/copy)
+// ---------------------------------------------------------------------------
+
+export interface DoctorCardRenderOpts {
+  rootDir: string;
+  windowStart?: string | null;
+  windowEnd?: string | null;
+  emptyReason?: DoctorRunResult["emptyReason"];
+  /** When false, omit command: links (tests / non-webview). Default true. */
+  commandUris?: boolean;
+}
+
+function escapeHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function commandHref(command: string, args: unknown[]): string {
+  return `command:${command}?${encodeURIComponent(JSON.stringify(args))}`;
+}
+
+function sectionRowHtml(
+  s: ScoredSection,
+  rootDir: string,
+  commandUris: boolean,
+  extra: string
+): string {
+  const label = `${escapeHtml(s.file)} › ${escapeHtml(s.heading)}`;
+  const abs = path.join(rootDir, s.file);
+  const link = commandUris
+    ? `<a href="${commandHref("codeSessions.openRulesDoctorSection", [abs, s.startLine])}" title="Open at heading">${label}</a>`
+    : `<code>${label}</code>`;
+  return `<div class="doctor-row">${link}${extra}</div>`;
+}
+
+/** Insights dashboard card: 4 buckets + disclaimer + copy-checklist action. */
+export function renderDoctorCardHtml(result: DoctorRunResult, opts?: Partial<DoctorCardRenderOpts>): string {
+  const commandUris = opts?.commandUris !== false;
+  const rootDir = opts?.rootDir ?? result.rootDir;
+  const windowStart = opts?.windowStart ?? result.windowStart;
+  const windowEnd = opts?.windowEnd ?? result.windowEnd;
+  const emptyReason = opts?.emptyReason ?? result.emptyReason;
+  const report = result.report;
+
+  if (emptyReason === "no-workspace") {
+    return `<div class="card"><div class="card-title">Rules doctor</div>
+      <div class="subtitle">Open a workspace folder to audit CLAUDE.md / AGENTS.md / .cursor/rules against indexed transcripts.</div></div>`;
+  }
+  if (emptyReason === "no-store") {
+    return `<div class="card"><div class="card-title">Rules doctor</div>
+      <div class="subtitle">SQLite cache unavailable — enable <code>codeSessions.cacheEnabled</code> and reload.</div></div>`;
+  }
+  if (emptyReason === "no-rules") {
+    return `<div class="card"><div class="card-title">Rules doctor</div>
+      <div class="subtitle">No CLAUDE.md / AGENTS.md / .cursor/rules found under <code>${escapeHtml(rootDir)}</code>.</div></div>`;
+  }
+
+  const windowLabel =
+    windowStart && windowEnd
+      ? windowStart === windowEnd
+        ? windowStart
+        : `${windowStart} → ${windowEnd}`
+      : "no dated sessions";
+  const copyHref = commandUris
+    ? commandHref("codeSessions.copyRulesDoctorChecklist", [])
+    : "#";
+  const copyBtn = commandUris
+    ? `<a class="doctor-action" href="${copyHref}">Copy checklist</a>`
+    : "";
+
+  const bucket = (
+    title: string,
+    rows: ScoredSection[],
+    empty: string,
+    extra: (s: ScoredSection) => string
+  ): string => {
+    const body =
+      rows.length === 0
+        ? `<div class="muted">${escapeHtml(empty)}</div>`
+        : rows
+            .slice(0, 40)
+            .map((s) => sectionRowHtml(s, rootDir, commandUris, extra(s)))
+            .join("");
+    const more =
+      rows.length > 40 ? `<div class="muted">…and ${rows.length - 40} more</div>` : "";
+    return `<div class="doctor-bucket"><h3>${escapeHtml(title)} (${rows.length})</h3>${body}${more}</div>`;
+  };
+
+  const sessionsNote =
+    emptyReason === "no-sessions"
+      ? `<div class="subtitle">No indexed sessions matched this workspace yet — sections are listed unscored. Index or open sessions for this project, then refresh Insights.</div>`
+      : `<div class="subtitle">Last ${report.sessionCount} workspace sessions · ${escapeHtml(windowLabel)} · files: ${
+          report.files.length ? report.files.map(escapeHtml).join(", ") : "(none)"
+        }</div>`;
+
+  return `<div class="card">
+  <div class="card-title">Rules doctor · never-referenced sections ${copyBtn}</div>
+  ${sessionsNote}
+  ${bucket("Candidates — no transcript evidence", report.candidates, "None in this window.", () => "")}
+  ${bucket("Protected — short Never/Do-not shields", report.protected, "None.", () => "")}
+  ${bucket("Unscorable — no distinctive signal", report.unscorable, "None.", () => "")}
+  ${bucket(
+    "Scored with hits",
+    report.scoredWithHits,
+    "None yet.",
+    (s) =>
+      ` <span class="muted">${s.sessionHits} session${s.sessionHits === 1 ? "" : "s"} · ${s.turnHits} turn${s.turnHits === 1 ? "" : "s"}${
+        s.matchedSignal ? ` · “${escapeHtml(s.matchedSignal.text.slice(0, 48))}”` : ""
+      }</span>`
+  )}
+  <div class="doctor-disclaimer">
+    No evidence in the last N sessions ≠ proven unused. Rules can shape behavior without being quoted
+    (silent compliance), and stored turn text is truncated. Treat candidates as a review list — this
+    card never deletes or edits rule files.
+  </div>
+</div>`;
+}

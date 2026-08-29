@@ -13,8 +13,11 @@ import {
   extractSignals,
   filterWorkspaceSessions,
   parseRuleSections,
+  renderDoctorCardHtml,
+  runRulesDoctor,
   sessionMatchesWorkspace,
   stripFrontmatter,
+  type DoctorTurnSource,
   type JoinableSession,
   type RuleSection,
 } from "../../src/rulesDoctor";
@@ -242,5 +245,114 @@ describe("buildDoctorReport + exportChecklist", () => {
     expect(md).toContain("No transcript evidence in the last 30");
     expect(md).not.toContain("Safety"); // protected stays off the checklist
     expect(md).not.toMatch(/delete these/i);
+  });
+});
+
+describe("runRulesDoctor + renderDoctorCardHtml", () => {
+  let root: string;
+  beforeAll(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "rules-doctor-run-"));
+    fs.writeFileSync(
+      path.join(root, "AGENTS.md"),
+      [
+        "## Build",
+        "",
+        "Always run `npm run compile` first.",
+        "",
+        "## Dead ritual",
+        "",
+        "Consult `docs/nonexistent-ritual.md` weekly.",
+        "",
+        "## Safety",
+        "",
+        "- Never push directly to main",
+        "",
+      ].join("\n"),
+    );
+  });
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  function fakeStore(opts?: {
+    sessions?: Array<JoinableSession & { mtime_ns: number; ended_at?: number | null }>;
+    turns?: Record<string, Array<{ user_text: string | null; assistant_full: string | null; assistant_excerpt: string | null }>>;
+  }): DoctorTurnSource {
+    const sessions = opts?.sessions ?? [
+      {
+        session_id: "s1",
+        source: "codex",
+        project_path: root,
+        kind: "session",
+        mtime_ns: 1_700_000_000_000_000_000,
+        ended_at: Date.parse("2026-08-20T12:00:00Z"),
+      },
+    ];
+    const turns = opts?.turns ?? {
+      s1: [
+        {
+          user_text: "please run npm run compile",
+          assistant_full: "running npm run compile now",
+          assistant_excerpt: null,
+        },
+      ],
+    };
+    return {
+      listRecent: () => sessions,
+      turnsForSession: (id) => turns[id] ?? [],
+    };
+  }
+
+  it("scores live phrases, candidates zero-hit sections, and protects Never lines", () => {
+    const result = runRulesDoctor(root, fakeStore(), 30);
+    expect(result.emptyReason).toBeUndefined();
+    expect(result.report.sessionCount).toBe(1);
+    expect(result.report.scoredWithHits.map((s) => s.heading)).toContain("Build");
+    expect(result.report.candidates.map((s) => s.heading)).toContain("Dead ritual");
+    expect(result.report.protected.map((s) => s.heading)).toContain("Safety");
+    expect(result.windowStart).toBe("2026-08-20");
+  });
+
+  it("empty-reason paths: no store / no rules / no sessions", () => {
+    expect(runRulesDoctor(root, null).emptyReason).toBe("no-store");
+    expect(runRulesDoctor("", fakeStore()).emptyReason).toBe("no-workspace");
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "rules-doctor-empty-"));
+    try {
+      expect(runRulesDoctor(other, fakeStore()).emptyReason).toBe("no-rules");
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+    const noMatch = fakeStore({
+      sessions: [
+        {
+          session_id: "z",
+          source: "codex",
+          project_path: "/somewhere/else",
+          kind: "session",
+          mtime_ns: 1,
+          ended_at: null,
+        },
+      ],
+    });
+    expect(runRulesDoctor(root, noMatch).emptyReason).toBe("no-sessions");
+  });
+
+  it("renders 4 buckets + disclaimer + command URIs (never 'delete')", () => {
+    const result = runRulesDoctor(root, fakeStore(), 30);
+    const html = renderDoctorCardHtml(result);
+    expect(html).toContain("Candidates — no transcript evidence");
+    expect(html).toContain("Protected — short Never/Do-not shields");
+    expect(html).toContain("Unscorable — no distinctive signal");
+    expect(html).toContain("Scored with hits");
+    expect(html).toContain("command:codeSessions.openRulesDoctorSection?");
+    expect(html).toContain("command:codeSessions.copyRulesDoctorChecklist?");
+    expect(html).toContain("silent compliance");
+    expect(html).not.toMatch(/delete these/i);
+    expect(html).toContain("Dead ritual");
+    expect(html).toContain("Build");
+  });
+
+  it("can omit command URIs for non-webview callers", () => {
+    const result = runRulesDoctor(root, fakeStore(), 30);
+    const html = renderDoctorCardHtml(result, { commandUris: false });
+    expect(html).not.toContain("command:codeSessions");
   });
 });

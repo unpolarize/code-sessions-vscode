@@ -5,7 +5,8 @@ import * as os from "os";
 import * as path from "path";
 import { openConversationViewer } from "./conversationView";
 import { locateStoreTurns, buildResumeSeed } from "./storeTranscript";
-import { openInsightsView } from "./insightsView";
+import { computeWorkspaceRulesDoctor, openInsightsView } from "./insightsView";
+import { exportChecklist } from "./rulesDoctor";
 import { openUsageView } from "./usageView";
 import { openSessionGraphView } from "./sessionGraphView";
 import { registerPlanning, setSessionProvider } from "./planning";
@@ -2609,6 +2610,54 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand("codeSessions.openInsights", () => openInsightsView(ctx, store)),
     vscode.commands.registerCommand("codeSessions.openUsage", () => openUsageView(ctx)),
     vscode.commands.registerCommand("codeSessions.openSessionGraph", () => openSessionGraphView(ctx)),
+    /** Rules doctor: open a rule file at the section heading (Insights command URI). */
+    vscode.commands.registerCommand(
+      "codeSessions.openRulesDoctorSection",
+      async (absPath: string, startLine?: number) => {
+        if (!absPath || typeof absPath !== "string") return;
+        try {
+          const uri = vscode.Uri.file(absPath);
+          const line = Math.max(1, Number(startLine) || 1);
+          const doc = await vscode.workspace.openTextDocument(uri);
+          const editor = await vscode.window.showTextDocument(doc, preferredEditorColumn());
+          const pos = new vscode.Position(line - 1, 0);
+          editor.selection = new vscode.Selection(pos, pos);
+          editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+        } catch (e: any) {
+          vscode.window.showWarningMessage(`Cannot open ${absPath}: ${e?.message || e}`);
+        }
+      },
+    ),
+    /** Rules doctor: recompute + copy the hedged review checklist to the clipboard. */
+    vscode.commands.registerCommand("codeSessions.copyRulesDoctorChecklist", async () => {
+      try {
+        const result = computeWorkspaceRulesDoctor(store);
+        if (result.emptyReason === "no-workspace") {
+          vscode.window.showWarningMessage("Rules doctor: open a workspace folder first.");
+          return;
+        }
+        if (result.emptyReason === "no-store") {
+          vscode.window.showWarningMessage(
+            "Rules doctor needs the SQLite cache (codeSessions.cacheEnabled).",
+          );
+          return;
+        }
+        if (result.emptyReason === "no-rules") {
+          vscode.window.showInformationMessage(
+            "Rules doctor: no CLAUDE.md / AGENTS.md / .cursor/rules in this workspace.",
+          );
+          return;
+        }
+        const md = exportChecklist(result.report);
+        await vscode.env.clipboard.writeText(md);
+        const n = result.report.candidates.length;
+        vscode.window.showInformationMessage(
+          `Copied rules-doctor checklist (${n} candidate${n === 1 ? "" : "s"}).`,
+        );
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Rules doctor checklist failed: ${e?.message || e}`);
+      }
+    }),
     // Drilldown variant: called from a session row's metrics line. Opens the
     // Insights panel but pre-filters every chart and KPI to just that session
     // so the user sees its cost/tokens/messages in context of the dashboards.
