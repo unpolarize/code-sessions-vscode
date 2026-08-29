@@ -7,6 +7,7 @@
 // a stubbed execFile.
 
 import { execFile, type ChildProcess } from "node:child_process";
+import { startSpan } from "./hostTrace";
 
 export interface KpResult {
   ok: boolean;
@@ -49,9 +50,18 @@ export class KpClient {
     if (this.disposed) return Promise.resolve({ ok: false, stdout: "", stderr: "kp client disposed" });
     this.depth++;
     if (this.depth > 1) this.opts.log?.(`[planning] kp queue depth=${this.depth} (${args[0]})`);
-    const job = this.queue.then(() =>
-      this.disposed ? { ok: false, stdout: "", stderr: "kp client disposed" } : this.exec(args, input, timeoutMs),
-    );
+    const job = this.queue.then(async () => {
+      if (this.disposed) return { ok: false, stdout: "", stderr: "kp client disposed" };
+      const span = startSpan(`csv.kp.${args[0] ?? "kp"}`);
+      try {
+        const r = await this.exec(args, input, timeoutMs);
+        span.end({ ok: r.ok });
+        return r;
+      } catch (e) {
+        span.end({ err: true });
+        throw e;
+      }
+    });
     // the chain must survive a failed job; errors surface via the KpResult
     this.queue = job.catch(() => {}).then(() => {
       this.depth--;

@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
-export type TraceSrc = 'cb' | 'csv' | 'cs';
+export type TraceSrc = 'cb' | 'csv' | 'cs' | 'kp';
 export type TraceKind = 'start' | 'mark' | 'end';
 
 export interface TraceMark {
@@ -43,7 +43,20 @@ export const SLOW_MS: Record<string, number> = {
   'cb.deserialize': 500,
   'csv.activate': 1000,
   'csv.index': 200,
-  'csv.daemon.hello': 2500
+  'csv.daemon.hello': 2500,
+  'csv.storeSync': 2000,
+  'csv.planning.export': 1000,
+  'csv.conversation': 500,
+  'cs.start': 1000,
+  'cs.hook': 100,
+  'cs.flush': 500,
+  'cs.rpc.session.list': 100,
+  'cs.rpc.session.append': 50,
+  'cs.rpc.session.replay': 200,
+  'kp.export': 1000,
+  'kp.reindex': 2000,
+  'kp.doctor': 1000,
+  'kp.implementable': 500
 };
 
 export const DEFAULT_TRACE_PATH = join(homedir(), '.sessions', '.daemon', 'host-trace.ndjson');
@@ -200,10 +213,25 @@ export function startSpan(name: string): Span {
 }
 
 export function startFileSink(path = DEFAULT_TRACE_PATH, maxBytes = TRACE_ROTATE_BYTES): () => void {
+  if (path === DEFAULT_TRACE_PATH && (process.env.VITEST || process.env.NODE_ENV === 'test')) {
+    return () => {};
+  }
   const sink: TraceSink = (_human, jsonLine) => {
     fileChain = fileChain.then(() => writeTraceFile(path, jsonLine, maxBytes)).catch(() => {});
   };
   return addTraceSink(sink);
+}
+
+/** Wait for queued NDJSON writes. CLI must call this before process.exit. */
+export async function flushTrace(): Promise<void> {
+  await fileChain;
+}
+
+/** Stderr only for SLOW ends — stdout stays machine-parseable (kp --json). */
+export function startStderrSlowSink(): () => void {
+  return addTraceSink((human, _json, ev) => {
+    if (ev.t === 'end' && ev.slow) process.stderr.write(`${human}\n`);
+  });
 }
 
 async function writeTraceFile(path: string, jsonLine: string, maxBytes: number): Promise<void> {
@@ -224,5 +252,5 @@ export function resetTraceForTests(): void {
   sinks.length = 0;
   ring.length = 0;
   taskStack.length = 0;
-  ctx = { src: 'cb', ver: 'test' };
+  ctx = { src: 'csv', ver: 'test' };
 }

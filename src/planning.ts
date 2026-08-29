@@ -15,6 +15,7 @@ import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
 import { KpClient, type KpResult } from "./kpClient";
 import { ReloadGate } from "./reloadGate";
+import { startSpan } from "./hostTrace";
 import { syncBridge } from "./storeSync";
 import {
   localLiveIds,
@@ -465,6 +466,8 @@ class PlanningModel {
           const gen = ++this.nextGen;
           const t0 = Date.now();
           const inv = kpInvocation();
+          const span = startSpan("csv.planning.export");
+          try {
           log?.appendLine(`[planning] export start gen=${gen} node=${inv.node} cli=${inv.cli}`);
           this.setLoad({
             phase: "export",
@@ -474,6 +477,7 @@ class PlanningModel {
           });
           const res = await runKp(["export", "--date", "today"], undefined, 45_000);
           const ms = Date.now() - t0;
+          span.mark("kp");
           if (gen <= this.appliedGen) continue; // a newer export already painted
           this.appliedGen = gen;
           if (!res.ok) {
@@ -509,6 +513,13 @@ class PlanningModel {
             }
           }
           this.onDidChange.fire();
+          } finally {
+            span.end({
+              ok: this.lastOk,
+              ms: Date.now() - t0,
+              objects: this.snap?.objects?.length ?? 0,
+            });
+          }
         } while (this.pending);
       } finally {
         this.inFlight = null;

@@ -21,6 +21,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { syncRepoOnce } from "./storeSyncGit";
+import { startSpan } from "./hostTrace";
 
 export interface StoreSyncOptions {
   /** Absolute repo paths to sync, in order. Non-git / remoteless dirs are skipped. */
@@ -222,6 +223,7 @@ export class StoreSyncManager {
       this.queued = true;
       return;
     }
+    const span = startSpan("csv.storeSync");
     this.running = true;
     this.state.status = "syncing";
     this.state.reason = reason;
@@ -242,6 +244,7 @@ export class StoreSyncManager {
       for (const repo of this.opts.repos()) {
         if (this.disposed) break;
         const res = await (this.opts.syncRepo ?? syncRepoOnce)(repo, { push });
+        span.mark(path.basename(repo), { status: res.status });
         if (res.status === "ok" || (res.status === "push-failed" && res.changed)) changed.push(repo);
         if (res.status === "conflict") this.warnConflictOnce(repo, res.detail ?? "");
         else if (res.status === "push-failed") this.warnPushFailOnce(repo, res.detail ?? "");
@@ -284,6 +287,7 @@ export class StoreSyncManager {
         }
       }
     } finally {
+      span.end({ reason, status: this.state.status });
       this.running = false;
       this.emit();
       if (this.queued && !this.disposed) {

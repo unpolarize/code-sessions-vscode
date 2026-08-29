@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.46.2 — 2026-08-29
+
+### Host-trace on store-sync, planning export, kp client, conversation view
+
+- Spans: `csv.storeSync`, `csv.planning.export`, `csv.kp.<cmd>`, `csv.conversation`. Same NDJSON as CB/CS/KP.
+
 ## 1.46.1 — 2026-08-29
 
 ### vsce package no longer dies on suite-architecture symlink
