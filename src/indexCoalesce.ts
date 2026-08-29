@@ -1,13 +1,14 @@
-/** Minimum gap between CSV index passes (performance.md #6). */
-export const INDEX_MIN_INTERVAL_MS = 5000;
+/** Minimum quiet time **after a pass finishes** before another background index. */
+export const INDEX_MIN_INTERVAL_MS = 15_000;
 
 /**
- * Shared gate for the JSONL watcher (1.5 s debounce) and the 10 s timer.
- * User-initiated `force` always runs. Single-threaded callers cannot overlap
- * a sync pass; `inFlight` is for a future async worker.
+ * Shared gate for watchers and timers. The gap is measured from **finish**,
+ * not start: a 6 s grok pass must not immediately start another (that was a
+ * ~1.0 duty cycle on the extension host).
+ * User-initiated `force` always runs.
  */
 export class IndexCoalesce {
-  private lastStarted = 0;
+  private lastFinished = 0;
   private inFlight = false;
 
   constructor(
@@ -18,18 +19,17 @@ export class IndexCoalesce {
   tryStart(opts: { force?: boolean } = {}): boolean {
     if (opts.force) {
       this.inFlight = true;
-      this.lastStarted = this.now();
       return true;
     }
     if (this.inFlight) return false;
     const t = this.now();
-    if (this.lastStarted > 0 && t - this.lastStarted < this.minIntervalMs) return false;
+    if (this.lastFinished > 0 && t - this.lastFinished < this.minIntervalMs) return false;
     this.inFlight = true;
-    this.lastStarted = t;
     return true;
   }
 
   finish(): void {
     this.inFlight = false;
+    this.lastFinished = this.now();
   }
 }

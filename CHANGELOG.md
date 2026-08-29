@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.46.3 — 2026-08-29
+
+### Stop freezing VS Code on grok index
+
+Host-trace: `csv.index` grok was **6–7 s every cycle** (372 s of sync wasm) because the 10 s timer and Claude watcher both ran full grok/codex, and coalesce measured 5 s from **start**. Laptop stayed fine (Chrome etc.); the shared extension host did not.
+
+- Coalesce gap is **15 s after a pass finishes**.
+- Claude JSONL watcher indexes **Claude only**.
+- 10 s timer refreshes trees; **does not index**. Grok/codex at most every **60 s**.
+- Skip `~/.sessions` git pull when the sessions daemon is up.
+
 ## 1.46.2 — 2026-08-29
 
 ### Host-trace on store-sync, planning export, kp client, conversation view

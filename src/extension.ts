@@ -2204,6 +2204,9 @@ export function activate(ctx: vscode.ExtensionContext) {
     force?: boolean;
     forceRecentN?: number;
     includeGit?: boolean;
+    includeClaude?: boolean;
+    includeGrok?: boolean;
+    includeCodex?: boolean;
     onClaudeProgress?: (done: number, total: number) => void;
     onGrokProgress?: (done: number, total: number) => void;
     onCodexProgress?: (done: number, total: number) => void;
@@ -2221,6 +2224,9 @@ export function activate(ctx: vscode.ExtensionContext) {
     const s = store;
     const cfg = vscode.workspace.getConfiguration("codeSessions");
     const includeGit = opts.includeGit !== false;
+    const includeClaude = opts.includeClaude !== false;
+    const includeGrok = opts.includeGrok !== false;
+    const includeCodex = opts.includeCodex !== false;
     const forceOpts = {
       ...(opts.force ? { force: true as const } : {}),
       ...(opts.forceRecentN && opts.forceRecentN > 0 ? { forceRecentN: opts.forceRecentN } : {}),
@@ -2232,6 +2238,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     let gitParsed = 0;
     let elapsed_ms = 0;
 
+    if (includeClaude) {
     try {
       const stats = syncToStore(s, {
         ...forceOpts,
@@ -2248,8 +2255,9 @@ export function activate(ctx: vscode.ExtensionContext) {
       totalErrors += 1;
       console.error("[code-sessions] claude sync failed:", e);
     }
+    }
 
-    if (cfg.get<boolean>("grok.enabled", true)) {
+    if (includeGrok && cfg.get<boolean>("grok.enabled", true)) {
       try {
         const grokStats = syncGrokToStore(s, {
           ...forceOpts,
@@ -2268,7 +2276,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
     }
 
-    if (cfg.get<boolean>("codex.enabled", true)) {
+    if (includeCodex && cfg.get<boolean>("codex.enabled", true)) {
       try {
         const codexStats = syncCodexToStore(s, {
           ...forceOpts,
@@ -3190,7 +3198,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
       // Same gate as the 10 s timer — at most one wasm pass per 5 s.
-      runIndexSync({ includeGit: false });
+      // Claude JSONL watcher: do not pull grok/codex (6–7 s wasm each).
+      runIndexSync({ includeGit: false, includeGrok: false, includeCodex: false });
       sessions.refresh();
     }, 1500);
   };
@@ -3254,7 +3263,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     repos: () => {
       const set = new Set<string>();
       set.add(resolveKbRepoPath()); // ~/docs — covers KB + planning/
-      set.add(sessionsRoot); // ~/.sessions
+      // Daemon owns ~/.sessions git; pulling it here stalls disk for 8–11 s.
+      if (!daemonIsUp()) set.add(sessionsRoot);
       for (const extra of vscode.workspace
         .getConfiguration("codeSessions.sync")
         .get<string[]>("extraRepos", [])) {
@@ -3341,24 +3351,21 @@ export function activate(ctx: vscode.ExtensionContext) {
   }, 60_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(dayRolloverTimer) });
 
-  // Sessions view: incremental re-sync + re-render every 10 s so the
-  // leading "time since last activity" column stays close to real-time.
-  // syncToStore is incremental — it only re-parses JSONLs whose (mtime,size)
-  // changed, so the cost when nothing has happened is essentially a stat()
-  // per known session. Failures go to the Output channel + debounced toast.
+  // Sessions view: re-render every 10 s from the cache. Do **not** index
+  // here — grok wasm was 6–7 s every cycle and froze the whole window.
   const sessionsTimer = setInterval(() => {
-    if (store) {
-      // Quiet poll: native indexers only (git store is heavier; refresh/full cover it).
-      runIndexSync({ includeGit: false });
-    }
     sessions.refresh();
-    // Give the background classifier a nudge so newly-detected turns get
-    // queued without waiting for its own discovery interval.
     bgClassifier?.notifySyncCompleted();
-    // Refresh the daily cost budget tile alongside the live tile.
     costBudgetTick?.();
   }, 10_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(sessionsTimer) });
+
+  // Grok/codex (and a quiet claude pass) at most once a minute. Watcher covers
+  // live Claude JSONL; Refresh/full still force a pass.
+  const heavyIndexTimer = setInterval(() => {
+    if (store) runIndexSync({ includeGit: false });
+  }, 60_000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(heavyIndexTimer) });
   act.end();
 }
 
