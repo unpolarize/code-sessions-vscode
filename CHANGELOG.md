@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.46.1 — 2026-08-29
+
+### vsce package no longer dies on suite-architecture symlink
+
+- `.vscodeignore` excludes `docs/suite-architecture` so `npm run ship` can install.
+
 ## 1.46.0 — 2026-08-29
 
 ### Host-trace: activate + index spans
@@ -7,6 +13,7 @@
 - Always-on spans on **Output → Code Sessions**: `csv.activate` (planning / store.open / trees.*) and `csv.index` (claude/grok/codex/git). `DONE …ms SLOW` when over budget.
 - Same NDJSON file as Code Build: `~/.sessions/.daemon/host-trace.ndjson`. Lag `STALL` includes `task=`.
 - `npm run ship` compiles, packages, and installs the VSIX. Verify in a second window.
+- `.vscodeignore` excludes the `docs/suite-architecture` symlink so `vsce package` does not crash on secretlint `EISDIR`.
 
 ## 1.45.2 — 2026-08-29
 
