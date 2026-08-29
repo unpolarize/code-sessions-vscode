@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.49.0 — 2026-08-29
+
+### Untested-write surface card (conversation viewer)
+
+- Session conversation view gains an **Untested writes (N)** card under the totals — production paths the agent wrote with zero companion test-path touch in the same session, computed on demand from the transcript (Claude / Grok / Codex; nothing persisted, no schema change).
+  - Injected **after first paint** (generation-token guarded; skipped if the panel was disposed or re-rendered), so opening a session adds no load latency.
+  - Subtitle reads exactly "companion path touch only — not coverage"; capped at 25 rows + `+K more`; per-path honesty badges (Rust inline tests, unknown-language heuristic gap); session caveats listed (Codex shell-write miss, Claude MultiEdit/subagent, Grok subagent).
+  - Three distinct empty states: no production writes / all paired / **surface unavailable** (cross-device store fallback, missing transcript) — never a fake "all paired", never an error toast.
+  - Click a path → `codeSessions.openAbsoluteFile` via `command:` URI (webview scripts stay off).
+- `renderWriteSurfaceCardHtml` is pure (no vscode import) and unit-tested alongside the extraction fixtures.
+- Completes ideas/csv-untested-write-surface-card-paths-agent-wrot (core landed in 1.45.0 on the night-build line).
+
 ## 1.48.0 — 2026-08-29
 
 ### Rules doctor Insights card + checklist export

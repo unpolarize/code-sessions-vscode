@@ -2559,6 +2559,16 @@ export function activate(ctx: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand("codeTasks.refresh", () => tasks.refresh()),
     vscode.commands.registerCommand("codeMemory.refresh", () => memory.refresh()),
+    // Untested-write surface card (conversation viewer, enableScripts: false):
+    // command-URI click-to-open for an absolute transcript path.
+    vscode.commands.registerCommand("codeSessions.openAbsoluteFile", async (absPath: string) => {
+      if (!absPath || typeof absPath !== "string") return;
+      try {
+        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(absPath));
+      } catch (e: any) {
+        vscode.window.showWarningMessage(`Cannot open ${absPath}: ${e?.message ?? String(e)}`);
+      }
+    }),
     vscode.commands.registerCommand("codeMemory.openFile", async (absPath: string) => {
       if (!absPath) return;
       try {

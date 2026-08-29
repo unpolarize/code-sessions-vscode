@@ -402,3 +402,82 @@ export function computeWriteSurface(row: WriteSurfaceSessionInput): WriteSurface
     return unavailable("transcript unreadable — surface unavailable");
   }
 }
+
+// ---------------------------------------------------------------------------
+// Card HTML (pure — no vscode import; the conversation webview injects it)
+
+/** Command the conversation viewer registers for click-to-open. The webview
+ * has `enableScripts: false`, so links are `command:` URIs, never JS. */
+export const OPEN_ABSOLUTE_FILE_COMMAND = "codeSessions.openAbsoluteFile";
+/** Exact wording required by the KP item — the metric is companion-path
+ * presence, never coverage. */
+export const WRITE_SURFACE_SUBTITLE = "companion path touch only — not coverage";
+export const WRITE_SURFACE_CAP = 25;
+
+export interface WriteSurfaceCardOpts {
+  /** Emit `command:` URIs for each path (default true). Off for plain HTML. */
+  commandUris?: boolean;
+  /** Max paths listed before the `+K more` overflow row (default 25). */
+  cap?: number;
+}
+
+function escapeCardHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Render the `Untested writes (N)` card. Three distinct empty copies (no
+ * writes / all paired / unavailable) so an empty list is never read as
+ * "safe" when the surface simply could not be computed. */
+export function renderWriteSurfaceCardHtml(surface: WriteSurface, opts?: WriteSurfaceCardOpts): string {
+  const commandUris = opts?.commandUris !== false;
+  const cap = Math.max(1, opts?.cap ?? WRITE_SURFACE_CAP);
+  const n = surface.untestedWrites.length;
+  const subtitle = `<div class="ws-sub">${escapeCardHtml(WRITE_SURFACE_SUBTITLE)}</div>`;
+  const caveats =
+    surface.caveats.length > 0
+      ? `<ul class="ws-caveats">${surface.caveats.map((c) => `<li>${escapeCardHtml(c)}</li>`).join("")}</ul>`
+      : "";
+
+  if (surface.status === "unavailable") {
+    return `<section class="ws-card ws-unavailable">
+  <div class="ws-head"><span class="ws-title">Untested writes</span><span class="ws-count">surface unavailable</span></div>
+  ${subtitle}
+  ${caveats}
+</section>`;
+  }
+
+  let body: string;
+  if (n === 0) {
+    const empty =
+      surface.writes.length === 0
+        ? "No production writes detected in this transcript (heuristic)."
+        : `No untested writes detected (heuristic) — ${surface.writes.length} production write${surface.writes.length === 1 ? "" : "s"}, each with a companion test-path touch.`;
+    body = `<div class="ws-empty">${escapeCardHtml(empty)}</div>`;
+  } else {
+    const shown = surface.untestedWrites.slice(0, cap);
+    const rows = shown
+      .map((w) => {
+        const label = escapeCardHtml(w.path);
+        const link = commandUris
+          ? `<a class="ws-path" href="command:${OPEN_ABSOLUTE_FILE_COMMAND}?${encodeURIComponent(JSON.stringify([w.path]))}" title="${label}">${label}</a>`
+          : `<span class="ws-path" title="${label}">${label}</span>`;
+        const badge = w.note ? ` <span class="ws-badge" title="${escapeCardHtml(w.note)}">${escapeCardHtml(w.note)}</span>` : "";
+        return `<li>${link}${badge}</li>`;
+      })
+      .join("");
+    const overflow = n > cap ? `<li class="ws-more">+${n - cap} more</li>` : "";
+    body = `<ul class="ws-list">${rows}${overflow}</ul>`;
+  }
+
+  return `<section class="ws-card">
+  <div class="ws-head"><span class="ws-title">Untested writes (${n})</span>${surface.status === "partial" ? '<span class="ws-count">partial extraction</span>' : ""}</div>
+  ${subtitle}
+  ${body}
+  ${caveats}
+</section>`;
+}

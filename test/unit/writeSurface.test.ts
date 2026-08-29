@@ -334,3 +334,100 @@ describe("computeWriteSurface routing", () => {
     expect(s.untestedWrites.map((u) => u.path)).toEqual(["/p/src/foo.ts"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Card renderer (pure HTML, no webview)
+
+import {
+  OPEN_ABSOLUTE_FILE_COMMAND,
+  WRITE_SURFACE_CAP,
+  WRITE_SURFACE_SUBTITLE,
+  renderWriteSurfaceCardHtml,
+  type WriteSurface,
+} from "../../src/writeSurface";
+
+function surfaceWith(partial: Partial<WriteSurface>): WriteSurface {
+  return { writes: [], reads: [], untestedWrites: [], status: "ok", caveats: [], ...partial };
+}
+
+describe("renderWriteSurfaceCardHtml", () => {
+  it("lists unpaired writes as command-URI links with the exact subtitle", () => {
+    const html = renderWriteSurfaceCardHtml(
+      surfaceWith({
+        writes: ["/repo/src/foo.ts", "/repo/src/bar.ts"],
+        untestedWrites: [
+          { path: "/repo/src/foo.ts", note: null },
+          { path: "/repo/src/bar.ts", note: null },
+        ],
+      }),
+    );
+    expect(html).toContain("Untested writes (2)");
+    expect(html).toContain(WRITE_SURFACE_SUBTITLE);
+    expect(WRITE_SURFACE_SUBTITLE).toBe("companion path touch only — not coverage");
+    const href = `command:${OPEN_ABSOLUTE_FILE_COMMAND}?${encodeURIComponent(JSON.stringify(["/repo/src/foo.ts"]))}`;
+    expect(html).toContain(`href="${href}"`);
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("+0 more");
+  });
+
+  it("caps at 25 and shows the +K more overflow row", () => {
+    const untestedWrites = Array.from({ length: 31 }, (_, i) => ({ path: `/repo/src/f${i}.ts`, note: null }));
+    const html = renderWriteSurfaceCardHtml(surfaceWith({ writes: untestedWrites.map((w) => w.path), untestedWrites }));
+    expect(html).toContain("Untested writes (31)");
+    expect(html).toContain(`+${31 - WRITE_SURFACE_CAP} more`);
+    expect(html).toContain("/repo/src/f24.ts");
+    expect(html).not.toContain("/repo/src/f25.ts");
+    const custom = renderWriteSurfaceCardHtml(surfaceWith({ untestedWrites }), { cap: 5 });
+    expect(custom).toContain("+26 more");
+    expect(custom).not.toContain("/repo/src/f5.ts");
+  });
+
+  it("renders the per-path honesty badge and session caveats", () => {
+    const html = renderWriteSurfaceCardHtml(
+      surfaceWith({
+        status: "partial",
+        writes: ["/repo/src/lib.rs"],
+        untestedWrites: [{ path: "/repo/src/lib.rs", note: "Rust inline #[cfg(test)] not visible" }],
+        caveats: ["Codex shell writes (touch, cat >, heredocs) are not detected"],
+      }),
+    );
+    expect(html).toContain('class="ws-badge"');
+    expect(html).toContain("Rust inline #[cfg(test)] not visible");
+    expect(html).toContain("partial extraction");
+    expect(html).toContain("Codex shell writes (touch, cat &gt;, heredocs) are not detected");
+  });
+
+  it("distinguishes no-writes, all-paired and unavailable empty states", () => {
+    const none = renderWriteSurfaceCardHtml(surfaceWith({}));
+    expect(none).toContain("Untested writes (0)");
+    expect(none).toContain("No production writes detected");
+
+    const paired = renderWriteSurfaceCardHtml(surfaceWith({ writes: ["/repo/src/foo.ts"], reads: ["/repo/src/foo.test.ts"] }));
+    expect(paired).toContain("Untested writes (0)");
+    expect(paired).toContain("No untested writes detected (heuristic) — 1 production write, each with a companion test-path touch.");
+
+    const unavailable = renderWriteSurfaceCardHtml(
+      surfaceWith({ status: "unavailable", caveats: ["transcript missing on this device — surface unavailable"] }),
+    );
+    expect(unavailable).toContain("surface unavailable");
+    expect(unavailable).toContain("transcript missing on this device");
+    expect(unavailable).not.toContain("Untested writes (0)");
+    expect(unavailable).not.toContain("No untested writes");
+    expect(unavailable).toContain(WRITE_SURFACE_SUBTITLE);
+  });
+
+  it("escapes HTML in paths and can render without command URIs", () => {
+    const evil = '/repo/src/<img src=x onerror="alert(1)">.ts';
+    const html = renderWriteSurfaceCardHtml(surfaceWith({ untestedWrites: [{ path: evil, note: null }] }), { commandUris: false });
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;.ts");
+    expect(html).not.toContain("command:");
+    expect(html).toContain('<span class="ws-path"');
+  });
+
+  it("computeWriteSurface → card round-trip on the store-fallback input reads as unavailable", () => {
+    const html = renderWriteSurfaceCardHtml(computeWriteSurface({ source: null, jsonl_path: null }));
+    expect(html).toContain("surface unavailable");
+    expect(html).toContain("session source unknown");
+  });
+});
