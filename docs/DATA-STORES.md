@@ -116,6 +116,7 @@ One row per indexed CLI session. Columns (`db.ts:18-43`, plus ALTERs):
 | `subagent_count` | INTEGER | Number of subagents spawned. |
 | `input_tokens` / `output_tokens` | INTEGER | Token totals. |
 | `cache_read_tokens` / `cache_write_tokens` | INTEGER | Prompt-cache token totals. |
+| `reasoning_tokens` | INTEGER NULL | **(v19)** Reasoning/thinking tokens when the source reports a breakdown (Codex `reasoning_output_tokens`, Claude `output_tokens_details.thinking_tokens`, …). NULL = never reported (UI n/a); 0 = reported zero. Subset annotation of `output_tokens`, not additive. |
 | `cost_usd` | REAL | Computed cost at list rates (see cost tables in `jsonlIndexer.ts:29-31`). |
 | `model` | TEXT | Dominant/last-seen model id. |
 | `title` | TEXT | Session title. |

@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.46.4",
+  "version": "1.49.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -254,6 +254,17 @@
         "category": "Code Sessions"
       },
       {
+        "command": "codeSessions.copyRulesDoctorChecklist",
+        "title": "Rules doctor: Copy review checklist",
+        "icon": "$(copy)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.openRulesDoctorSection",
+        "title": "Rules doctor: Open section at heading",
+        "category": "Code Sessions"
+      },
+      {
         "command": "codeSessions.openUsage",
         "title": "Open usage dashboard (from CS library)",
         "icon": "$(dashboard)",
@@ -388,6 +399,11 @@
       {
         "command": "codeMemory.openFile",
         "title": "Open memory source file",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.openAbsoluteFile",
+        "title": "Open file from untested-write surface",
         "category": "Code Sessions"
       },
       {
@@ -1047,6 +1063,13 @@
           "type": "number",
           "default": 3,
           "description": "How long aggressive polling stays armed after your last interaction, before falling back to intervalMinutes."
+        },
+        "codeSessions.rulesDoctorSessionLimit": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 200,
+          "description": "Rules doctor (Insights): how many most-recent workspace sessions to scan for transcript evidence of CLAUDE.md / AGENTS.md / .cursor/rules sections. Higher = more coverage, slower Insights open."
         }
       }
     }

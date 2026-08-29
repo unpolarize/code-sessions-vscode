@@ -1,5 +1,83 @@
 # Changelog
 
+## 1.49.0 — 2026-08-29
+
+### Untested-write surface card (conversation viewer)
+
+- Session conversation view gains an **Untested writes (N)** card under the totals — production paths the agent wrote with zero companion test-path touch in the same session, computed on demand from the transcript (Claude / Grok / Codex; nothing persisted, no schema change).
+  - Injected **after first paint** (generation-token guarded; skipped if the panel was disposed or re-rendered), so opening a session adds no load latency.
+  - Subtitle reads exactly "companion path touch only — not coverage"; capped at 25 rows + `+K more`; per-path honesty badges (Rust inline tests, unknown-language heuristic gap); session caveats listed (Codex shell-write miss, Claude MultiEdit/subagent, Grok subagent).
+  - Three distinct empty states: no production writes / all paired / **surface unavailable** (cross-device store fallback, missing transcript) — never a fake "all paired", never an error toast.
+  - Click a path → `codeSessions.openAbsoluteFile` via `command:` URI (webview scripts stay off).
+- `renderWriteSurfaceCardHtml` is pure (no vscode import) and unit-tested alongside the extraction fixtures.
+- Completes ideas/csv-untested-write-surface-card-paths-agent-wrot (core landed in 1.45.0 on the night-build line).
+
+## 1.48.0 — 2026-08-29
+
+### Rules doctor Insights card + checklist export
+
+- **Insights dashboard** gains a workspace-scoped **Rules doctor** card (4 buckets: Candidates / Protected / Unscorable / Scored-with-hits) joined against the last N indexed multi-backend sessions for the active folder.
+  - Click a section → opens the rule file at the heading (`codeSessions.openRulesDoctorSection`).
+  - **Copy checklist** command URI + palette command (`codeSessions.copyRulesDoctorChecklist`) writes the hedged markdown checklist (never "delete these").
+  - Setting `codeSessions.rulesDoctorSessionLimit` (default 30); turn scan capped; read-only — never writes rule files.
+- `runRulesDoctor` / `renderDoctorCardHtml` land in `src/rulesDoctor.ts` (store surface stays injectable; no vscode import in the pure module).
+- Slice of ideas/csv-never-referenced-rules-doctor-card-join-proj (UI + commands; core parser landed in 1.43.0).
+
+## 1.47.0 — 2026-08-28
+
+### Plan-assumption checklist core
+
+- **`src/planAssumptions.ts`** (pure, no vscode/db imports) — first slice of the plan-assumption checklist card: extract plan/ask-phase assumptions as checkboxes before a build run.
+  - Heuristics: `I assume` / `assuming` / `will use` / `defaulting to` / `given that` / plan bullets asserting a chosen approach; dedupe + cap 3–7.
+  - `buildAssumptionChecklist` → card; `evaluateChecklistGate` blocks Start build / Promote to KP until every item is checked or dismissed, or the human supplies a skip reason.
+  - `formatConstraintsMarkdown` emits a KP `## Constraints` write-back block (`code-sessions/plan-assumption-checklist@1`); `renderAssumptionCardMarkdown` for session-detail injection.
+- 17 unit tests (`test/unit/planAssumptions.test.ts`). Session-detail card UI + CB/KP command wiring land in the next slice.
+
+## 1.46.0 — 2026-08-27
+
+### Compaction-cliff handoff core (cross-backend)
+
+- **`src/compactionCliff.ts`** (pure, no vscode/db imports) — first slice of the compaction-cliff cross-backend handoff card: recommend a KP-cartridge switch *before* Codex/early-compact quality drop.
+  - Per-backend defaults (editable overrides): **Codex** warn@1 / handoff@2 (fill 70%); **Grok** warn@1 / handoff@2 (fill 80%); **Claude** warn@2 / handoff@3 (fill 85%).
+  - `evaluateCompactionCliff` → card (`ok` / `approaching` / `recommend_handoff`) with headline `"approaching cliff — handoff to <backend> with KP cartridge"`; `autoFailover` always `false` (recommendation only).
+  - `countCompactionMarkers` + `signalsFromExtras` for fixture / Grok `signals.json` inputs; `renderCliffCardMarkdown` for session-detail injection.
+  - `buildHandoffPack` emits `code-sessions/compaction-cliff-handoff@1` markdown (goal, acceptance, paths, last N decisions) reusable by Code Build / KP.
+- 20 unit tests (`test/unit/compactionCliff.test.ts`). Session-detail card UI + one-click command wiring land in the next slice.
+
+## 1.45.0 — 2026-08-27
+
+### Untested-write surface core (multi-backend)
+
+- **`src/writeSurface.ts`** (pure, no vscode/db imports) — first slice of the untested-write surface card: production paths the agent wrote with zero companion test-path touch in the same session. Computed on demand from the transcript; nothing persisted.
+  - Per-backend extraction: Claude `Write`/`Edit`→writes + `Read`→reads (MultiEdit/subagent writes disclosed as caveats); Grok `write`/`search_replace`→writes + `read_file` reads (`target_file`, legacy `file_path`); Codex rollout re-read pulls `function_call.arguments` — V4A `*** Add/Update File` (+ `*** Move to` destination) and structured `operation.path` create/update; deletes ignored; shell-write miss disclosed.
+  - Test-path heuristics (Jest/Vitest, pytest, Go `*_test.go` only — `testdata/` is fixtures, Rust `tests/` dir only with inline-`#[cfg(test)]` caveat note); docs/config/lockfile/generated/snapshot writes excluded.
+  - Strict stem pairing: unrelated `bar.test.ts` never clears `foo.ts`; test-file writes never listed; unknown languages tagged "no test heuristic".
+  - Missing transcript / store-fallback source → `status: 'unavailable'` — never a fake "all paired".
+- 28 unit tests (`test/unit/writeSurface.test.ts`). Session-detail card injection + `codeSessions.openAbsoluteFile` command land in the next slice.
+
+## 1.43.0 — 2026-08-27
+
+### Rules doctor core — never-referenced rule sections vs multi-backend transcripts
+
+- **`src/rulesDoctor.ts`** (pure, no vscode/db imports) — first slice of the never-referenced-rules doctor card:
+  - Discovery: `CLAUDE.md` / `AGENTS.md` (any casing) / `.cursor/rules/*.{md,mdc}`, 2 MB cap.
+  - Fence-safe `##`/`###` section parser; `.mdc` YAML frontmatter stripped; headingless file → one section named by filename; content-hash dedupe for CLAUDE.md↔AGENTS.md duplicates.
+  - Distinctive-signal extractor (code spans ≥6 chars, path-like tokens, quoted phrases ≥3 tokens, 4–6-token prose n-grams); junk sole-matches (heading keywords, always/never/prefer, lone stack nouns) never score → `unscorable`, not a delete candidate. Short `- Never …`/`- Do not …` bullets shield the section as `protected`.
+  - Bounded hit counter (distinct sessions primary, turns secondary; per-turn scan byte cap; ≤12 signals/section) — no FTS, no migration, read-only.
+  - **Cross-source workspace join (Gap A):** claude sessions store `project_path` as the dash-encoded `~/.claude/projects/-Users-…` dir while codex/grok/git store the real cwd — `sessionMatchesWorkspace`/`filterWorkspaceSessions` handle both and include subagent/workflow children only when their parent matched.
+  - `buildDoctorReport` buckets Candidates / Protected / Unscorable / Scored-with-hits; `exportChecklist` emits a hedged "no transcript evidence" markdown checklist (never "delete these").
+- 18 unit tests (`test/unit/rulesDoctor.test.ts`). UI card in insightsView + command wiring land in the next slice.
+
+## 1.42.0 — 2026-08-26
+
+### Reasoning / thinking token share (Codex-first)
+
+- **Schema v19** — nullable `reasoning_tokens` on `session` and `turn` (NULL = never reported; 0 = reported zero; no `DEFAULT 0`).
+- **`src/reasoningTokens.ts`** — cross-backend alias map + share formula (`reasoning / output`, n/a when missing / output≤0 / reasoning>output).
+- **Codex indexer** keeps `reasoning_output_tokens` from `token_count` (no longer dropped); Claude JSONL alias-reads `output_tokens_details.thinking_tokens` when present (n/a on today's transcripts); Grok/git stay NULL.
+- **Conversation viewer** shows a **Reasoning share** stat (`47.4%` or `n/a`) with tooltip counts.
+- Fixture + unit tests: Codex 9/19 → 47.4%; missing field stays NULL (never fake 0%).
+- Slice of ideas/csv-reasoning-thinking-token-share-card-multi-ba (schema + Codex parser + share card; multi-backend list sort / Insights rollup remain).
 ## 1.46.4 — 2026-08-29
 
 ### Grok Build chat history loads without a full wasm index

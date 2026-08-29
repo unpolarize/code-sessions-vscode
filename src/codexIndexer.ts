@@ -149,6 +149,8 @@ interface CodexUsage {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
+  /** NULL when token_count omitted reasoning_output_tokens. */
+  reasoning_tokens: number | null;
 }
 
 export interface ParsedCodexSession {
@@ -276,10 +278,20 @@ export function parseCodexRollout(filePath: string): ParsedCodexSession {
       if (p.type === "token_count") {
         const u = p.info?.total_token_usage ?? p.info;
         if (u && typeof u === "object") {
+          // Prefer total_token_usage; also accept last_token_usage-shaped
+          // objects when that's all we have. reasoning_output_tokens is a
+          // subset of output_tokens — store as annotation, never add.
+          const reasoningRaw = u.reasoning_output_tokens ?? u.reasoning_tokens;
+          let reasoning_tokens: number | null = null;
+          if (reasoningRaw != null && reasoningRaw !== "") {
+            const n = Number(reasoningRaw);
+            if (Number.isFinite(n) && n >= 0) reasoning_tokens = Math.floor(n);
+          }
           out.usage = {
             input_tokens: Number(u.input_tokens) || 0,
             output_tokens: Number(u.output_tokens) || 0,
             cache_read_tokens: Number(u.cached_input_tokens ?? u.cache_read_tokens) || 0,
+            reasoning_tokens,
           };
         }
         return;
@@ -382,6 +394,9 @@ export function buildCodexRows(info: CodexSessionInfo): { session: SessionRow; t
     output_tokens: parsed.usage?.output_tokens ?? 0,
     cache_read_tokens: parsed.usage?.cache_read_tokens ?? 0,
     cache_write_tokens: 0,
+    // Cumulative latest token_count — NULL when the rollout never reported
+    // reasoning_output_tokens (older Codex / exec --json omit it).
+    reasoning_tokens: parsed.usage?.reasoning_tokens ?? null,
     // Never invent cost: ChatGPT-auth codex sessions don't map to API
     // prices, and we have no codex rate table yet.
     cost_usd: 0,
@@ -413,11 +428,12 @@ export function buildCodexRows(info: CodexSessionInfo): { session: SessionRow; t
     tool_count: t.toolNames.length,
     has_subagent: false,
     // token_count is cumulative per session, not per turn — session totals
-    // carry the usage; per-turn stays 0 (mirrors the grok caveat).
+    // carry the usage; per-turn stays 0 / NULL (mirrors the grok caveat).
     input_tokens: 0,
     output_tokens: 0,
     cache_read_tokens: 0,
     cache_write_tokens: 0,
+    reasoning_tokens: null,
     cost_usd: 0,
   }));
 

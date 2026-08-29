@@ -13,6 +13,7 @@ import * as os from "os";
 import * as path from "path";
 import { SessionStore, SessionRow, TurnRow } from "./db";
 import { parseConversation, ParsedConversation } from "./conversationParser";
+import { extractReasoningTokens } from "./reasoningTokens";
 
 export const DEFAULT_PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
 
@@ -291,8 +292,17 @@ function aggregateFromParsed(
   // conversationParser: a real user message (not a tool_result echo)
   // starts a new turn; everything that follows until the next real user
   // message belongs to it. Index aligned to parsed.turns[] order.
-  const tokensByTurn: Array<{ input: number; output: number; cacheR: number; cacheW: number }> = [];
+  const tokensByTurn: Array<{
+    input: number;
+    output: number;
+    cacheR: number;
+    cacheW: number;
+    reasoning: number | null;
+  }> = [];
   let currentTurnIdx = -1;
+  // Session-level reasoning: stay NULL until at least one usage block
+  // reports a known thinking/reasoning field (never invent 0 from absence).
+  let reasoningTok: number | null = null;
   const isToolResultLine = (obj: any): boolean =>
     obj?.type === "user" &&
     Array.isArray(obj?.message?.content) &&
@@ -313,7 +323,13 @@ function aggregateFromParsed(
       // turn). Match conversationParser's logic so indices line up.
       if (obj?.type === "user" && !isToolResultLine(obj)) {
         currentTurnIdx += 1;
-        tokensByTurn[currentTurnIdx] = { input: 0, output: 0, cacheR: 0, cacheW: 0 };
+        tokensByTurn[currentTurnIdx] = {
+          input: 0,
+          output: 0,
+          cacheR: 0,
+          cacheW: 0,
+          reasoning: null,
+        };
       }
       if (obj?.type === "assistant") {
         const u = obj?.message?.usage ?? {};
@@ -321,10 +337,12 @@ function aggregateFromParsed(
         const outT = u.output_tokens || 0;
         const crT = u.cache_read_input_tokens || 0;
         const cwT = u.cache_creation_input_tokens || 0;
+        const reasonT = extractReasoningTokens(u);
         inputTok += inT;
         outputTok += outT;
         cacheReadTok += crT;
         cacheWriteTok += cwT;
+        if (reasonT != null) reasoningTok = (reasoningTok ?? 0) + reasonT;
         if (currentTurnIdx >= 0) {
           // Defensive: assistant before any user (shouldn't happen, but
           // older transcripts could have orphan assistant lines).
@@ -334,6 +352,7 @@ function aggregateFromParsed(
             slot.output += outT;
             slot.cacheR += crT;
             slot.cacheW += cwT;
+            if (reasonT != null) slot.reasoning = (slot.reasoning ?? 0) + reasonT;
           }
         }
         // Model id lives on assistant lines as obj.message.model
@@ -405,6 +424,8 @@ function aggregateFromParsed(
     output_tokens: outputTok,
     cache_read_tokens: cacheReadTok,
     cache_write_tokens: cacheWriteTok,
+    // Forward-compatible: Claude JSONL rarely has thinking_tokens today → NULL.
+    reasoning_tokens: reasoningTok,
     cost_usd: Number(cost.toFixed(4)),
     model: sessionModel,
     title: (parsed.title || cleanCommandText(firstUserMsg).slice(0, 70)) + (kind !== 'session' ? ` [${kind}]` : ''),
@@ -421,7 +442,13 @@ function aggregateFromParsed(
   };
 
   const turns: TurnRow[] = parsed.turns.map((t, i) => {
-    const tok = tokensByTurn[i] ?? { input: 0, output: 0, cacheR: 0, cacheW: 0 };
+    const tok = tokensByTurn[i] ?? {
+      input: 0,
+      output: 0,
+      cacheR: 0,
+      cacheW: 0,
+      reasoning: null as number | null,
+    };
     // Per-turn cost — precomputed at index time using the session's
     // model rate table (same rates as the session-level cost above).
     // Lets the day-bucket header sum the costs actually paid that day
@@ -450,6 +477,7 @@ function aggregateFromParsed(
       output_tokens: tok.output,
       cache_read_tokens: tok.cacheR,
       cache_write_tokens: tok.cacheW,
+      reasoning_tokens: tok.reasoning,
       cost_usd: Number(turnCost.toFixed(6)),
     };
   });

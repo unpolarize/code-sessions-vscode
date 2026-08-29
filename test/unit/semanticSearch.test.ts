@@ -36,6 +36,7 @@ function sessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     output_tokens: 500,
     cache_read_tokens: 0,
     cache_write_tokens: 0,
+    reasoning_tokens: null,
     cost_usd: 0.1,
     model: "claude-fable-5",
     title: "refactor the widget store",

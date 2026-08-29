@@ -14,6 +14,7 @@ import * as path from "path";
 import * as os from "os";
 import { execFile } from "child_process";
 import { parseConversation, ParsedConversation } from "./conversationParser";
+import { renderDoctorCardHtml, runRulesDoctor, type DoctorRunResult } from "./rulesDoctor";
 import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
@@ -547,6 +548,13 @@ table.project-rollup tr:last-child td { border-bottom: none; }
 table.project-rollup tr:hover td { background: var(--vscode-list-hoverBackground, rgba(127,127,127,0.06)); }
 table.project-rollup code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
 .muted { color: var(--muted); font-style: italic; }
+.doctor-bucket { margin-top: 12px; }
+.doctor-bucket h3 { margin: 0 0 4px 0; font-size: 12px; font-weight: 600; }
+.doctor-row { font-size: 12px; padding: 2px 0; line-height: 1.4; }
+.doctor-row a { color: var(--accent); text-decoration: none; }
+.doctor-row a:hover { text-decoration: underline; }
+.doctor-action { float: right; font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--accent); text-decoration: none; font-weight: 500; }
+.doctor-disclaimer { font-size: 11px; color: var(--muted); margin-top: 12px; line-height: 1.45; border-top: 1px solid var(--border); padding-top: 8px; }
 `;
 
 function renderDashboard(opts: {
@@ -558,8 +566,10 @@ function renderDashboard(opts: {
   /** When set, the dashboard shows a session-focused header (title, source,
    * model, full session id) instead of the "last N days" lookback banner. */
   focusSession?: SessionRow;
+  /** Never-referenced rules doctor card HTML (workspace-scoped). */
+  rulesDoctorHtml?: string;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -806,6 +816,8 @@ ${focusSession
   </p>
 </div>
 
+${rulesDoctorHtml ? `<h2 style="margin-top: 28px;">Rules doctor</h2>${rulesDoctorHtml}` : ""}
+
 </body></html>`;
 }
 
@@ -818,6 +830,19 @@ export interface InsightsOptions {
    * "click metrics row → drill in" command. Without it, the dashboard shows
    * the full last-N-day rollup. */
   focusSessionId?: string;
+}
+
+/** Run the never-referenced-rules doctor for the active workspace folder. */
+export function computeWorkspaceRulesDoctor(
+  store?: import("./db").SessionStore | null,
+): DoctorRunResult {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+  if (!root) {
+    return runRulesDoctor("", null, 30);
+  }
+  const cfg = vscode.workspace.getConfiguration("codeSessions");
+  const sessionLimit = cfg.get<number>("rulesDoctorSessionLimit", 30);
+  return runRulesDoctor(root, store ?? null, sessionLimit);
 }
 
 export async function openInsightsView(
@@ -836,7 +861,8 @@ export async function openInsightsView(
     "codeInsights",
     opts.focusSessionId ? `Insights · ${opts.focusSessionId.slice(0, 8)}` : "Code Sessions · Insights",
     preferredEditorColumn(),
-    { enableScripts: false, retainContextWhenHidden: true },
+    // Command URIs power rules-doctor open-at-heading + copy-checklist links.
+    { enableScripts: false, enableCommandUris: true, retainContextWhenHidden: true },
   );
   panel.webview.html = `<body style="padding:24px;font-family:var(--vscode-font-family);color:var(--vscode-editor-foreground);background:var(--vscode-editor-background);">Loading…</body>`;
 
@@ -892,6 +918,16 @@ export async function openInsightsView(
   // session's lifetime view, not a 14-day slice of it). Also force-include
   // automated rows in this mode so we don't accidentally drop the focused
   // session if it happens to be cron-flagged.
+  // Workspace-scoped rules doctor (independent of the lookback/focus filters —
+  // it joins the active folder's rule files against last-N project sessions).
+  let rulesDoctorHtml = "";
+  try {
+    rulesDoctorHtml = renderDoctorCardHtml(computeWorkspaceRulesDoctor(store));
+  } catch (e: any) {
+    rulesDoctorHtml = `<div class="card"><div class="card-title">Rules doctor</div>
+      <div class="subtitle">Failed to build report: ${escapeHtml(e?.message || String(e))}</div></div>`;
+  }
+
   if (opts.focusSessionId) {
     const winRows = allRows.filter((r) => r.session === opts.focusSessionId);
     if (winRows.length === 0) {
@@ -906,6 +942,7 @@ export async function openInsightsView(
       showAutomated: true,
       parsedCount: deep.parsedSessions,
       focusSession: winRows[0],
+      rulesDoctorHtml,
     });
     return;
   }
@@ -933,5 +970,6 @@ export async function openInsightsView(
     lookbackDays,
     showAutomated,
     parsedCount: deep.parsedSessions,
+    rulesDoctorHtml,
   });
 }

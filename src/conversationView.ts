@@ -13,6 +13,8 @@ import { parseCodexRolloutAsParsed } from "./codexIndexer";
 import { SessionStore } from "./db";
 import { classifySession } from "./topicClassifier";
 import { locateStoreTurns, turnsToConversation } from "./storeTranscript";
+import { formatReasoningShare } from "./reasoningTokens";
+import { computeWriteSurface, renderWriteSurfaceCardHtml } from "./writeSurface";
 import * as fs from "fs";
 import { startSpan } from "./hostTrace";
 
@@ -216,6 +218,19 @@ const STYLE = `
   .toolbar .topic-meta { font-size: 11px; color: var(--muted); align-self: center; }
   .proj-chip { display: inline-block; padding: 0 8px; font-size: 11px; border-radius: 10px; background: var(--tool-bg); border: 1px solid var(--border); color: var(--fg); }
   code.dim { color: var(--muted); font-size: 11px; }
+  .ws-card { padding: 12px 16px; background: var(--tool-bg); border: 1px solid var(--border); border-radius: 6px; margin: -12px 0 24px; }
+  .ws-head { display: flex; align-items: baseline; gap: 10px; }
+  .ws-title { font-size: 13px; font-weight: 600; }
+  .ws-count { font-size: 11px; color: var(--muted); }
+  .ws-sub { font-size: 11px; color: var(--muted); margin: 2px 0 8px; }
+  .ws-list { list-style: none; margin: 0; padding: 0; font-family: var(--vscode-editor-font-family); font-size: 12px; }
+  .ws-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-path { color: var(--accent); text-decoration: none; }
+  .ws-path:hover { text-decoration: underline; }
+  .ws-badge { font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; padding: 0 6px; margin-left: 6px; }
+  .ws-more, .ws-empty { color: var(--muted); font-size: 12px; }
+  .ws-caveats { margin: 8px 0 0; padding-left: 18px; font-size: 11px; color: var(--muted); }
+  .ws-unavailable .ws-title { opacity: 0.8; }
 `;
 
 function renderHtml(
@@ -231,9 +246,11 @@ function renderHtml(
     output_tokens?: number | null;
     cache_read_tokens?: number | null;
     cache_write_tokens?: number | null;
+    reasoning_tokens?: number | null;
     model?: string | null;
   } | null,
   src?: { fromStore: boolean; host?: string },
+  extraCardsHtml = "",
 ): string {
   const fromStore = !!src?.fromStore;
   const totalTurns = c.summary.totalTurns;
@@ -264,6 +281,11 @@ function renderHtml(
     return String(v);
   };
   const totalTok = (row?.input_tokens ?? 0) + (row?.output_tokens ?? 0) + (row?.cache_read_tokens ?? 0) + (row?.cache_write_tokens ?? 0);
+  const reasoningShareLabel = formatReasoningShare(row?.reasoning_tokens, row?.output_tokens);
+  const reasoningTitle =
+    row?.reasoning_tokens == null
+      ? "source did not report a reasoning/thinking breakdown"
+      : `reasoning ${fmtTok(row.reasoning_tokens)} ÷ output ${fmtTok(row?.output_tokens)} (vendor-reported; subset of output)`;
   const revealArg = project?.path ? encodeURIComponent(JSON.stringify([project.path])) : "";
   const revealUrl = revealArg ? `command:codeSessions.revealProjectFolder?${revealArg}` : "";
   const classifiedCount = topics?.size ?? 0;
@@ -312,6 +334,7 @@ function renderHtml(
 <div class="totals">
   ${row?.cost_usd != null ? `<div class="stat"><span class="label">Cost</span><span class="value">${fmtCost(row.cost_usd)}</span></div>` : ""}
   ${totalTok > 0 ? `<div class="stat"><span class="label">Tokens</span><span class="value" title="in ${fmtTok(row?.input_tokens)} · out ${fmtTok(row?.output_tokens)} · cache r ${fmtTok(row?.cache_read_tokens)} / w ${fmtTok(row?.cache_write_tokens)}">${fmtTok(totalTok)}</span></div>` : ""}
+  ${row ? `<div class="stat"><span class="label">Reasoning share</span><span class="value" title="${escapeHtml(reasoningTitle)}">${escapeHtml(reasoningShareLabel)}</span></div>` : ""}
   ${row?.model ? `<div class="stat"><span class="label">Model</span><span class="value">${escapeHtml(row.model)}</span></div>` : ""}
   <div class="stat"><span class="label">Turns</span><span class="value">${totalTurns}</span></div>
   <div class="stat"><span class="label">Tool calls</span><span class="value">${totalTools}</span></div>
@@ -322,6 +345,7 @@ function renderHtml(
   <div class="stat"><span class="label">First user msg</span><span class="value">${fmtClock(c.startMs ?? 0)}</span></div>
   <div class="stat"><span class="label">Last activity</span><span class="value">${fmtClock(c.endMs ?? 0)}</span></div>
 </div>
+${extraCardsHtml}
 ${turnsHtml}
 </body></html>`;
 }
@@ -353,7 +377,16 @@ export function openConversationViewer(
       retainContextWhenHidden: true,
     },
   );
+  // Untested-write surface: re-parses the transcript for per-call paths, so
+  // it runs AFTER first paint (never adds load latency). A generation token
+  // drops stale results when the panel re-rendered or was disposed meanwhile.
+  let generation = 0;
+  let disposed = false;
+  panel.onDidDispose(() => {
+    disposed = true;
+  });
   const render = () => {
+    const gen = ++generation;
     try {
       // Route to the source-appropriate parser: grok chat_history.jsonl and
       // codex rollout-*.jsonl have different line shapes and render as blank
@@ -371,10 +404,26 @@ export function openConversationViewer(
       if (!parsed.sessionId) parsed.sessionId = sessionId;
       const topics = store && !storeRef ? store.topicsForSession(parsed.sessionId) : undefined;
       const project = row ? { id: row.project_id, path: row.project_path } : undefined;
-      panel.webview.html = renderHtml(parsed, jsonlPath ?? "", topics, project, row, {
-        fromStore: !!storeRef,
-        host: storeRef?.host,
-      });
+      const srcInfo = { fromStore: !!storeRef, host: storeRef?.host };
+      panel.webview.html = renderHtml(parsed, jsonlPath ?? "", topics, project, row, srcInfo);
+      setTimeout(() => {
+        if (disposed || gen !== generation) return;
+        let card = "";
+        const wsSpan = startSpan("csv.conversation.writeSurface");
+        try {
+          // Store-fallback / missing transcript resolve to 'unavailable' inside
+          // computeWriteSurface with the honest reason (never "source unknown").
+          const surface = computeWriteSurface({ source: row?.source ?? null, jsonl_path: jsonlPath });
+          card = renderWriteSurfaceCardHtml(surface, { rootDir: row?.project_path ?? null });
+        } catch {
+          // Card is best-effort; the transcript view already painted.
+          return;
+        } finally {
+          wsSpan.end();
+        }
+        if (disposed || gen !== generation) return;
+        panel.webview.html = renderHtml(parsed, jsonlPath ?? "", topics, project, row, srcInfo, card);
+      }, 0);
     } catch (e: any) {
       panel.webview.html = `<pre>Failed to parse transcript for ${escapeHtml(sessionId)}\n\n${escapeHtml(e?.message || String(e))}</pre>`;
     }

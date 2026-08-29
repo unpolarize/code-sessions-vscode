@@ -342,6 +342,8 @@ export function buildGrokRows(
     output_tokens: 0,
     cache_read_tokens: 0,
     cache_write_tokens: 0,
+    // Grok CLI logs have no numeric reasoning_tokens today → NULL / n/a.
+    reasoning_tokens: null,
     cost_usd: 0,
     model: signals?.primaryModelId ?? summary.current_model_id ?? null,
     title,
@@ -399,6 +401,7 @@ export function buildGrokRows(
       output_tokens: 0,
       cache_read_tokens: 0,
       cache_write_tokens: 0,
+      reasoning_tokens: null,
       cost_usd: 0,
       kind: 'session',
       parent_session_id: null,
