@@ -20,6 +20,12 @@ import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
 import { daemonIsUp, refreshDaemonSessions } from "./daemonClient";
 import { startEventLoopLagMonitor } from "./eventLoopLag";
 import { IndexCoalesce } from "./indexCoalesce";
+import {
+  addTraceSink,
+  initTrace,
+  startFileSink,
+  startSpan,
+} from "./hostTrace";
 import { IndexDiagnostics } from "./indexDiagnostics";
 import { StoreSyncManager, setSyncBridge, type SyncStatus } from "./storeSync";
 import { classifySession } from "./topicClassifier";
@@ -2150,13 +2156,26 @@ async function migrateSettingsToCodeNamespace(
 }
 
 export function activate(ctx: vscode.ExtensionContext) {
+  const ver = String(
+    vscode.extensions.getExtension("zhirafovod.code-sessions")?.packageJSON?.version ?? "0",
+  );
+  initTrace("csv", ver);
   // Output channel for diagnostics — visible under View → Output → "Code Sessions".
   const log = vscode.window.createOutputChannel("Code Sessions");
-  ctx.subscriptions.push(log, startEventLoopLagMonitor((line) => log.appendLine(line)));
+  ctx.subscriptions.push(
+    log,
+    startEventLoopLagMonitor((line) => log.appendLine(line)),
+    { dispose: addTraceSink((human) => log.appendLine(human)) },
+    { dispose: startFileSink() },
+  );
+  const act = startSpan("csv.activate");
   log.appendLine(`[activate] code-sessions starting (VS Code ${vscode.version})`);
-  void refreshDaemonSessions().then((ok) => {
+  void (async () => {
+    const hello = startSpan("csv.daemon.hello");
+    const ok = await refreshDaemonSessions();
+    hello.end({ ok });
     log.appendLine(`[daemon] session API ${ok ? "connected (git import skipped)" : "unavailable — local indexers + git import"}`);
-  });
+  })();
 
   // Indexer failure surface: per-file path+reason on the channel, debounced
   // toast once per changed error count (see indexDiagnostics.ts).
@@ -2197,6 +2216,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     if (!indexGate.tryStart({ force })) {
       return { ...emptyIndexResult };
     }
+    const indexSpan = startSpan("csv.index");
     try {
     const s = store;
     const cfg = vscode.workspace.getConfiguration("codeSessions");
@@ -2220,6 +2240,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       claudeParsed = stats.parsed;
       elapsed_ms = Math.max(elapsed_ms, stats.elapsed_ms);
       totalErrors += indexDiag.reportSource("claude", stats);
+      indexSpan.mark("claude", { parsed: stats.parsed, elapsed_ms: stats.elapsed_ms });
       console.log(`[code-sessions] claude sync: ${JSON.stringify({ errors: stats.errors, parsed: stats.parsed, elapsed_ms: stats.elapsed_ms })}`);
     } catch (e: unknown) {
       const reason = e instanceof Error ? e.message : String(e);
@@ -2237,6 +2258,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         grokParsed = grokStats.parsed;
         elapsed_ms = Math.max(elapsed_ms, grokStats.elapsed_ms);
         totalErrors += indexDiag.reportSource("grok", grokStats);
+        indexSpan.mark("grok", { parsed: grokStats.parsed, elapsed_ms: grokStats.elapsed_ms });
         console.log(`[code-sessions] grok sync: ${JSON.stringify({ errors: grokStats.errors, parsed: grokStats.parsed })}`);
       } catch (e: unknown) {
         const reason = e instanceof Error ? e.message : String(e);
@@ -2255,6 +2277,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         codexParsed = codexStats.parsed;
         elapsed_ms = Math.max(elapsed_ms, codexStats.elapsed_ms);
         totalErrors += indexDiag.reportSource("codex", codexStats);
+        indexSpan.mark("codex", { parsed: codexStats.parsed, elapsed_ms: codexStats.elapsed_ms });
         console.log(`[code-sessions] codex sync: ${JSON.stringify({ errors: codexStats.errors, parsed: codexStats.parsed })}`);
       } catch (e: unknown) {
         const reason = e instanceof Error ? e.message : String(e);
@@ -2274,6 +2297,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         gitParsed = gitStats.parsed;
         elapsed_ms = Math.max(elapsed_ms, gitStats.elapsed_ms);
         totalErrors += indexDiag.reportSource("git", gitStats);
+        indexSpan.mark("git", { parsed: gitStats.parsed, elapsed_ms: gitStats.elapsed_ms });
         console.log(`[code-sessions] git store sync: ${JSON.stringify({ errors: gitStats.errors, parsed: gitStats.parsed })}`);
       } catch (e: unknown) {
         const reason = e instanceof Error ? e.message : String(e);
@@ -2284,6 +2308,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     }
 
     indexDiag.maybeToast(totalErrors);
+    indexSpan.end({ totalErrors, claudeParsed, grokParsed, codexParsed, gitParsed, elapsed_ms });
     return { totalErrors, claudeParsed, grokParsed, codexParsed, gitParsed, elapsed_ms };
     } finally {
       indexGate.finish();
@@ -2293,6 +2318,7 @@ export function activate(ctx: vscode.ExtensionContext) {
   // Interactive Planning mode (knowledge-planning store via the `kp` CLI):
   // Today / Inbox / Projects trees, kanban board + graph webviews, status bar.
   registerPlanning(ctx, log);
+  act.mark("planning");
 
   // One-time settings migration: copy any values the user set under the old
   // `coderSessions.*` / `claudeSessions.*` (and the KbChanges/ProjectsActivity/
@@ -2312,6 +2338,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       .get<boolean>("cacheEnabled", true);
     if (cacheEnabled) {
       store = SessionStore.open(ctx.globalStorageUri.fsPath);
+      act.mark("store.open");
       log.appendLine(`[activate] SQLite cache opened at ${ctx.globalStorageUri.fsPath}`);
 
       // Auto-recovery from disk corruption — the cache file is
@@ -2385,8 +2412,11 @@ export function activate(ctx: vscode.ExtensionContext) {
   const openViewerPanels = new Map<string, vscode.WebviewPanel>();
 
   sessions.refresh();
+  act.mark("trees.sessions");
   kb.refresh();
+  act.mark("trees.kb");
   projects.refresh();
+  act.mark("trees.projects");
   tasks.refresh();
   memory.refresh();
 
@@ -3329,6 +3359,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     costBudgetTick?.();
   }, 10_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(sessionsTimer) });
+  act.end();
 }
 
 async function openChangedFile(c: FileChange) {

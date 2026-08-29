@@ -25,14 +25,14 @@ The bumping rules — `MAJOR.MINOR.PATCH` (SemVer):
    ```
 
 4. Stage `package.json`, `CHANGELOG.md`, and the code changes in the same commit.
-5. Optionally package the .vsix locally for sanity install:
+5. **Ship (required after a landed feature):**
 
    ```bash
-   npm run package
-   code --install-extension code-sessions-X.Y.Z.vsix --force
+   npm run ship
    ```
 
-   The user reloads their VS Code window to pick up the new build.
+   Compile + vsce package + `code --install-extension code-sessions-$version.vsix --force`.
+   **Do not reload the working Code Build chat.** Verify in a **second window**. Host-trace: Output → **Code Sessions**; file `~/.sessions/.daemon/host-trace.ndjson` (`../architecture/tools/observability.md`).
 
 **Do not publish to the Marketplace from an agent session.** Publishing is a user-initiated step; the agent's job is to bump the version, update the changelog, and produce a clean .vsix.
 

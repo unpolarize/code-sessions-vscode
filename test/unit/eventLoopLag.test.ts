@@ -3,7 +3,9 @@ import { formatLagLine } from "../../src/eventLoopLag";
 
 describe("event-loop lag log line", () => {
   it("tags STALL when p99 is above 200 ms", () => {
-    expect(formatLagLine(12.34, 201)).toBe("[lag] p50=12.3ms p99=201.0ms STALL");
+    expect(formatLagLine(12.34, 201, "csv.index.claude")).toBe(
+      "[lag] p50=12.3ms p99=201.0ms STALL task=csv.index.claude",
+    );
   });
 
   it("omits STALL when p99 is within budget", () => {
