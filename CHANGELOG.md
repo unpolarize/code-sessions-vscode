@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.45.2 — 2026-08-29
+
+### Indexer coalesces to one pass per 5 s
+
+- JSONL watcher (1.5 s) and the 10 s timer share one gate. Live agents no longer stack overlapping wasm SQLite passes. User Refresh / full rescan still force a pass.
+
 ## 1.45.1 — 2026-08-29
 
 ### Extension-host event-loop lag on the output channel

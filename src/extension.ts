@@ -19,6 +19,7 @@ import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
 import { daemonIsUp, refreshDaemonSessions } from "./daemonClient";
 import { startEventLoopLagMonitor } from "./eventLoopLag";
+import { IndexCoalesce } from "./indexCoalesce";
 import { IndexDiagnostics } from "./indexDiagnostics";
 import { StoreSyncManager, setSyncBridge, type SyncStatus } from "./storeSync";
 import { classifySession } from "./topicClassifier";
@@ -2166,9 +2167,20 @@ export function activate(ctx: vscode.ExtensionContext) {
   // Declared early so runIndexSync can close over it; assigned when the cache opens.
   let store: SessionStore | null = null;
 
+  const indexGate = new IndexCoalesce();
+  const emptyIndexResult = {
+    totalErrors: 0,
+    claudeParsed: 0,
+    grokParsed: 0,
+    codexParsed: 0,
+    gitParsed: 0,
+    elapsed_ms: 0,
+  };
+
   /** Run all enabled indexers, log failures, toast if error count changed.
    *  `includeGit` defaults true (activate/refresh/full); the 10s tick
-   *  passes false to match the pre-diagnostics quiet poll. */
+   *  passes false to match the pre-diagnostics quiet poll. Watcher and timer
+   *  share `indexGate` (≥ 5 s) so live agents don't stack wasm passes. */
   function runIndexSync(opts: {
     force?: boolean;
     forceRecentN?: number;
@@ -2179,8 +2191,13 @@ export function activate(ctx: vscode.ExtensionContext) {
     onGitProgress?: (done: number, total: number) => void;
   } = {}): { totalErrors: number; claudeParsed: number; grokParsed: number; codexParsed: number; gitParsed: number; elapsed_ms: number } {
     if (!store) {
-      return { totalErrors: 0, claudeParsed: 0, grokParsed: 0, codexParsed: 0, gitParsed: 0, elapsed_ms: 0 };
+      return { ...emptyIndexResult };
     }
+    const force = opts.force === true || (opts.forceRecentN != null && opts.forceRecentN > 0);
+    if (!indexGate.tryStart({ force })) {
+      return { ...emptyIndexResult };
+    }
+    try {
     const s = store;
     const cfg = vscode.workspace.getConfiguration("codeSessions");
     const includeGit = opts.includeGit !== false;
@@ -2268,6 +2285,9 @@ export function activate(ctx: vscode.ExtensionContext) {
 
     indexDiag.maybeToast(totalErrors);
     return { totalErrors, claudeParsed, grokParsed, codexParsed, gitParsed, elapsed_ms };
+    } finally {
+      indexGate.finish();
+    }
   }
 
   // Interactive Planning mode (knowledge-planning store via the `kp` CLI):
@@ -3139,20 +3159,8 @@ export function activate(ctx: vscode.ExtensionContext) {
   const queueRefresh = () => {
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
-      // Re-sync only the changed JSONLs into SQLite, then refresh the view.
-      if (store) {
-        try {
-          syncToStore(store);
-          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("grok.enabled", true)) {
-            syncGrokToStore(store);
-          }
-          if (vscode.workspace.getConfiguration("codeSessions").get<boolean>("codex.enabled", true)) {
-            syncCodexToStore(store);
-          }
-        } catch (e: any) {
-          console.error("[code-sessions] sync failed in watcher:", e);
-        }
-      }
+      // Same gate as the 10 s timer — at most one wasm pass per 5 s.
+      runIndexSync({ includeGit: false });
       sessions.refresh();
     }, 1500);
   };
