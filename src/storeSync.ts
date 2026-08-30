@@ -22,6 +22,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { syncRepoOnce } from "./storeSyncGit";
 import { startSpan } from "./hostTrace";
+import { BOOT_STORE_SYNC_MS } from "./bootIndex";
 
 export interface StoreSyncOptions {
   /** Absolute repo paths to sync, in order. Non-git / remoteless dirs are skipped. */
@@ -124,7 +125,7 @@ export class StoreSyncManager {
     }
 
     // After CB hydrate (webview.ready was blocked 31 s by overlapping git).
-    const bootTimer = setTimeout(() => void this.sync("activation"), 12_000);
+    const bootTimer = setTimeout(() => void this.sync("activation"), BOOT_STORE_SYNC_MS);
 
     this.armPoll();
 

@@ -22,6 +22,13 @@ import { daemonIsUp, refreshDaemonSessions } from "./daemonClient";
 import { startEventLoopLagMonitor } from "./eventLoopLag";
 import { IndexCoalesce } from "./indexCoalesce";
 import {
+  BOOT_INDEX_CLAUDE_MS,
+  BOOT_INDEX_GROK_MS,
+  claudeOnlyIndexOpts,
+  grokCatchupIndexOpts,
+  periodicIndexOpts,
+} from "./bootIndex";
+import {
   addTraceSink,
   initTrace,
   startFileSink,
@@ -2422,30 +2429,30 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   sessions.refresh();
   act.mark("trees.sessions");
-  kb.refresh();
+  // KB/projects walk git log (and projects does readdirSync). Do not start
+  // that on the same turn as CB deserialize.
+  setTimeout(() => {
+    kb.refresh();
+    projects.refresh();
+    tasks.refresh();
+    memory.refresh();
+  }, BOOT_INDEX_CLAUDE_MS);
   act.mark("trees.kb");
-  projects.refresh();
   act.mark("trees.projects");
-  tasks.refresh();
-  memory.refresh();
 
-  // Do not run grok/codex/git on this tick. Host-trace: a full pass was
-  // 31 s (git 25 s + grok 6 s) and blocked `cb.deserialize` webview.ready
-  // for the same 31 s — chat stayed blank until CSV finished. Claude-only
-  // is ~50 ms. Grok/codex wait until the chat has had time to paint.
+  // Never index on setTimeout(0): that timer races VS Code's restored-webview
+  // deserializer, so CB stays blank until this pass ends (31 s grok+git).
+  // Sessions tree paints from the SQLite cache above. Claude jsonl at 2 s;
+  // one grok/codex catch-up at 45 s; live grok is the onlyPaths watcher.
   if (store) {
     setTimeout(() => {
-      runIndexSync({
-        includeGit: false,
-        includeGrok: false,
-        includeCodex: false,
-      });
+      runIndexSync(claudeOnlyIndexOpts());
       sessions.refresh();
-    }, 0);
+    }, BOOT_INDEX_CLAUDE_MS);
     setTimeout(() => {
-      runIndexSync({ includeGit: false });
+      runIndexSync(grokCatchupIndexOpts());
       sessions.refresh();
-    }, 8_000);
+    }, BOOT_INDEX_GROK_MS);
   }
 
   ctx.subscriptions.push({ dispose: () => store?.close() });
@@ -3464,10 +3471,10 @@ export function activate(ctx: vscode.ExtensionContext) {
   }, 10_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(sessionsTimer) });
 
-  // Grok/codex (and a quiet claude pass) at most once a minute. Watcher covers
-  // live Claude JSONL; Refresh/full still force a pass.
+  // Quiet Claude+codex at most once a minute. Full grok is 6 s wasm — watcher
+  // `onlyPaths` covers live grok; Refresh/full still force a pass.
   const heavyIndexTimer = setInterval(() => {
-    if (store) runIndexSync({ includeGit: false });
+    if (store) runIndexSync(periodicIndexOpts());
   }, 60_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(heavyIndexTimer) });
   act.end();

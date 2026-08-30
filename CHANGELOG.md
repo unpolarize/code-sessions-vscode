@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.49.2 — 2026-08-29
+
+### Reload: chat history before CSV index (no 0 ms race)
+
+1.49.1 still scheduled the first wasm pass on `setTimeout(0)`, which races VS Code's restored-webview deserializer. Host-trace never showed 1.49.1 in the live window; `cb.deserialize` `webview.ready` stayed **31 s** behind `csv.index`. Observed: blank CB tab until the Sessions sidebar painted.
+
+- First index is Claude-only at **2 s** (tree paints from SQLite cache immediately).
+- One grok/codex catch-up at **45 s**. Live grok stays on the `onlyPaths` watcher (~40 ms).
+- 60 s timer is Claude+codex only — **no 6 s full grok** every minute.
+- Store git pull waits **20 s**. KB/projects git walks start at 2 s, not during activate.
+
 ## 1.49.1 — 2026-08-29
 
 ### Reload no longer blanks Code Build for 15–30 s
