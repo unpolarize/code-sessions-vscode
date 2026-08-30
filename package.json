@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.49.3",
+  "version": "1.50.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -404,6 +404,31 @@
       {
         "command": "codeSessions.openAbsoluteFile",
         "title": "Open file from untested-write surface",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.planAssumption.setState",
+        "title": "Plan assumption: set item state",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.planAssumption.skip",
+        "title": "Plan assumption: skip with reason",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.planAssumption.clearSkip",
+        "title": "Plan assumption: clear skip reason",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.planAssumption.promoteToKp",
+        "title": "Plan assumption: promote to KP constraints",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.planAssumption.startBuild",
+        "title": "Plan assumption: start build in Code Build",
         "category": "Code Sessions"
       },
       {

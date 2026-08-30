@@ -216,7 +216,7 @@ Manual classification still works via the **Classify all topics** button on the 
 
 ## Plan-assumption checklist (pre-build gate)
 
-Pure core in `src/planAssumptions.ts` (UI card wiring next). On plan/ask-phase transcripts, heuristics extract 3–7 candidate assumptions (`I assume`, `will use`, `defaulting to`, plan bullets). Start build / Promote to KP stay blocked until every item is checked or dismissed, or the human skips with a reason. Accepted items format as a KP `## Constraints` block (`code-sessions/plan-assumption-checklist@1`). Offline / local only — false positives are dismissible.
+On plan/ask-phase transcripts, heuristics extract 3–7 candidate assumptions (`I assume`, `will use`, `defaulting to`, plan bullets). The conversation viewer shows a **Plan assumptions** card (checkbox / dismiss / skip-with-reason via `command:` URIs; state in workspaceState). **Start build in CB** and **Promote to KP constraints** stay blocked until every item is checked or dismissed, or the human skips with a reason. Promote copies a KP `## Constraints` block (`code-sessions/plan-assumption-checklist@1`) to the clipboard. Offline / local only — false positives are dismissible. Core: `src/planAssumptions.ts`.
 
 ## Compaction-cliff defaults (handoff recommender)
 

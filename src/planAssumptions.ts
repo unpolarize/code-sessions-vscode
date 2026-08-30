@@ -394,6 +394,164 @@ export function renderAssumptionCardMarkdown(checklist: AssumptionChecklist): st
   return lines.join("\n");
 }
 
+/** Command ids used by the conversation-viewer HTML card (command: URIs). */
+export const PLAN_ASSUMPTION_COMMANDS = {
+  setState: "codeSessions.planAssumption.setState",
+  skip: "codeSessions.planAssumption.skip",
+  clearSkip: "codeSessions.planAssumption.clearSkip",
+  promoteToKp: "codeSessions.planAssumption.promoteToKp",
+  startBuild: "codeSessions.planAssumption.startBuild",
+} as const;
+
+/** workspaceState map key: sessionId → persisted checklist UI state. */
+export const PLAN_ASSUMPTION_STATE_KEY = "codeSessions.planAssumptionState";
+
+export interface PersistedAssumptionState {
+  states: Record<string, ChecklistItemState>;
+  skipReason: string | null;
+}
+
+export interface AssumptionCardHtmlOpts {
+  /** Emit command: URIs for check/dismiss/skip/promote/start-build (default true). */
+  commandUris?: boolean;
+}
+
+function escapeCardHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function cmdHref(command: string, args: unknown[]): string {
+  return `command:${command}?${encodeURIComponent(JSON.stringify(args))}`;
+}
+
+/**
+ * Map a parsed conversation's turn cards into PlanTurn[] for extraction.
+ * User + assistant text become separate turns (phase left unset — detection
+ * still matches /plan and plan-mode phrases in content).
+ */
+export function planTurnsFromConversation(turns: Array<{
+  userText?: string | null;
+  assistantText?: string | null;
+}>): PlanTurn[] {
+  const out: PlanTurn[] = [];
+  for (const t of turns) {
+    const user = (t.userText ?? "").trim();
+    const assistant = (t.assistantText ?? "").trim();
+    if (user) out.push({ role: "user", content: user });
+    if (assistant) out.push({ role: "assistant", content: assistant });
+  }
+  return out;
+}
+
+/**
+ * HTML card for the conversation viewer. Hidden (empty string) when the
+ * transcript is not a plan/ask phase. Uses command: URIs — webview scripts
+ * stay off (same pattern as the untested-write surface card).
+ */
+export function renderAssumptionCardHtml(
+  checklist: AssumptionChecklist,
+  opts?: AssumptionCardHtmlOpts,
+): string {
+  if (!checklist.isPlanPhase) return "";
+
+  const commandUris = opts?.commandUris !== false;
+  const gate = evaluateChecklistGate(checklist);
+  const sessionId = checklist.sessionId ?? "";
+  const n = checklist.items.length;
+
+  const itemsHtml =
+    n === 0
+      ? `<div class="pa-empty">${escapeCardHtml(
+          "No extractable assumptions — proceed carefully, or add constraints in KP.",
+        )}</div>`
+      : `<ul class="pa-list">${checklist.items
+          .map((it) => {
+            const label = escapeCardHtml(it.text);
+            const src = escapeCardHtml(it.source);
+            const checked = it.state === "checked";
+            const dismissed = it.state === "dismissed";
+            const box = checked ? "[x]" : dismissed ? "[–]" : "[ ]";
+            const cls = dismissed ? "pa-item pa-dismissed" : checked ? "pa-item pa-checked" : "pa-item";
+            if (!commandUris || !sessionId) {
+              return `<li class="${cls}"><span class="pa-box">${box}</span> ${label} <span class="pa-src">${src}</span></li>`;
+            }
+            const nextState: ChecklistItemState = checked
+              ? "unchecked"
+              : "checked";
+            const toggleHref = cmdHref(PLAN_ASSUMPTION_COMMANDS.setState, [
+              sessionId,
+              it.id,
+              nextState,
+            ]);
+            const dismissHref = cmdHref(PLAN_ASSUMPTION_COMMANDS.setState, [
+              sessionId,
+              it.id,
+              dismissed ? "unchecked" : "dismissed",
+            ]);
+            return `<li class="${cls}">
+  <a class="pa-box" href="${toggleHref}" title="Toggle checked">${box}</a>
+  <span class="pa-text">${label}</span>
+  <span class="pa-src">${src}</span>
+  <a class="pa-dismiss" href="${dismissHref}" title="${dismissed ? "Undismiss" : "Dismiss"}">${dismissed ? "undo" : "dismiss"}</a>
+</li>`;
+          })
+          .join("")}</ul>`;
+
+  let actions = "";
+  if (commandUris && sessionId) {
+    const skipHref = cmdHref(PLAN_ASSUMPTION_COMMANDS.skip, [sessionId]);
+    const clearSkipHref = cmdHref(PLAN_ASSUMPTION_COMMANDS.clearSkip, [sessionId]);
+    const promoteHref = cmdHref(PLAN_ASSUMPTION_COMMANDS.promoteToKp, [sessionId]);
+    const startHref = cmdHref(PLAN_ASSUMPTION_COMMANDS.startBuild, [sessionId]);
+    const promoteTitle = gate.promoteToKpEnabled
+      ? "Copy ## Constraints for KP"
+      : (gate.blockedReason ?? "Resolve assumptions first");
+    const startTitle = gate.startBuildEnabled
+      ? "Continue this session in Code Build"
+      : (gate.blockedReason ?? "Resolve assumptions first");
+    // Gated actions render as inert <span> (no href) so a blocked click cannot
+    // fire the command; handlers still re-check the gate as a second line.
+    const startBtn = gate.startBuildEnabled
+      ? `<a class="pa-btn pa-primary" href="${startHref}" title="${escapeCardHtml(startTitle)}">Start build in CB</a>`
+      : `<span class="pa-btn pa-primary pa-disabled" title="${escapeCardHtml(startTitle)}">Start build in CB</span>`;
+    const promoteBtn = gate.promoteToKpEnabled
+      ? `<a class="pa-btn" href="${promoteHref}" title="${escapeCardHtml(promoteTitle)}">Promote to KP constraints</a>`
+      : `<span class="pa-btn pa-disabled" title="${escapeCardHtml(promoteTitle)}">Promote to KP constraints</span>`;
+    actions = `<div class="pa-actions">
+  ${startBtn}
+  ${promoteBtn}
+  <a class="pa-btn" href="${skipHref}" title="Skip remaining unchecked with a reason">Skip with reason…</a>
+  ${
+    checklist.skipReason
+      ? `<a class="pa-btn" href="${clearSkipHref}" title="Clear skip reason">Clear skip</a>`
+      : ""
+  }
+</div>`;
+  }
+
+  const skipLine = checklist.skipReason
+    ? `<div class="pa-skip">Skipped: ${escapeCardHtml(checklist.skipReason)}</div>`
+    : "";
+  const blockLine = gate.blockedReason
+    ? `<div class="pa-block">${escapeCardHtml(gate.blockedReason)}</div>`
+    : "";
+
+  return `<section class="pa-card" data-schema="${escapeCardHtml(ASSUMPTION_CARD_SCHEMA)}">
+  <div class="pa-head"><span class="pa-title">Plan assumptions${n ? ` (${n})` : ""}</span><span class="pa-count">${gate.startBuildEnabled ? "gate open" : "gate blocked"}</span></div>
+  <div class="pa-sub">${escapeCardHtml(checklist.headline)}</div>
+  <div class="pa-detail">${escapeCardHtml(checklist.detail)}</div>
+  ${itemsHtml}
+  ${skipLine}
+  ${blockLine}
+  ${actions}
+</section>`;
+}
+
 /**
  * Convenience: build checklist from a flat assistant/user string array
  * (fixtures that do not carry role metadata). Alternates assistant/user

@@ -3,7 +3,19 @@ import { execFile } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { openConversationViewer } from "./conversationView";
+import {
+  buildLiveAssumptionChecklist,
+  loadAssumptionState,
+  openConversationViewer,
+  refreshAssumptionViewer,
+  saveAssumptionState,
+} from "./conversationView";
+import {
+  PLAN_ASSUMPTION_COMMANDS,
+  evaluateChecklistGate,
+  formatConstraintsMarkdown,
+  type ChecklistItemState,
+} from "./planAssumptions";
 import { locateStoreTurns, buildResumeSeed } from "./storeTranscript";
 import { computeWorkspaceRulesDoctor, openInsightsView } from "./insightsView";
 import { exportChecklist } from "./rulesDoctor";
@@ -2589,6 +2601,93 @@ export function activate(ctx: vscode.ExtensionContext) {
         vscode.window.showWarningMessage(`Cannot open ${absPath}: ${e?.message ?? String(e)}`);
       }
     }),
+    // Plan-assumption checklist card (conversation viewer, enableScripts: false).
+    vscode.commands.registerCommand(
+      PLAN_ASSUMPTION_COMMANDS.setState,
+      async (sessionId: string, itemId: string, state: ChecklistItemState) => {
+        if (!sessionId || !itemId) return;
+        if (state !== "checked" && state !== "unchecked" && state !== "dismissed") return;
+        const cur = loadAssumptionState(ctx, sessionId);
+        cur.states = { ...cur.states, [itemId]: state };
+        await saveAssumptionState(ctx, sessionId, cur);
+        refreshAssumptionViewer(openViewerPanels, sessionId);
+      },
+    ),
+    vscode.commands.registerCommand(
+      PLAN_ASSUMPTION_COMMANDS.skip,
+      async (sessionId: string) => {
+        if (!sessionId) return;
+        const reason = await vscode.window.showInputBox({
+          prompt: "Skip remaining unchecked assumptions — why?",
+          placeHolder: "e.g. already validated offline",
+          ignoreFocusOut: true,
+        });
+        if (reason == null) return; // cancelled
+        if (!reason.trim()) {
+          vscode.window.showWarningMessage("Skip needs a non-empty reason.");
+          return;
+        }
+        const cur = loadAssumptionState(ctx, sessionId);
+        cur.skipReason = reason.trim();
+        await saveAssumptionState(ctx, sessionId, cur);
+        refreshAssumptionViewer(openViewerPanels, sessionId);
+      },
+    ),
+    vscode.commands.registerCommand(
+      PLAN_ASSUMPTION_COMMANDS.clearSkip,
+      async (sessionId: string) => {
+        if (!sessionId) return;
+        const cur = loadAssumptionState(ctx, sessionId);
+        cur.skipReason = null;
+        await saveAssumptionState(ctx, sessionId, cur);
+        refreshAssumptionViewer(openViewerPanels, sessionId);
+      },
+    ),
+    vscode.commands.registerCommand(
+      PLAN_ASSUMPTION_COMMANDS.promoteToKp,
+      async (sessionId: string) => {
+        if (!sessionId) return;
+        const jsonl = store ? await resolveTranscriptPath(store, sessionId) : null;
+        const checklist = buildLiveAssumptionChecklist(ctx, sessionId, store, jsonl);
+        if (!checklist) {
+          vscode.window.showWarningMessage("Could not rebuild plan-assumption checklist for this session.");
+          return;
+        }
+        const gate = evaluateChecklistGate(checklist);
+        if (!gate.promoteToKpEnabled) {
+          vscode.window.showWarningMessage(gate.blockedReason ?? "Resolve assumptions before promoting.");
+          return;
+        }
+        const md = formatConstraintsMarkdown(checklist);
+        await vscode.env.clipboard.writeText(md);
+        vscode.window.showInformationMessage(
+          "Plan assumptions copied as KP ## Constraints markdown (paste into the item body).",
+        );
+      },
+    ),
+    vscode.commands.registerCommand(
+      PLAN_ASSUMPTION_COMMANDS.startBuild,
+      async (sessionId: string) => {
+        if (!sessionId) return;
+        const jsonl = store ? await resolveTranscriptPath(store, sessionId) : null;
+        const checklist = buildLiveAssumptionChecklist(ctx, sessionId, store, jsonl);
+        if (!checklist) {
+          vscode.window.showWarningMessage("Could not rebuild plan-assumption checklist for this session.");
+          return;
+        }
+        const gate = evaluateChecklistGate(checklist);
+        if (!gate.startBuildEnabled) {
+          vscode.window.showWarningMessage(gate.blockedReason ?? "Resolve assumptions before starting a build.");
+          return;
+        }
+        const row = store?.getById(sessionId);
+        if (!row) {
+          vscode.window.showWarningMessage(`Session ${sessionId.slice(0, 8)} not found in the index.`);
+          return;
+        }
+        await vscode.commands.executeCommand("codeSessions.resumeInCodeBuild", row);
+      },
+    ),
     vscode.commands.registerCommand("codeMemory.openFile", async (absPath: string) => {
       if (!absPath) return;
       try {

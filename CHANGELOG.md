@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.50.0 — 2026-08-30
+
+### Plan-assumption checklist card in conversation viewer
+
+Completes the UI slice of ideas/csv-plan-assumption-checklist-card-extract-plan (core landed in 1.47.0):
+
+- Conversation view injects a **Plan assumptions (N)** card after first paint when the transcript looks like plan/ask phase (same post-paint slot as Untested writes).
+- Checkbox / dismiss / skip-with-reason via `command:` URIs (`enableScripts: false`); state persists in `workspaceState` per session.
+- **Start build in CB** and **Promote to KP constraints** stay visually disabled until every item is checked/dismissed or a skip reason is set; promote copies `## Constraints` markdown to the clipboard; start build calls `resumeInCodeBuild` only when the gate is open.
+- Pure `renderAssumptionCardHtml` + `planTurnsFromConversation` covered by unit tests.
+
 ## 1.49.3 — 2026-08-29
 
 ### Grok catch-up waits 2 min after activate

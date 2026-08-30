@@ -9,11 +9,14 @@ import { describe, it, expect } from "vitest";
 import {
   ASSUMPTION_CARD_SCHEMA,
   ASSUMPTION_COUNT,
+  PLAN_ASSUMPTION_COMMANDS,
   buildAssumptionChecklist,
   detectPlanPhase,
   evaluateChecklistGate,
   extractAssumptions,
   formatConstraintsMarkdown,
+  planTurnsFromConversation,
+  renderAssumptionCardHtml,
   renderAssumptionCardMarkdown,
   setItemState,
   setSkipReason,
@@ -227,5 +230,103 @@ describe("renderAssumptionCardMarkdown", () => {
     expect(md).toContain("Start build");
     expect(md).toContain("blocked");
     expect(md).toMatch(/\[ \]/);
+  });
+});
+
+describe("planTurnsFromConversation", () => {
+  it("splits user/assistant text into PlanTurn rows", () => {
+    const turns = planTurnsFromConversation([
+      { userText: "Please /plan the landing", assistantText: "I assume the branch is clean." },
+      { userText: "  ", assistantText: null },
+    ]);
+    expect(turns).toEqual([
+      { role: "user", content: "Please /plan the landing" },
+      { role: "assistant", content: "I assume the branch is clean." },
+    ]);
+  });
+});
+
+describe("renderAssumptionCardHtml", () => {
+  it("returns empty string when not a plan phase", () => {
+    const card = buildAssumptionChecklist({
+      turns: [{ role: "assistant", content: "Just a build note." }],
+      sessionId: "sess-html-0",
+    });
+    expect(card.isPlanPhase).toBe(false);
+    expect(renderAssumptionCardHtml(card)).toBe("");
+  });
+
+  it("renders ≥3 items with command: URIs and blocked gate actions", () => {
+    const card = buildAssumptionChecklist({
+      turns: PLAN_FIXTURE,
+      source: "claude",
+      sessionId: "sess-html-1",
+    });
+    expect(card.items.length).toBeGreaterThanOrEqual(3);
+    const html = renderAssumptionCardHtml(card);
+    expect(html).toContain('class="pa-card"');
+    expect(html).toContain(ASSUMPTION_CARD_SCHEMA);
+    expect(html).toContain("gate blocked");
+    expect(html).toContain("Start build in CB");
+    expect(html).toContain("Promote to KP constraints");
+    expect(html).toContain("pa-disabled");
+    // Gated actions are inert <span>s — no command: href while blocked.
+    expect(html).not.toContain(`command:${PLAN_ASSUMPTION_COMMANDS.startBuild}`);
+    expect(html).not.toContain(`command:${PLAN_ASSUMPTION_COMMANDS.promoteToKp}`);
+    expect(html).toContain(`command:${PLAN_ASSUMPTION_COMMANDS.setState}`);
+    expect(html).toContain(`command:${PLAN_ASSUMPTION_COMMANDS.skip}`);
+    // Escaping: no raw <script
+    expect(html).not.toMatch(/<script/i);
+  });
+
+  it("opens gate classes after accept; dismiss + skip paths stay linked", () => {
+    let card = buildAssumptionChecklist({
+      turns: PLAN_FIXTURE,
+      source: "grok",
+      sessionId: "sess-html-2",
+    });
+    for (const it of card.items) {
+      card = setItemState(card, it.id, "checked");
+    }
+    const html = renderAssumptionCardHtml(card);
+    expect(html).toContain("gate open");
+    expect(html).not.toContain("pa-disabled");
+    expect(html).toContain("pa-checked");
+    expect(html).toContain(`command:${PLAN_ASSUMPTION_COMMANDS.startBuild}`);
+    expect(html).toContain(`command:${PLAN_ASSUMPTION_COMMANDS.promoteToKp}`);
+
+    let dismissed = buildAssumptionChecklist({
+      turns: PLAN_FIXTURE,
+      source: "codex",
+      sessionId: "sess-html-3",
+    });
+    dismissed = setItemState(dismissed, dismissed.items[0].id, "dismissed");
+    const dHtml = renderAssumptionCardHtml(dismissed);
+    expect(dHtml).toContain("pa-dismissed");
+    expect(dHtml).toContain("undo");
+
+    const skipped = setSkipReason(
+      buildAssumptionChecklist({
+        turns: PLAN_FIXTURE,
+        source: "claude",
+        sessionId: "sess-html-4",
+      }),
+      "Already validated",
+    );
+    const sHtml = renderAssumptionCardHtml(skipped);
+    expect(sHtml).toContain("gate open");
+    expect(sHtml).toContain("Already validated");
+    expect(sHtml).toContain(`command:${PLAN_ASSUMPTION_COMMANDS.clearSkip}`);
+  });
+
+  it("omits command URIs when disabled", () => {
+    const card = buildAssumptionChecklist({
+      turns: PLAN_FIXTURE,
+      sessionId: "sess-html-5",
+    });
+    const html = renderAssumptionCardHtml(card, { commandUris: false });
+    expect(html).toContain("pa-card");
+    expect(html).not.toContain("command:");
+    expect(html).not.toContain("pa-actions");
   });
 });

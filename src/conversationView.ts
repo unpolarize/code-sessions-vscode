@@ -15,8 +15,56 @@ import { classifySession } from "./topicClassifier";
 import { locateStoreTurns, turnsToConversation } from "./storeTranscript";
 import { formatReasoningShare } from "./reasoningTokens";
 import { computeWriteSurface, renderWriteSurfaceCardHtml } from "./writeSurface";
+import {
+  PLAN_ASSUMPTION_STATE_KEY,
+  buildAssumptionChecklist,
+  planTurnsFromConversation,
+  renderAssumptionCardHtml,
+  type PersistedAssumptionState,
+} from "./planAssumptions";
 import * as fs from "fs";
 import { startSpan } from "./hostTrace";
+
+/** Read per-session checklist UI state from workspaceState. */
+export function loadAssumptionState(
+  ctx: vscode.ExtensionContext,
+  sessionId: string,
+): PersistedAssumptionState {
+  const all =
+    ctx.workspaceState.get<Record<string, PersistedAssumptionState>>(PLAN_ASSUMPTION_STATE_KEY) ??
+    {};
+  const entry = all[sessionId];
+  if (!entry || typeof entry !== "object") {
+    return { states: {}, skipReason: null };
+  }
+  return {
+    states: entry.states && typeof entry.states === "object" ? entry.states : {},
+    skipReason:
+      typeof entry.skipReason === "string" && entry.skipReason.trim()
+        ? entry.skipReason.trim()
+        : null,
+  };
+}
+
+/** Persist checklist UI state for one session (merge into the workspace map). */
+export async function saveAssumptionState(
+  ctx: vscode.ExtensionContext,
+  sessionId: string,
+  state: PersistedAssumptionState,
+): Promise<void> {
+  const all = {
+    ...(ctx.workspaceState.get<Record<string, PersistedAssumptionState>>(PLAN_ASSUMPTION_STATE_KEY) ??
+      {}),
+  };
+  all[sessionId] = {
+    states: state.states ?? {},
+    skipReason:
+      typeof state.skipReason === "string" && state.skipReason.trim()
+        ? state.skipReason.trim()
+        : null,
+  };
+  await ctx.workspaceState.update(PLAN_ASSUMPTION_STATE_KEY, all);
+}
 
 function fmtClock(ms: number): string {
   if (!ms) return "—";
@@ -231,6 +279,28 @@ const STYLE = `
   .ws-more, .ws-empty { color: var(--muted); font-size: 12px; }
   .ws-caveats { margin: 8px 0 0; padding-left: 18px; font-size: 11px; color: var(--muted); }
   .ws-unavailable .ws-title { opacity: 0.8; }
+  .pa-card { padding: 12px 16px; background: var(--tool-bg); border: 1px solid var(--border); border-radius: 6px; margin: -12px 0 24px; }
+  .pa-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+  .pa-title { font-weight: 600; font-size: 13px; }
+  .pa-count { font-size: 11px; color: var(--muted); }
+  .pa-sub { font-size: 12px; font-weight: 500; margin: 2px 0 4px; }
+  .pa-detail, .pa-empty { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .pa-list { list-style: none; margin: 0; padding: 0; }
+  .pa-item { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 12px; border-top: 1px solid var(--border); }
+  .pa-item:first-child { border-top: none; }
+  .pa-box { font-family: var(--vscode-editor-font-family, monospace); text-decoration: none; color: var(--text); min-width: 1.6em; }
+  .pa-text { flex: 1; }
+  .pa-src { font-size: 10px; color: var(--muted); }
+  .pa-dismiss { font-size: 11px; color: var(--muted); text-decoration: none; }
+  .pa-dismiss:hover { color: var(--text); }
+  .pa-checked .pa-text { opacity: 0.85; }
+  .pa-dismissed .pa-text { text-decoration: line-through; opacity: 0.55; }
+  .pa-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .pa-btn { display: inline-block; padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; text-decoration: none; color: var(--text); background: transparent; }
+  .pa-btn.pa-primary { border-color: var(--accent, #3794ff); color: var(--accent, #3794ff); }
+  .pa-btn.pa-disabled { opacity: 0.45; }
+  .pa-skip, .pa-block { margin-top: 8px; font-size: 11px; color: var(--muted); }
+  .pa-block { color: var(--error, #f14c4c); }
 `;
 
 function renderHtml(
@@ -408,21 +478,46 @@ export function openConversationViewer(
       panel.webview.html = renderHtml(parsed, jsonlPath ?? "", topics, project, row, srcInfo);
       setTimeout(() => {
         if (disposed || gen !== generation) return;
-        let card = "";
+        const cards: string[] = [];
         const wsSpan = startSpan("csv.conversation.writeSurface");
         try {
           // Store-fallback / missing transcript resolve to 'unavailable' inside
           // computeWriteSurface with the honest reason (never "source unknown").
           const surface = computeWriteSurface({ source: row?.source ?? null, jsonl_path: jsonlPath });
-          card = renderWriteSurfaceCardHtml(surface, { rootDir: row?.project_path ?? null });
+          cards.push(renderWriteSurfaceCardHtml(surface, { rootDir: row?.project_path ?? null }));
         } catch {
-          // Card is best-effort; the transcript view already painted.
-          return;
+          // Write-surface card is best-effort; keep going for plan-assumptions.
         } finally {
           wsSpan.end();
         }
+        const paSpan = startSpan("csv.conversation.planAssumptions");
+        try {
+          const persisted = loadAssumptionState(ctx, sessionId);
+          const planTurns = planTurnsFromConversation(parsed.turns);
+          const checklist = buildAssumptionChecklist({
+            turns: planTurns,
+            source: row?.source ?? "unknown",
+            sessionId,
+            states: persisted.states,
+            skipReason: persisted.skipReason,
+          });
+          const paHtml = renderAssumptionCardHtml(checklist);
+          if (paHtml) cards.push(paHtml);
+        } catch {
+          // Plan-assumption card is best-effort; the transcript view already painted.
+        } finally {
+          paSpan.end();
+        }
         if (disposed || gen !== generation) return;
-        panel.webview.html = renderHtml(parsed, jsonlPath ?? "", topics, project, row, srcInfo, card);
+        panel.webview.html = renderHtml(
+          parsed,
+          jsonlPath ?? "",
+          topics,
+          project,
+          row,
+          srcInfo,
+          cards.join("\n"),
+        );
       }, 0);
     } catch (e: any) {
       panel.webview.html = `<pre>Failed to parse transcript for ${escapeHtml(sessionId)}\n\n${escapeHtml(e?.message || String(e))}</pre>`;
@@ -469,4 +564,53 @@ export function openConversationViewer(
   }
 
   return panel;
+}
+
+/**
+ * Rebuild the plan-assumption checklist for a live session (commands path).
+ * Returns null when the transcript cannot be parsed.
+ */
+export function buildLiveAssumptionChecklist(
+  ctx: vscode.ExtensionContext,
+  sessionId: string,
+  store?: SessionStore | null,
+  jsonlPath?: string | null,
+): ReturnType<typeof buildAssumptionChecklist> | null {
+  try {
+    const row = store ? store.getById(sessionId) : null;
+    const nativeExists = !!jsonlPath && fs.existsSync(jsonlPath);
+    const storeRef = nativeExists ? null : locateStoreTurns(sessionId);
+    const kind = parserKindForSource(row?.source, jsonlPath ?? null);
+    const parsed = storeRef
+      ? turnsToConversation(storeRef, sessionId, row?.title ?? "")
+      : !jsonlPath
+        ? null
+        : kind === "grok"
+          ? parseGrokConversationAsParsed(jsonlPath)
+          : kind === "codex"
+            ? parseCodexRolloutAsParsed(jsonlPath)
+            : parseConversation(jsonlPath);
+    if (!parsed) return null;
+    const persisted = loadAssumptionState(ctx, sessionId);
+    return buildAssumptionChecklist({
+      turns: planTurnsFromConversation(parsed.turns),
+      source: row?.source ?? "unknown",
+      sessionId,
+      states: persisted.states,
+      skipReason: persisted.skipReason,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Re-render an open conversation viewer after checklist state changes. */
+export function refreshAssumptionViewer(
+  openViewerPanels: Map<string, vscode.WebviewPanel>,
+  sessionId: string,
+): void {
+  const existing = openViewerPanels.get(sessionId);
+  if (existing && (existing as any).__refresh) {
+    (existing as any).__refresh();
+  }
 }
