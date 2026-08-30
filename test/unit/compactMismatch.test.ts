@@ -44,14 +44,16 @@ describe("extractCompactBoundaries", () => {
     expect(boundaries[0].claimsOutOfContext).toBe(true);
   });
 
-  it("accepts snake_case pre_tokens and generic compaction markers", () => {
+  it("accepts snake_case pre_tokens (top-level and metadata) and generic markers", () => {
     const boundaries = extractCompactBoundaries([
       { type: "compaction", pre_tokens: "not-a-number" },
       { type: "system", subtype: "compact_boundary", compactMetadata: { pre_tokens: 150000 } },
+      { type: "compaction", pre_tokens: 87000 },
     ]);
-    expect(boundaries).toHaveLength(2);
+    expect(boundaries).toHaveLength(3);
     expect(boundaries[0].preTokens).toBeNull();
     expect(boundaries[1].preTokens).toBe(150000);
+    expect(boundaries[2].preTokens).toBe(87000);
   });
 
   it("keeps an orphan OOC summary as its own boundary", () => {
@@ -166,6 +168,34 @@ describe("evaluateCompactMismatch — agreement and degradation", () => {
     });
     expect(card.boundary?.eventIndex).toBe(9);
     expect(card.level).toBe("mismatch");
+  });
+});
+
+describe("evaluateCompactMismatch — input hardening (grok review)", () => {
+  const boundaries = [
+    { eventIndex: 1, preTokens: 999_000, trigger: "auto", claimsOutOfContext: false },
+  ];
+
+  it("accepts percent-style uiReportedFill (24 → 0.24)", () => {
+    const card = evaluateCompactMismatch({
+      source: "claude",
+      declaredWindowTokens: 1_000_000,
+      uiReportedFill: 24,
+      boundaries,
+    });
+    expect(card.uiReportedFill).toBeCloseTo(0.24, 3);
+    expect(card.level).toBe("mismatch");
+  });
+
+  it("falls back to DEFAULT_EPSILON on NaN or negative epsilon", () => {
+    const base = {
+      source: "claude",
+      declaredWindowTokens: 1_000_000,
+      uiReportedFill: 0.95,
+      boundaries,
+    };
+    expect(evaluateCompactMismatch(base, Number.NaN).level).toBe("ok");
+    expect(evaluateCompactMismatch(base, -1).level).toBe("ok");
   });
 });
 

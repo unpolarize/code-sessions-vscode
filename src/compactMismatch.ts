@@ -144,7 +144,7 @@ export function extractCompactBoundaries(events: unknown[]): CompactBoundary[] {
     if (isBoundary) {
       out.push({
         eventIndex: i,
-        preTokens: asNonNegNumber(meta?.preTokens ?? meta?.pre_tokens ?? o.preTokens),
+        preTokens: asNonNegNumber(meta?.preTokens ?? meta?.pre_tokens ?? o.preTokens ?? o.pre_tokens),
         trigger:
           typeof meta?.trigger === "string"
             ? meta.trigger
@@ -178,9 +178,12 @@ export function evaluateCompactMismatch(
   epsilon: number = DEFAULT_EPSILON,
 ): MismatchCard {
   const source = signals.source || "unknown";
+  if (!Number.isFinite(epsilon) || epsilon < 0) epsilon = DEFAULT_EPSILON;
   const window = asNonNegNumber(signals.declaredWindowTokens);
   const uiFillRaw = asNonNegNumber(signals.uiReportedFill);
-  const uiFill = uiFillRaw == null ? null : clamp01(uiFillRaw);
+  // Accept percent-style readings ("24" meaning 24%) alongside [0, 1] ratios.
+  const uiFill =
+    uiFillRaw == null ? null : clamp01(uiFillRaw > 1 && uiFillRaw <= 100 ? uiFillRaw / 100 : uiFillRaw);
   const boundaries = (signals.boundaries ?? []).filter(Boolean);
 
   const missing: string[] = [];
@@ -228,7 +231,7 @@ export function evaluateCompactMismatch(
   if (level === "mismatch") {
     headline = `Context meter disagrees with auto-compact on ${source}`;
     detail =
-      `UI showed ~${pct(uiFill)} used but ${boundary?.trigger === "manual" ? "compact" : "auto-compact"} fired at ` +
+      `UI showed ~${pct(uiFill)} used but ${boundary?.trigger === "auto" ? "auto-compact" : "compact"} fired at ` +
       `${boundary?.preTokens?.toLocaleString("en-US") ?? "?"} tokens (~${pct(impliedFill)} of the ` +
       `${windowClass ?? window?.toLocaleString("en-US") ?? "declared"} window)` +
       (falseOutOfContext
