@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.49.3 — 2026-08-29
+
+### Grok catch-up waits 2 min after activate
+
+The 45 s full grok wasm pass (8 s) still overlapped a restored CB `webview.ready` (40 s). Live grok stays on the `onlyPaths` watcher. One catch-up at **120 s**.
+
 ## 1.49.2 — 2026-08-29
 
 ### Reload: chat history before CSV index (no 0 ms race)

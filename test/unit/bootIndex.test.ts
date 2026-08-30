@@ -11,6 +11,7 @@ import {
 describe("boot index schedule", () => {
   it("does not index on the 0 ms turn (races cb.deserialize)", () => {
     expect(BOOT_INDEX_CLAUDE_MS).toBeGreaterThanOrEqual(2_000);
+    expect(BOOT_INDEX_GROK_MS).toBeGreaterThanOrEqual(90_000);
     expect(BOOT_INDEX_GROK_MS).toBeGreaterThan(BOOT_INDEX_CLAUDE_MS);
     expect(BOOT_STORE_SYNC_MS).toBeGreaterThan(BOOT_INDEX_CLAUDE_MS);
   });

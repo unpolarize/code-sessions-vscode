@@ -11,7 +11,7 @@
  */
 
 export const BOOT_INDEX_CLAUDE_MS = 2_000;
-export const BOOT_INDEX_GROK_MS = 45_000;
+export const BOOT_INDEX_GROK_MS = 120_000;
 export const BOOT_STORE_SYNC_MS = 20_000;
 
 export type BootIndexPass = {
