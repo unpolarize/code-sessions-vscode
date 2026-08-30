@@ -2429,14 +2429,23 @@ export function activate(ctx: vscode.ExtensionContext) {
   tasks.refresh();
   memory.refresh();
 
-  // Initial background sync (incremental: mtime+size diff). First paint may
-  // come from yesterday's cache while a fresh sync runs in parallel.
+  // Do not run grok/codex/git on this tick. Host-trace: a full pass was
+  // 31 s (git 25 s + grok 6 s) and blocked `cb.deserialize` webview.ready
+  // for the same 31 s — chat stayed blank until CSV finished. Claude-only
+  // is ~50 ms. Grok/codex wait until the chat has had time to paint.
   if (store) {
     setTimeout(() => {
-      runIndexSync();
-      // Refresh providers when all syncs finish so they see new rows.
+      runIndexSync({
+        includeGit: false,
+        includeGrok: false,
+        includeCodex: false,
+      });
       sessions.refresh();
-    }, 200);
+    }, 0);
+    setTimeout(() => {
+      runIndexSync({ includeGit: false });
+      sessions.refresh();
+    }, 8_000);
   }
 
   ctx.subscriptions.push({ dispose: () => store?.close() });

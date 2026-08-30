@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.49.1 — 2026-08-29
+
+### Reload no longer blanks Code Build for 15–30 s
+
+Host-trace: `cb.deserialize` waited **31 s** on `webview.ready` because activate's first `runIndexSync()` ran grok (6 s) + git (25 s) on the shared extension host. CSV sidebar and the chat filled at the same moment the host unblocked.
+
+- First index after activate is **Claude-only**, yielded with `setTimeout(0)`.
+- Grok/codex wait **8 s** so the restored chat can paint.
+- Store git pull waits **12 s**.
+
 ## 1.49.0 — 2026-08-29
 
 ### Untested-write surface card (conversation viewer)

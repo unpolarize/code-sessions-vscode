@@ -123,8 +123,8 @@ export class StoreSyncManager {
       return { dispose: () => {} };
     }
 
-    // Initial pull shortly after activation (let the window settle first).
-    const bootTimer = setTimeout(() => void this.sync("activation"), 1500);
+    // After CB hydrate (webview.ready was blocked 31 s by overlapping git).
+    const bootTimer = setTimeout(() => void this.sync("activation"), 12_000);
 
     this.armPoll();
 
