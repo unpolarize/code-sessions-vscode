@@ -79,3 +79,41 @@ export async function refreshDaemonSessions(): Promise<boolean> {
     return false;
   }
 }
+
+// --- daemon task visibility (spec R2/R4; CS ≥ 0.13.3) ------------------- //
+
+export interface DaemonTaskRow {
+  id: string;
+  title: string;
+  phase: "running" | "ok" | "error";
+  startedAt: number;
+  endedMs?: number;
+  done?: number;
+  total?: number;
+  detail?: string;
+  error?: string;
+}
+
+export interface DaemonTaskList {
+  running: DaemonTaskRow[];
+  recent: DaemonTaskRow[];
+  watcher?: { lastScanAt: number; intervalMs: number };
+}
+
+let cachedTasks: DaemonTaskList | null = null;
+
+export function cachedDaemonTasks(): DaemonTaskList | null {
+  return cachedTasks;
+}
+
+/** Fetch daemon tasks; null (and cache cleared) when the daemon is down or
+ * predates `task.list`. Never throws. */
+export async function refreshDaemonTasks(): Promise<DaemonTaskList | null> {
+  try {
+    const res = (await rpcCall("task.list")) as DaemonTaskList;
+    cachedTasks = res && Array.isArray(res.running) ? res : null;
+  } catch {
+    cachedTasks = null;
+  }
+  return cachedTasks;
+}

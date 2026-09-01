@@ -1,6 +1,12 @@
 # Changelog
 
-## 1.51.0 — 2026-09-01
+## 1.53.0 — 2026-09-01
+
+### Merge: interactive jobs/daemon line × night-build cards
+
+Two lanes assigned overlapping version numbers while working in parallel (interactive: 1.49.4–1.52.0 jobs/Activity/daemon-tasks/off-thread grok; night: plan-assumption + compaction-cliff cards, committed as "1.50.0"/"1.51.0"). This release merges both; night entries below are suffixed `-night`. Installed VSIX history on this machine used the interactive numbers.
+
+## 1.51.0-night — 2026-09-01 (night lane)
 
 ### Compaction-cliff card + emit-handoff command
 
@@ -11,7 +17,7 @@ Completes the UI slice of ideas/csv-compaction-cliff-cross-backend-handoff-card 
 - One-click **Emit handoff pack → target backend** via `codeSessions.emitCompactionHandoff` (`command:` URI, `enableScripts: false`) copies `code-sessions/compaction-cliff-handoff@1` markdown to the clipboard and offers "Open as markdown". Recommendation only — never auto-kills the session.
 - Pure HTML helpers + marker resolve covered by unit tests; README defaults table notes the viewer wiring.
 
-## 1.50.0 — 2026-08-30
+## 1.50.0-night — 2026-08-30 (night lane)
 
 ### Plan-assumption checklist card in conversation viewer
 
@@ -21,6 +27,67 @@ Completes the UI slice of ideas/csv-plan-assumption-checklist-card-extract-plan 
 - Checkbox / dismiss / skip-with-reason via `command:` URIs (`enableScripts: false`); state persists in `workspaceState` per session.
 - **Start build in CB** and **Promote to KP constraints** stay visually disabled until every item is checked/dismissed or a skip reason is set; promote copies `## Constraints` markdown to the clipboard; start build calls `resumeInCodeBuild` only when the gate is open.
 - Pure `renderAssumptionCardHtml` + `planTurnsFromConversation` covered by unit tests.
+
+## 1.52.0 — 2026-08-31
+
+### Daemon tasks in the Activity node (spec S5 visibility)
+
+The CS daemon (≥ 0.13.3) now answers `task.list`; Activity shows `daemon: watcher.scan` / `daemon: store.flush` rows plus a `daemon watcher · scanned Ns ago` heartbeat (warns when 3× the poll interval overdue). Refreshed every 30 s while the daemon is up, and once right after `hello`.
+
+Context: the launchd daemon on this machine had been **0.6.0** (pre-RPC) — `hello`/`session.list` never actually connected until CS 0.13.3 was installed today; with it live, Fleet uses `session.list` and the git-store import path is skipped as designed. Historic grok is now in the store (`backfill --agent grok`: 382 sessions / 18,865 turns; 455 grok sessions served by `session.list`).
+
+
+## 1.51.0 — 2026-08-31
+
+### Grok catch-up parses in a child process (spec S4')
+
+The 7–9.5 s cold grok parse no longer runs on the extension-host thread. The boot catch-up now: cheap stat scan on the host (`planGrokSync`), fork `out/grokParseWorker.js` (IPC; type-only db import, no wasm load in the child), apply rows in ≤20-row chunks with event-loop yields, delete stale paths, then a codex-only pass. Progress streams into the Activity job (`index grok · 120/346 · 4s`). Inline sync remains the fallback when the worker file is missing and for the watcher's small `onlyPaths` updates. Daemon-side ingest (P1-csv-index) remains the target; this removes the R1 violation now.
+
+
+## 1.50.0 — 2026-08-31
+
+### Activity: every long operation is a visible job (spec S1+S2)
+
+Spec: `architecture/tools/specs/2026-08-31-async-jobs-status-design.md` (R2/R4).
+
+- **`src/jobs.ts`** — pure `JobTracker` (running + last 10 finished, progress, listeners) with unit tests.
+- **Status bar** — `⟳ index grok · 120/346 · 4.0s` while anything runs; `⚠ <job> failed` until a later ok; hidden when idle. Click → Output log.
+- **Sessions tree → Activity node** — running jobs + last 10 with durations; errors carry the reason; auto-expands while running or after a failure.
+- Wired: `index:claude|grok|codex|git` (with per-file progress), `store sync` (start/end via `onDidSync`), `daemon connect`, `kp export`.
+- **Planning export backoff (issue #3)** — timeout budget grows 45 s → 90 s → 180 s (cap) per consecutive failure and resets on success, so a cold/large store can finally load instead of the fixed 45 s + SIGKILL loop. Error text names the next budget.
+
+
+## 1.49.6 — 2026-08-30
+
+### Stale-window guard for the shared cache
+
+Grok rows still vanished after 1.49.5: a second VS Code window had not reloaded and was running **1.49.3** (cross-source eviction) against the same `sessions-cache.db`, wiping the 346 grok rows the 1.49.5 window had just indexed. Host-trace showed both versions interleaving until the app restart.
+
+- Each index pass stamps `writer:<version>` in the `migration` table. A build that sees a **newer** writer active within 10 min pauses its own indexing and shows a one-shot "reload this window" warning. Newest build never yields.
+- `src/writerGuard.ts` (pure, tested). No schema change.
+
+
+## 1.49.5 — 2026-08-30
+
+### Grok catch-up is never dropped by the coalesce gate
+
+After 1.49.4 the tree still had no grok rows: the one-shot 120 s grok/codex catch-up ran through `IndexCoalesce.tryStart()`, a Claude turn-complete pass had finished 14 s earlier (15 s quiet gap), so the catch-up returned without indexing — and nothing retried. Host-trace: every `csv.index` since activate carried only a `claude` mark.
+
+- `tryStart({ priority })` skips the quiet gap but still yields to an in-flight pass; the boot catch-up uses it.
+- `scheduleUntilRun` re-arms the catch-up (5 s → 60 s) until it actually runs; Output logs `[index:grok] catch-up deferred / done`.
+- `runIndexSync` reports `skipped` when gated. Tests: coalesce priority, retry scheduler.
+
+
+## 1.49.4 — 2026-08-30
+
+### Claude pass no longer evicts grok / codex / git rows
+
+Grok sessions flickered in the Sessions tree: each grok pass inserted them, the next Claude `syncToStore` deleted every cached path not found under `~/.claude/projects` — `knownPaths()` was the **whole** table. `sessions-cache.db` held `claude` rows only.
+
+- `SessionStore.knownPaths({ prefix })` scopes the diff in SQL; the Claude indexer also re-checks `projectsRoot + path.sep` (never a bare prefix) and skips eviction when the disk walk is empty. Grok / codex / git pass their own prefix (smaller wasm↔JS marshal).
+- Host-trace `csv.index` marks carry `removed` (and `unchanged` for claude); Output logs `[index:claude] removed N …` when it happens.
+- Tests: grok/codex/git/sibling-prefix rows survive a Claude pass; empty walk keeps rows.
+
 
 ## 1.49.3 — 2026-08-29
 

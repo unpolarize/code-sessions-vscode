@@ -477,7 +477,7 @@ export function syncCodexToStore(
 
   // knownPaths returns rows for every source; filter to files under the
   // codex root so claude/grok rows can't collide with the diff.
-  const allKnown = store.knownPaths();
+  const allKnown = store.knownPaths({ prefix: root + path.sep });
   const known = new Map<string, { mtime_ns: number; size_bytes: number }>();
   for (const [p, v] of allKnown) {
     if (p.startsWith(root + path.sep)) known.set(p, v);

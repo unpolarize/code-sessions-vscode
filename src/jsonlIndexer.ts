@@ -524,7 +524,15 @@ export function syncToStore(
   const t0 = Date.now();
   const projectsRoot = opts.projectsRoot ?? DEFAULT_PROJECTS_ROOT;
   const disk = listAllTranscripts(projectsRoot);
-  const known = store.knownPaths();
+  // This indexer's universe is ~/.claude/projects only. Scope the cached
+  // set in SQL AND re-check the prefix here (duck-typed stores in tests,
+  // older DBs): "absent from the Claude walk" must never delete grok /
+  // codex / git rows — that was why sessions flickered in the tree.
+  const rootPrefix = projectsRoot.endsWith(path.sep) ? projectsRoot : projectsRoot + path.sep;
+  const known = new Map<string, { mtime_ns: number; size_bytes: number }>();
+  for (const [p, v] of store.knownPaths({ prefix: rootPrefix })) {
+    if (p.startsWith(rootPrefix)) known.set(p, v);
+  }
 
   // Build the "forced" set: top-N most-recent JSONLs if forceRecentN is set.
   let forcedSet: Set<string> | null = null;
@@ -543,10 +551,13 @@ export function syncToStore(
     }
   }
 
-  // Which paths are gone?
+  // Which paths are gone? An empty walk (wrong root, unreadable dir) is not
+  // evidence that every cached transcript was deleted — keep the rows.
   const diskPaths = new Set(disk.map((d) => d.jsonl_path));
   const removedPaths: string[] = [];
-  for (const p of known.keys()) if (!diskPaths.has(p)) removedPaths.push(p);
+  if (disk.length > 0) {
+    for (const p of known.keys()) if (!diskPaths.has(p)) removedPaths.push(p);
+  }
 
   let parsed = 0;
   let errors = 0;

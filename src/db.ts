@@ -1011,10 +1011,33 @@ export class SessionStore {
     return info.changes;
   }
 
-  /** Map of all jsonl_path → (mtime_ns, size_bytes). Used by the indexer to compute the diff. */
-  knownPaths(): Map<string, { mtime_ns: number; size_bytes: number }> {
+  /** Stamp this build as an active cache writer (see writerGuard.ts). */
+  touchWriter(version: string, now: number = Date.now()): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO migration (name, applied_at, detail) VALUES (?, ?, NULL)")
+      .run(`writer:${version}`, now);
+  }
+
+  /** All `writer:<version>` stamps. */
+  writers(): Array<{ name: string; applied_at: number }> {
+    return (this.db
+      .prepare("SELECT name, applied_at FROM migration WHERE substr(name, 1, 7) = 'writer:'")
+      .all() as any[]).map((r) => ({ name: String(r.name), applied_at: Number(r.applied_at) }));
+  }
+
+  /** Map of jsonl_path → (mtime_ns, size_bytes). Used by the indexers to
+   * compute their diff. `prefix` scopes the result to one indexer's
+   * universe (its root + path.sep) in SQL, so a Claude pass never sees —
+   * and never evicts — grok / codex / git rows, and the wasm↔JS marshal
+   * stays proportional to one source instead of the whole table. */
+  knownPaths(opts: { prefix?: string } = {}): Map<string, { mtime_ns: number; size_bytes: number }> {
     const m = new Map<string, { mtime_ns: number; size_bytes: number }>();
-    for (const r of this.db.prepare("SELECT jsonl_path, mtime_ns, size_bytes FROM session").all() as any[]) {
+    const rows = opts.prefix
+      ? (this.db
+          .prepare("SELECT jsonl_path, mtime_ns, size_bytes FROM session WHERE substr(jsonl_path, 1, ?) = ?")
+          .all(opts.prefix.length, opts.prefix) as any[])
+      : (this.db.prepare("SELECT jsonl_path, mtime_ns, size_bytes FROM session").all() as any[]);
+    for (const r of rows) {
       m.set(r.jsonl_path, { mtime_ns: Number(r.mtime_ns), size_bytes: Number(r.size_bytes) });
     }
     return m;

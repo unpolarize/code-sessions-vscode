@@ -20,7 +20,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { SessionStore, SessionRow, TurnRow } from "./db";
+import type { SessionStore, SessionRow, TurnRow } from "./db";
 import { GrokTurn, parseGrokConversation } from "./grokConversationParser";
 
 export const GROK_SESSIONS_ROOT = path.join(os.homedir(), ".grok", "sessions");
@@ -70,7 +70,7 @@ const ASSISTANT_EXCERPT_MAX = 1024;
 // Full-text search column cap (migration v17); NULL when the excerpt holds it all.
 const ASSISTANT_FULL_MAX = 64 * 1024;
 
-interface GrokSessionInfo {
+export interface GrokSessionInfo {
   /** Session folder, e.g. `<root>/%2FUsers%2Fyou%2Fproject/<uuid>/`. */
   sessionDir: string;
   chatPath: string;
@@ -435,6 +435,76 @@ export interface GrokSyncStats {
 /** Full sync: parse every new/changed grok session into SQLite. Returns
  * stats. Mirrors the contract of `syncToStore` in jsonlIndexer.ts so the
  * extension entrypoint can call both with the same opts shape. */
+export interface GrokSyncPlan {
+  totalOnDisk: number;
+  toParse: GrokSessionInfo[];
+  removedPaths: string[];
+}
+
+/**
+ * Scan + diff only (cheap stat pass, no parsing). Shared by the in-process
+ * sync below and the child-process catch-up (`grokParseWorker.ts`), which
+ * moves the 7–9.5 s cold parse off the extension-host thread (spec R1).
+ */
+export function planGrokSync(
+  store: SessionStore,
+  opts: { forceRecentN?: number; force?: boolean; root?: string } = {},
+): GrokSyncPlan {
+  const root = opts.root ?? GROK_SESSIONS_ROOT;
+  const disk = listAllGrokSessions(root);
+  const allKnown = store.knownPaths({ prefix: root + path.sep });
+  const known = new Map<string, { mtime_ns: number; size_bytes: number }>();
+  for (const [p, v] of allKnown) {
+    if (p.startsWith(root + path.sep)) known.set(p, v);
+  }
+  let forcedSet: Set<string> | null = null;
+  if (opts.forceRecentN && opts.forceRecentN > 0) {
+    const sorted = [...disk].sort((a, b) => b.mtime_ns - a.mtime_ns).slice(0, opts.forceRecentN);
+    forcedSet = new Set(sorted.map((d) => d.chatPath));
+  }
+  const toParse: GrokSessionInfo[] = [];
+  for (const info of disk) {
+    if (opts.force || (forcedSet && forcedSet.has(info.chatPath))) {
+      toParse.push(info);
+      continue;
+    }
+    const cached = known.get(info.chatPath);
+    if (!cached || cached.mtime_ns !== info.mtime_ns || cached.size_bytes !== info.size_bytes) {
+      toParse.push(info);
+    }
+  }
+  const diskPaths = new Set(disk.map((d) => d.chatPath));
+  const removedPaths: string[] = [];
+  if (disk.length > 0) {
+    for (const p of known.keys()) if (!diskPaths.has(p)) removedPaths.push(p);
+  }
+  return { totalOnDisk: disk.length, toParse, removedPaths };
+}
+
+/** One parsed result from `buildGrokRows` (in-process or from the worker). */
+export interface GrokParsedItem {
+  chatPath: string;
+  rows: { session: SessionRow; turns: TurnRow[] } | null;
+  error?: string;
+}
+
+/** Apply one parsed item to the store. Mirrors the inline loop below. */
+export function applyGrokParsed(
+  store: SessionStore,
+  item: GrokParsedItem,
+): "parsed" | "skipped" | "error" {
+  if (item.error) return "error";
+  if (!item.rows) {
+    // claude_import duplicate or stillborn session — clean any stale row.
+    store.deleteByPaths([item.chatPath]);
+    return "skipped";
+  }
+  store.upsertSession(item.rows.session);
+  store.deleteTurnsForSession(item.rows.session.session_id);
+  store.upsertTurns(item.rows.turns);
+  return "parsed";
+}
+
 export function syncGrokToStore(
   store: SessionStore,
   opts: {
@@ -454,7 +524,7 @@ export function syncGrokToStore(
   // cache. `knownPaths` returns rows for both sources, so we filter to the
   // ones whose path starts with the grok root to avoid cross-source
   // confusion if any UUID-shaped collisions ever happened.
-  const allKnown = store.knownPaths();
+  const allKnown = store.knownPaths({ prefix: GROK_SESSIONS_ROOT + path.sep });
   const known = new Map<string, { mtime_ns: number; size_bytes: number }>();
   for (const [p, v] of allKnown) {
     if (p.startsWith(GROK_SESSIONS_ROOT + path.sep)) known.set(p, v);

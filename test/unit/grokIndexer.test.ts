@@ -3,7 +3,37 @@
 // tree under test/fixtures/grokstore (cwd-encoded parent / uuid dir) — no home-dir access.
 import { describe, it, expect } from "vitest";
 import * as path from "path";
-import { listAllGrokSessions, buildGrokRows, locateGrokChatHistory } from "../../src/grokIndexer";
+import { listAllGrokSessions, buildGrokRows, locateGrokChatHistory, planGrokSync, applyGrokParsed, type GrokParsedItem } from "../../src/grokIndexer";
+import { handleWorkerRequest, type WorkerEvent } from "../../src/grokParseWorker";
+import type { SessionStore, SessionRow, TurnRow } from "../../src/db";
+
+/** In-memory stand-in mirroring jsonlIndexer.test.ts. */
+function fakeStore(seedKnown: Array<[string, { mtime_ns: number; size_bytes: number }]> = []) {
+  const sessions = new Map<string, SessionRow>();
+  const turns = new Map<string, TurnRow[]>();
+  const known = new Map(seedKnown);
+  const store = {
+    knownPaths: () => new Map(known),
+    deleteByPaths: (paths: string[]) => {
+      let n = 0;
+      for (const p of paths) if (known.delete(p)) n += 1;
+      return n;
+    },
+    upsertSession: (s2: SessionRow) => {
+      sessions.set(s2.session_id, s2);
+      known.set(s2.jsonl_path, { mtime_ns: s2.mtime_ns, size_bytes: s2.size_bytes });
+    },
+    deleteTurnsForSession: (id: string) => turns.delete(id),
+    upsertTurns: (rows: TurnRow[]) => {
+      for (const r of rows) {
+        const list = turns.get(r.session_id) ?? [];
+        list.push(r);
+        turns.set(r.session_id, list);
+      }
+    },
+  };
+  return { store: store as unknown as SessionStore, sessions, turns, known };
+}
 
 const ROOT = path.resolve(__dirname, "../fixtures/grokstore");
 
@@ -88,5 +118,45 @@ describe("buildGrokRows", () => {
 
   it("corrupted summary.json → null, no throw", () => {
     expect(buildGrokRows(infoFor(S_CORRUPT_SUMMARY))).toBeNull();
+  });
+});
+
+describe("planGrokSync + worker + applyGrokParsed (spec S4': parse off the host thread)", () => {
+  it("plans new/changed files and stale removals scoped to the grok root", () => {
+    const stale = path.join(ROOT, "%2FUsers%2Ftester%2Fprojects%2Fdemo", "gone", "chat_history.jsonl");
+    const claudeRow = "/Users/tester/.claude/projects/-x/a.jsonl";
+    const { store } = fakeStore([
+      [stale, { mtime_ns: 1, size_bytes: 1 }],
+      [claudeRow, { mtime_ns: 1, size_bytes: 1 }],
+    ]);
+    const plan = planGrokSync(store, { root: ROOT });
+    expect(plan.totalOnDisk).toBe(4);
+    expect(plan.toParse.length).toBe(4); // nothing cached yet
+    expect(plan.removedPaths).toEqual([stale]); // never the claude row
+  });
+
+  it("worker handle() parses the plan and applyGrokParsed writes the store", () => {
+    const { store, sessions, known } = fakeStore();
+    const plan = planGrokSync(store, { root: ROOT });
+    const events: WorkerEvent[] = [];
+    handleWorkerRequest({ kind: "parse", files: plan.toParse }, (ev) => events.push(ev));
+    const done = events.find((e) => e.kind === "done") as Extract<WorkerEvent, { kind: "done" }>;
+    expect(done.parsed + done.errors).toBe(plan.toParse.length);
+    let parsed = 0;
+    let skipped = 0;
+    for (const ev of events) {
+      if (ev.kind !== "item") continue;
+      const r = applyGrokParsed(store, ev as unknown as GrokParsedItem);
+      if (r === "parsed") parsed += 1;
+      else if (r === "skipped") skipped += 1;
+    }
+    // Valid + corrupt-summary parse into rows; stillborn + claude_import are skips.
+    expect(parsed).toBeGreaterThanOrEqual(1);
+    expect(skipped).toBeGreaterThanOrEqual(2);
+    expect(sessions.has(S_VALID)).toBe(true);
+    // Second plan over the same store: everything cached, nothing to parse.
+    const plan2 = planGrokSync(store, { root: ROOT });
+    expect(plan2.toParse.map((i) => i.chatPath)).not.toContain([...known.keys()][0]);
+    expect(plan2.toParse.length).toBe(plan.toParse.length - parsed);
   });
 });

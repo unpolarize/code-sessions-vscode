@@ -40,7 +40,7 @@ function fakeStore(opts: { throwOnSessionId?: string; seedKnown?: string[] } = {
       }
     },
   };
-  return { store: store as unknown as SessionStore, sessions, turns };
+  return { store: store as unknown as SessionStore, sessions, turns, known };
 }
 
 describe("listAllTranscripts", () => {
@@ -184,6 +184,34 @@ describe("syncToStore", () => {
     const { store } = fakeStore({ seedKnown: [ghost] });
     const stats = syncToStore(store, { projectsRoot: ROOT });
     expect(stats.removed).toBe(1);
+  });
+
+  it("never evicts rows outside the Claude projects root (grok / codex / git cache rows)", () => {
+    // Regression: the Claude pass diffed the WHOLE cache against its own
+    // disk walk, so every grok/codex/git row vanished on each tick and
+    // re-appeared after the next grok pass (sessions flickering in the tree).
+    const grokRow = "/Users/tester/.grok/sessions/%2FUsers%2Ftester%2Fdocs/01a0-0000/chat_history.jsonl";
+    const codexRow = "/Users/tester/.codex/sessions/2026/08/29/rollout-1.jsonl";
+    const gitRow = "/Users/tester/.sessions/hosts/mbp/2026-08/uuid/session.json";
+    const sibling = ROOT + "-backup/-Users-tester-projects-demo/stale.jsonl"; // prefix without sep
+    const ghost = path.join(ROOT, "-Users-tester-projects-demo", "gone.jsonl");
+    const { store, known } = fakeStore({ seedKnown: [grokRow, codexRow, gitRow, sibling, ghost] });
+    const stats = syncToStore(store, { projectsRoot: ROOT });
+    expect(stats.removed).toBe(1);
+    expect(known.has(grokRow)).toBe(true);
+    expect(known.has(codexRow)).toBe(true);
+    expect(known.has(gitRow)).toBe(true);
+    expect(known.has(sibling)).toBe(true);
+    expect(known.has(ghost)).toBe(false);
+  });
+
+  it("skips eviction when the disk walk is empty (wrong or unreadable root)", () => {
+    const stale = path.join("/nonexistent-root", "-Users-x", "a.jsonl");
+    const { store, known } = fakeStore({ seedKnown: [stale] });
+    const stats = syncToStore(store, { projectsRoot: "/nonexistent-root" });
+    expect(stats.total_on_disk).toBe(0);
+    expect(stats.removed).toBe(0);
+    expect(known.has(stale)).toBe(true);
   });
 });
 

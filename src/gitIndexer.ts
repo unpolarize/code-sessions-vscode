@@ -373,8 +373,8 @@ export function syncGitToStore(
   const localHost = opts.localHost ?? os.hostname();
   const disk = listAllGitSessions(root);
 
-  const allKnown = store.knownPaths();
   const rootPrefix = path.join(root, "hosts") + path.sep;
+  const allKnown = store.knownPaths({ prefix: rootPrefix });
   const known = new Map<string, { mtime_ns: number; size_bytes: number }>();
   for (const [p, v] of allKnown) if (p.startsWith(rootPrefix)) known.set(p, v);
 

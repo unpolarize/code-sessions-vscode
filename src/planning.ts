@@ -8,6 +8,7 @@
 // Projects trees, a kanban board webview, an interactive graph webview, and a status bar.
 
 import * as vscode from "vscode";
+import { backoffBudgetMs, formatMs, globalJobTracker } from "./jobs";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync, unlinkSync } from "node:fs";
 import * as os from "node:os";
@@ -423,6 +424,9 @@ class PlanningModel {
   readonly onDidChange = new vscode.EventEmitter<void>();
   readonly onStatus = new vscode.EventEmitter<PlanningLoadStatus>();
   private inFlight: Promise<boolean> | null = null;
+  /** Consecutive export failures — grows the timeout budget (issue #3: the
+   * fixed 45 s + SIGKILL loop could never load a cold store). */
+  private failStreak = 0;
   private pending = false;
   private appliedGen = 0;
   private nextGen = 0;
@@ -475,13 +479,20 @@ class PlanningModel {
             startedAt: t0,
             error: undefined,
           });
-          const res = await runKp(["export", "--date", "today"], undefined, 45_000);
+          const budgetMs = backoffBudgetMs(45_000, this.failStreak, 180_000);
+          globalJobTracker()?.start("kp-export", "kp export");
+          const res = await runKp(["export", "--date", "today"], undefined, budgetMs);
           const ms = Date.now() - t0;
+          globalJobTracker()?.finish("kp-export", {
+            detail: res.ok ? `${(res.stdout.length / 1024).toFixed(0)} KB in ${formatMs(ms)}` : undefined,
+            error: res.ok ? undefined : (res.stderr || res.stdout || `kp export failed (budget ${formatMs(budgetMs)})`).trim().slice(0, 200),
+          });
           span.mark("kp");
           if (gen <= this.appliedGen) continue; // a newer export already painted
           this.appliedGen = gen;
           if (!res.ok) {
-            const err = (res.stderr || res.stdout || "kp export failed").trim().slice(0, 400);
+            this.failStreak += 1;
+            const err = (res.stderr || res.stdout || `kp export failed — next retry budget ${formatMs(backoffBudgetMs(45_000, this.failStreak, 180_000))}`).trim().slice(0, 400);
             log?.appendLine(`[planning] kp export failed ${ms}ms (kept last snapshot): ${err}`);
             this.lastOk = false;
             this.setLoad({
@@ -494,6 +505,7 @@ class PlanningModel {
             try {
               this.snap = JSON.parse(res.stdout) as Snapshot;
               this.lastOk = true;
+              this.failStreak = 0;
               const n = this.snap.objects?.length ?? 0;
               this.setLoad({
                 phase: "ready",

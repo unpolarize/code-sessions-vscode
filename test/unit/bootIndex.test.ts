@@ -6,6 +6,7 @@ import {
   claudeOnlyIndexOpts,
   grokCatchupIndexOpts,
   periodicIndexOpts,
+  scheduleUntilRun,
 } from "../../src/bootIndex";
 
 describe("boot index schedule", () => {
@@ -34,5 +35,36 @@ describe("boot index schedule", () => {
   it("periodic timer never runs full grok", () => {
     expect(periodicIndexOpts().includeGrok).toBe(false);
     expect(periodicIndexOpts().includeGit).toBe(false);
+  });
+
+  it("catch-up retries until the gated pass actually runs", () => {
+    // Regression: the 120 s grok catch-up was dropped by the 15 s coalesce
+    // gap (a Claude turn-complete pass had just finished) and never retried,
+    // so historic grok sessions never reached the tree after a reload.
+    const timers: Array<{ ms: number; fn: () => void }> = [];
+    const setTimer = (fn: () => void, ms: number) => {
+      timers.push({ ms, fn });
+      return timers.length;
+    };
+    let attempts = 0;
+    const ran = scheduleUntilRun(() => (attempts += 1) >= 3, [100, 200, 300, 400], setTimer);
+    expect(timers.map((x) => x.ms)).toEqual([100]);
+    timers[0].fn(); // attempt 1: gated → re-arm
+    expect(timers.map((x) => x.ms)).toEqual([100, 200]);
+    timers[1].fn(); // attempt 2: gated → re-arm
+    timers[2].fn(); // attempt 3: runs → stop
+    expect(timers.length).toBe(3);
+    expect(attempts).toBe(3);
+    expect(ran.attempts()).toBe(3);
+  });
+
+  it("catch-up gives up after the delay list is exhausted", () => {
+    const timers: Array<() => void> = [];
+    let attempts = 0;
+    scheduleUntilRun(() => { attempts += 1; return false; }, [1, 2], (fn) => { timers.push(fn); return timers.length; });
+    timers[0]();
+    timers[1]();
+    expect(timers.length).toBe(2);
+    expect(attempts).toBe(2);
   });
 });

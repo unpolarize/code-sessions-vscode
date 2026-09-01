@@ -39,4 +39,16 @@ describe("IndexCoalesce", () => {
     expect(g.tryStart({ force: true })).toBe(true);
     g.finish();
   });
+
+  it("priority bypasses the quiet gap but never overlaps an in-flight pass", () => {
+    let t = 1_000;
+    const g = new IndexCoalesce(15_000, () => t);
+    expect(g.tryStart()).toBe(true);
+    // Still in flight → even priority waits.
+    expect(g.tryStart({ priority: true })).toBe(false);
+    g.finish();
+    t = 2_000; // 1 s after finish — inside the gap
+    expect(g.tryStart()).toBe(false);
+    expect(g.tryStart({ priority: true })).toBe(true);
+  });
 });

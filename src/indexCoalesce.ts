@@ -16,12 +16,22 @@ export class IndexCoalesce {
     private readonly now: () => number = Date.now,
   ) {}
 
-  tryStart(opts: { force?: boolean } = {}): boolean {
+  /**
+   * `force` — user-initiated; always runs.
+   * `priority` — one-shot boot catch-up: skips the quiet gap (a Claude
+   * turn-complete pass finishing 1 s earlier must not drop it) but still
+   * yields to an in-flight pass.
+   */
+  tryStart(opts: { force?: boolean; priority?: boolean } = {}): boolean {
     if (opts.force) {
       this.inFlight = true;
       return true;
     }
     if (this.inFlight) return false;
+    if (opts.priority) {
+      this.inFlight = true;
+      return true;
+    }
     const t = this.now();
     if (this.lastFinished > 0 && t - this.lastFinished < this.minIntervalMs) return false;
     this.inFlight = true;

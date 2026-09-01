@@ -50,3 +50,29 @@ export function periodicIndexOpts(): BootIndexPass {
     includeCodex: true,
   };
 }
+
+/** Retry delays for the boot catch-up when the coalesce gate is busy. */
+export const BOOT_CATCHUP_RETRY_MS = [5_000, 10_000, 15_000, 30_000, 60_000];
+
+/**
+ * Arm `run` on the first delay; while it reports `false` (gated / skipped),
+ * re-arm on the next delay. Stops after the first `true` or when the list is
+ * exhausted. The 120 s grok catch-up used to be a bare `setTimeout` — one
+ * `tryStart() === false` and historic grok/codex sessions never got indexed.
+ */
+export function scheduleUntilRun(
+  run: () => boolean,
+  delays: number[],
+  setTimer: (fn: () => void, ms: number) => unknown = (fn, ms) => setTimeout(fn, ms),
+): { attempts: () => number } {
+  let attempts = 0;
+  const arm = (i: number) => {
+    if (i >= delays.length) return;
+    setTimer(() => {
+      attempts += 1;
+      if (!run()) arm(i + 1);
+    }, delays[i]);
+  };
+  arm(0);
+  return { attempts: () => attempts };
+}

@@ -32,14 +32,20 @@ import { syncToStore } from "./jsonlIndexer";
 import { locateGrokChatHistory, syncGrokToStore } from "./grokIndexer";
 import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
-import { daemonIsUp, refreshDaemonSessions } from "./daemonClient";
+import { cachedDaemonTasks, daemonIsUp, refreshDaemonSessions, refreshDaemonTasks } from "./daemonClient";
 import { startEventLoopLagMonitor } from "./eventLoopLag";
 import { IndexCoalesce } from "./indexCoalesce";
+import { newerWriterActive } from "./writerGuard";
+import { JobTracker, formatJobLabel, formatMs, setGlobalJobTracker, type Job } from "./jobs";
+import { fork } from "child_process";
+import { applyGrokParsed, planGrokSync, syncGrokToStore as syncGrokInline, type GrokParsedItem } from "./grokIndexer";
 import {
+  BOOT_CATCHUP_RETRY_MS,
   BOOT_INDEX_CLAUDE_MS,
   BOOT_INDEX_GROK_MS,
   claudeOnlyIndexOpts,
   grokCatchupIndexOpts,
+  scheduleUntilRun,
   periodicIndexOpts,
 } from "./bootIndex";
 import {
@@ -795,7 +801,15 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   /** Instant toggle while the settings.json write is in flight. */
   showAutomatedOverride: boolean | null = null;
 
-  constructor(private readonly store: SessionStore | null) {}
+  constructor(
+    private readonly store: SessionStore | null,
+    private readonly jobs?: import("./jobs").JobTracker,
+  ) {}
+
+  /** Repaint without re-querying SQLite (Activity/job rows only changed). */
+  fireSoft(): void {
+    this._onDidChange.fire();
+  }
 
   showAutomatedNow(): boolean {
     if (this.showAutomatedOverride !== null) return this.showAutomatedOverride;
@@ -1243,7 +1257,36 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     if (!el) {
       // Root: day buckets across both sources interleaved by time. Sources
       // are still visible per-row via the `[C]` / `[G]` label prefix.
-      return this.buildRootChildren();
+      const kids = this.buildRootChildren();
+      if (this.jobs && (this.jobs.runningJobs().length > 0 || this.jobs.recentJobs().length > 0)) {
+        kids.unshift(new ActivityBucketItem(this.jobs.runningJobs().length, this.jobs.lastError() != null));
+      }
+      return kids;
+    }
+
+    if (el instanceof ActivityBucketItem) {
+      if (!this.jobs) return [];
+      const now = Date.now();
+      const kids: vscode.TreeItem[] = [
+        ...this.jobs.runningJobs().map((j) => new JobTreeItem(j, now)),
+        ...this.jobs.recentJobs().map((j) => new JobTreeItem(j, now)),
+      ];
+      const dt = cachedDaemonTasks();
+      if (dt) {
+        if (dt.watcher) {
+          const age = Math.max(0, Math.round((now - dt.watcher.lastScanAt) / 1000));
+          const beat = new vscode.TreeItem(`daemon watcher · scanned ${age}s ago`);
+          beat.iconPath = new vscode.ThemeIcon(
+            age > (dt.watcher.intervalMs / 1000) * 3 ? "warning" : "pulse",
+          );
+          beat.tooltip = `CS daemon source watcher (grok/codex poll every ${Math.round(dt.watcher.intervalMs / 1000)}s)`;
+          kids.push(beat);
+        }
+        for (const t of [...dt.running, ...dt.recent.slice(0, 5)]) {
+          kids.push(new JobTreeItem({ ...t, title: `daemon: ${t.title}` }, now));
+        }
+      }
+      return kids;
     }
 
     if (el instanceof StarredBucketItem) {
@@ -1261,6 +1304,39 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return el.metricsChildren();
     }
     return [];
+  }
+}
+
+class ActivityBucketItem extends vscode.TreeItem {
+  constructor(running: number, hasError: boolean) {
+    super(
+      running > 0 ? `Activity — ${running} running` : "Activity",
+      running > 0 || hasError
+        ? vscode.TreeItemCollapsibleState.Expanded
+        : vscode.TreeItemCollapsibleState.Collapsed,
+    );
+    this.iconPath = new vscode.ThemeIcon(hasError ? "warning" : running > 0 ? "sync~spin" : "pulse");
+    this.contextValue = "bucket-activity";
+  }
+}
+
+class JobTreeItem extends vscode.TreeItem {
+  constructor(j: Job, now: number) {
+    super(formatJobLabel(j, now), vscode.TreeItemCollapsibleState.None);
+    this.iconPath = new vscode.ThemeIcon(
+      j.phase === "running" ? "sync~spin" : j.phase === "error" ? "error" : "check",
+    );
+    this.description = j.phase === "error" ? (j.error ?? "failed") : (j.detail ?? "");
+    this.tooltip = [
+      `${j.title} — ${j.phase}`,
+      j.detail ?? "",
+      j.error ?? "",
+      `started ${new Date(j.startedAt).toLocaleTimeString()}`,
+      j.endedMs != null ? `took ${formatMs(j.endedMs)}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    this.command = { command: "codeSessions.showLog", title: "Show log" };
   }
 }
 
@@ -2190,12 +2266,69 @@ export function activate(ctx: vscode.ExtensionContext) {
     { dispose: addTraceSink((human) => log.appendLine(human)) },
     { dispose: startFileSink() },
   );
+
+  // Jobs/status surface (spec R2/R4): every long operation is visible.
+  const jobs = new JobTracker();
+  setGlobalJobTracker(jobs);
+  ctx.subscriptions.push({ dispose: () => setGlobalJobTracker(undefined) });
+  let jobsTreeRepaint: ReturnType<typeof setTimeout> | undefined;
+  const scheduleJobsTreeRepaint = () => {
+    if (jobsTreeRepaint) return;
+    jobsTreeRepaint = setTimeout(() => {
+      jobsTreeRepaint = undefined;
+      try {
+        sessions.fireSoft();
+      } catch {
+        /* provider not constructed yet during activate */
+      }
+    }, 400);
+  };
+  const jobsBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 48);
+  jobsBar.command = "codeSessions.showLog";
+  const renderJobsBar = () => {
+    const text = jobs.statusBarText();
+    if (text) {
+      jobsBar.text = text;
+      jobsBar.tooltip = "Code Sessions activity — click for the log";
+      jobsBar.show();
+    } else {
+      jobsBar.hide();
+    }
+  };
+  let jobsBarTimer: ReturnType<typeof setInterval> | undefined;
+  // Daemon-side task visibility: refresh every 30 s (cheap RPC; no-op when
+  // the daemon is down or predates task.list) and repaint the Activity node.
+  const daemonTasksTimer = setInterval(() => {
+    if (!daemonIsUp()) return;
+    void refreshDaemonTasks().then(() => scheduleJobsTreeRepaint());
+  }, 30_000);
+  daemonTasksTimer.unref?.();
+  ctx.subscriptions.push({ dispose: () => clearInterval(daemonTasksTimer) });
+  ctx.subscriptions.push(
+    jobsBar,
+    jobs.onChange(() => {
+      renderJobsBar();
+      scheduleJobsTreeRepaint();
+      // Keep elapsed time ticking while anything runs.
+      if (jobs.runningJobs().length > 0 && !jobsBarTimer) {
+        jobsBarTimer = setInterval(renderJobsBar, 1000);
+      } else if (jobs.runningJobs().length === 0 && jobsBarTimer) {
+        clearInterval(jobsBarTimer);
+        jobsBarTimer = undefined;
+      }
+    }),
+    { dispose: () => jobsBarTimer && clearInterval(jobsBarTimer) },
+  );
+
   const act = startSpan("csv.activate");
   log.appendLine(`[activate] code-sessions starting (VS Code ${vscode.version})`);
   void (async () => {
     const hello = startSpan("csv.daemon.hello");
+    jobs.start("daemon", "daemon connect");
     const ok = await refreshDaemonSessions();
     hello.end({ ok });
+    jobs.finish("daemon", ok ? { detail: "connected" } : { error: "daemon unavailable — local indexers + git import" });
+    if (ok) void refreshDaemonTasks().then(() => scheduleJobsTreeRepaint());
     log.appendLine(`[daemon] session API ${ok ? "connected (git import skipped)" : "unavailable — local indexers + git import"}`);
   })();
 
@@ -2209,6 +2342,8 @@ export function activate(ctx: vscode.ExtensionContext) {
   let store: SessionStore | null = null;
 
   const indexGate = new IndexCoalesce();
+  let yieldedToNewerWriter = false;
+
   const emptyIndexResult = {
     totalErrors: 0,
     claudeParsed: 0,
@@ -2224,6 +2359,8 @@ export function activate(ctx: vscode.ExtensionContext) {
    *  share `indexGate` (≥ 5 s) so live agents don't stack wasm passes. */
   function runIndexSync(opts: {
     force?: boolean;
+    /** Boot catch-up: skip the coalesce gap, still yield to an in-flight pass. */
+    priority?: boolean;
     forceRecentN?: number;
     includeGit?: boolean;
     includeClaude?: boolean;
@@ -2233,13 +2370,32 @@ export function activate(ctx: vscode.ExtensionContext) {
     onGrokProgress?: (done: number, total: number) => void;
     onCodexProgress?: (done: number, total: number) => void;
     onGitProgress?: (done: number, total: number) => void;
-  } = {}): { totalErrors: number; claudeParsed: number; grokParsed: number; codexParsed: number; gitParsed: number; elapsed_ms: number } {
+  } = {}): { totalErrors: number; claudeParsed: number; grokParsed: number; codexParsed: number; gitParsed: number; elapsed_ms: number; skipped?: boolean } {
     if (!store) {
       return { ...emptyIndexResult };
     }
     const force = opts.force === true || (opts.forceRecentN != null && opts.forceRecentN > 0);
-    if (!indexGate.tryStart({ force })) {
-      return { ...emptyIndexResult };
+    if (!indexGate.tryStart({ force, priority: opts.priority === true })) {
+      return { ...emptyIndexResult, skipped: true };
+    }
+    // A window still running an older build must not index against a cache a
+    // newer build owns (2026-08-30: stale 1.49.3 window kept evicting grok rows).
+    try {
+      const newer = newerWriterActive(ver, store.writers(), Date.now());
+      if (newer) {
+        indexGate.finish();
+        if (!yieldedToNewerWriter) {
+          yieldedToNewerWriter = true;
+          log.appendLine(`[index] this window runs ${ver} but ${newer} is active on the same cache — indexing paused here. Developer: Reload Window to pick up ${newer}.`);
+          void vscode.window.showWarningMessage(
+            `Code Sessions ${ver} is stale — ${newer} is installed and running in another window. Reload this window to keep the Sessions cache consistent.`,
+          );
+        }
+        return { ...emptyIndexResult, skipped: true };
+      }
+      store.touchWriter(ver);
+    } catch (e: unknown) {
+      log.appendLine(`[index] writer guard skipped: ${e instanceof Error ? e.message : String(e)}`);
     }
     const indexSpan = startSpan("csv.index");
     try {
@@ -2261,18 +2417,30 @@ export function activate(ctx: vscode.ExtensionContext) {
     let elapsed_ms = 0;
 
     if (includeClaude) {
+    jobs.start("index:claude", "index claude");
     try {
       const stats = syncToStore(s, {
         ...forceOpts,
-        onProgress: opts.onClaudeProgress,
+        onProgress: (done, total) => {
+          jobs.progress("index:claude", done, total);
+          opts.onClaudeProgress?.(done, total);
+        },
       });
       claudeParsed = stats.parsed;
       elapsed_ms = Math.max(elapsed_ms, stats.elapsed_ms);
       totalErrors += indexDiag.reportSource("claude", stats);
-      indexSpan.mark("claude", { parsed: stats.parsed, elapsed_ms: stats.elapsed_ms });
-      console.log(`[code-sessions] claude sync: ${JSON.stringify({ errors: stats.errors, parsed: stats.parsed, elapsed_ms: stats.elapsed_ms })}`);
+      indexSpan.mark("claude", { parsed: stats.parsed, unchanged: stats.unchanged, removed: stats.removed, elapsed_ms: stats.elapsed_ms });
+      if (stats.removed > 0) {
+        log.appendLine(`[index:claude] removed ${stats.removed} cached row(s) no longer under ~/.claude/projects (on disk: ${stats.total_on_disk})`);
+      }
+      console.log(`[code-sessions] claude sync: ${JSON.stringify({ errors: stats.errors, parsed: stats.parsed, removed: stats.removed, elapsed_ms: stats.elapsed_ms })}`);
+      jobs.finish("index:claude", {
+        detail: `parsed ${stats.parsed} · removed ${stats.removed}`,
+        error: stats.errors > 0 ? `${stats.errors} file(s) failed to parse` : undefined,
+      });
     } catch (e: unknown) {
       const reason = e instanceof Error ? e.message : String(e);
+      jobs.finish("index:claude", { error: reason });
       log.appendLine(`[index:claude] ERROR sync threw: ${reason}`);
       totalErrors += 1;
       console.error("[code-sessions] claude sync failed:", e);
@@ -2280,18 +2448,27 @@ export function activate(ctx: vscode.ExtensionContext) {
     }
 
     if (includeGrok && cfg.get<boolean>("grok.enabled", true)) {
+      jobs.start("index:grok", "index grok");
       try {
         const grokStats = syncGrokToStore(s, {
           ...forceOpts,
-          onProgress: opts.onGrokProgress,
+          onProgress: (done, total) => {
+            jobs.progress("index:grok", done, total);
+            opts.onGrokProgress?.(done, total);
+          },
         });
         grokParsed = grokStats.parsed;
         elapsed_ms = Math.max(elapsed_ms, grokStats.elapsed_ms);
         totalErrors += indexDiag.reportSource("grok", grokStats);
-        indexSpan.mark("grok", { parsed: grokStats.parsed, elapsed_ms: grokStats.elapsed_ms });
+        indexSpan.mark("grok", { parsed: grokStats.parsed, removed: grokStats.removed, elapsed_ms: grokStats.elapsed_ms });
         console.log(`[code-sessions] grok sync: ${JSON.stringify({ errors: grokStats.errors, parsed: grokStats.parsed })}`);
+        jobs.finish("index:grok", {
+          detail: `parsed ${grokStats.parsed} · removed ${grokStats.removed}`,
+          error: grokStats.errors > 0 ? `${grokStats.errors} file(s) failed to parse` : undefined,
+        });
       } catch (e: unknown) {
         const reason = e instanceof Error ? e.message : String(e);
+        jobs.finish("index:grok", { error: reason });
         log.appendLine(`[index:grok] ERROR sync threw: ${reason}`);
         totalErrors += 1;
         console.error("[code-sessions] grok sync failed:", e);
@@ -2299,18 +2476,24 @@ export function activate(ctx: vscode.ExtensionContext) {
     }
 
     if (includeCodex && cfg.get<boolean>("codex.enabled", true)) {
+      jobs.start("index:codex", "index codex");
       try {
         const codexStats = syncCodexToStore(s, {
           ...forceOpts,
-          onProgress: opts.onCodexProgress,
+          onProgress: (done, total) => {
+            jobs.progress("index:codex", done, total);
+            opts.onCodexProgress?.(done, total);
+          },
         });
         codexParsed = codexStats.parsed;
         elapsed_ms = Math.max(elapsed_ms, codexStats.elapsed_ms);
         totalErrors += indexDiag.reportSource("codex", codexStats);
-        indexSpan.mark("codex", { parsed: codexStats.parsed, elapsed_ms: codexStats.elapsed_ms });
+        indexSpan.mark("codex", { parsed: codexStats.parsed, removed: codexStats.removed, elapsed_ms: codexStats.elapsed_ms });
+        jobs.finish("index:codex", { detail: `parsed ${codexStats.parsed} · removed ${codexStats.removed}`, error: codexStats.errors > 0 ? `${codexStats.errors} file(s) failed to parse` : undefined });
         console.log(`[code-sessions] codex sync: ${JSON.stringify({ errors: codexStats.errors, parsed: codexStats.parsed })}`);
       } catch (e: unknown) {
         const reason = e instanceof Error ? e.message : String(e);
+        jobs.finish("index:codex", { error: reason });
         log.appendLine(`[index:codex] ERROR sync threw: ${reason}`);
         totalErrors += 1;
         console.error("[code-sessions] codex sync failed:", e);
@@ -2318,6 +2501,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     }
 
     if (includeGit && cfg.get<boolean>("git.enabled", true) && !daemonIsUp()) {
+      jobs.start("index:git", "import git store");
       try {
         const gitStats = syncGitToStore(s, {
           includeLocalHost: cfg.get<boolean>("git.includeLocalHost", false),
@@ -2327,10 +2511,12 @@ export function activate(ctx: vscode.ExtensionContext) {
         gitParsed = gitStats.parsed;
         elapsed_ms = Math.max(elapsed_ms, gitStats.elapsed_ms);
         totalErrors += indexDiag.reportSource("git", gitStats);
-        indexSpan.mark("git", { parsed: gitStats.parsed, elapsed_ms: gitStats.elapsed_ms });
+        indexSpan.mark("git", { parsed: gitStats.parsed, removed: gitStats.removed, elapsed_ms: gitStats.elapsed_ms });
+        jobs.finish("index:git", { detail: `parsed ${gitStats.parsed} · removed ${gitStats.removed}`, error: gitStats.errors > 0 ? `${gitStats.errors} file(s) failed to parse` : undefined });
         console.log(`[code-sessions] git store sync: ${JSON.stringify({ errors: gitStats.errors, parsed: gitStats.parsed })}`);
       } catch (e: unknown) {
         const reason = e instanceof Error ? e.message : String(e);
+        jobs.finish("index:git", { error: reason });
         log.appendLine(`[index:git] ERROR sync threw: ${reason}`);
         totalErrors += 1;
         console.error("[code-sessions] git store sync failed:", e);
@@ -2342,6 +2528,83 @@ export function activate(ctx: vscode.ExtensionContext) {
     return { totalErrors, claudeParsed, grokParsed, codexParsed, gitParsed, elapsed_ms };
     } finally {
       indexGate.finish();
+    }
+  }
+
+  /**
+   * Grok catch-up with the parse in a forked child (spec R1/S4'): the
+   * extension host only stats files, applies rows in ≤20-row chunks with
+   * event-loop yields, and deletes gone paths. Caller holds `indexGate`.
+   */
+  async function grokCatchupWithGate(): Promise<void> {
+    if (!store) return;
+    const s = store;
+    const t0 = Date.now();
+    const indexSpan = startSpan("csv.index");
+    jobs.start("index:grok", "index grok");
+    let parsed = 0;
+    let errors = 0;
+    let skipped = 0;
+    let removed = 0;
+    try {
+      const newer = newerWriterActive(ver, s.writers(), Date.now());
+      if (newer) {
+        jobs.finish("index:grok", { error: `paused — ${newer} owns the cache (reload this window)` });
+        return;
+      }
+      s.touchWriter(ver);
+      const plan = planGrokSync(s);
+      const workerPath = ctx.asAbsolutePath("out/grokParseWorker.js");
+      if (plan.toParse.length > 0 && fs.existsSync(workerPath)) {
+        let applied = 0;
+        await new Promise<void>((resolve, reject) => {
+          const child = fork(workerPath, [], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+          let chain: Promise<void> = Promise.resolve();
+          let settled = false;
+          const finishOnce = () => {
+            if (settled) return;
+            settled = true;
+            chain.then(() => resolve(), () => resolve());
+          };
+          child.on("message", (ev: GrokParsedItem & { kind: string }) => {
+            if (ev.kind === "item") {
+              chain = chain.then(async () => {
+                const r = applyGrokParsed(s, ev);
+                if (r === "parsed") parsed += 1;
+                else if (r === "skipped") skipped += 1;
+                else errors += 1;
+                applied += 1;
+                jobs.progress("index:grok", applied, plan.toParse.length);
+                if (applied % 20 === 0) await new Promise((y) => setImmediate(y));
+              });
+            } else if (ev.kind === "done") {
+              finishOnce();
+            }
+          });
+          child.on("error", (e) => (settled ? undefined : (settled = true, reject(e))));
+          child.on("exit", finishOnce);
+          child.send({ kind: "parse", files: plan.toParse });
+        });
+      } else if (plan.toParse.length > 0) {
+        // Worker missing (dev build) — inline fallback, same result.
+        const st = syncGrokInline(s, { onProgress: (d, t) => jobs.progress("index:grok", d, t) });
+        parsed = st.parsed;
+        errors = st.errors;
+        skipped = st.skipped_claude_import;
+      }
+      removed = s.deleteByPaths(plan.removedPaths);
+      jobs.finish("index:grok", {
+        detail: `parsed ${parsed} · removed ${removed} (child process)`,
+        error: errors > 0 ? `${errors} file(s) failed to parse` : undefined,
+      });
+      log.appendLine(`[index:grok] catch-up (worker): parsed ${parsed} skipped ${skipped} removed ${removed} errors ${errors} in ${Date.now() - t0}ms`);
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      jobs.finish("index:grok", { error: reason });
+      log.appendLine(`[index:grok] catch-up worker failed: ${reason}`);
+    } finally {
+      indexSpan.mark("grok", { parsed, removed, elapsed_ms: Date.now() - t0 });
+      indexSpan.end({ grokParsed: parsed, worker: true });
     }
   }
 
@@ -2421,7 +2684,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     store = null;
   }
 
-  const sessions = new SessionsProvider(store);
+  const sessions = new SessionsProvider(store, jobs);
   // Restore per-window folder/host filter overrides (picked via the
   // "Filter sessions" QuickPick) before the first paint.
   const FOLDER_OVERRIDE_KEY = "codeSessions.folderFilterOverride";
@@ -2463,10 +2726,26 @@ export function activate(ctx: vscode.ExtensionContext) {
       runIndexSync(claudeOnlyIndexOpts());
       sessions.refresh();
     }, BOOT_INDEX_CLAUDE_MS);
-    setTimeout(() => {
-      runIndexSync(grokCatchupIndexOpts());
-      sessions.refresh();
-    }, BOOT_INDEX_GROK_MS);
+    // Priority + retry: a Claude turn-complete pass finishing inside the
+    // 15 s gap used to drop this one-shot silently, so historic grok/codex
+    // sessions never reached the tree after a reload.
+    scheduleUntilRun(() => {
+      if (!indexGate.tryStart({ priority: true })) {
+        log.appendLine("[index:grok] catch-up deferred (index in flight) — retrying");
+        return false;
+      }
+      void (async () => {
+        try {
+          await grokCatchupWithGate();
+        } finally {
+          indexGate.finish();
+        }
+        // Codex is tiny — run it inline right after (priority skips the gap).
+        runIndexSync({ priority: true, includeClaude: false, includeGrok: false, includeGit: false });
+        void sessions.refresh();
+      })();
+      return true;
+    }, [BOOT_INDEX_GROK_MS, ...BOOT_CATCHUP_RETRY_MS]);
   }
 
   ctx.subscriptions.push({ dispose: () => store?.close() });
@@ -2854,6 +3133,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       sessions.refresh();
     }),
 
+    vscode.commands.registerCommand("codeSessions.showLog", () => log.show(true)),
     vscode.commands.registerCommand("codeSessions.refresh", async () => {
       // Incremental sync from disk + force re-parse the top-N most-recent
       // sessions. The forced top-N catches on-disk edits that don't reliably
@@ -3571,6 +3851,19 @@ export function activate(ctx: vscode.ExtensionContext) {
   };
   renderSyncStatus(storeSync.getStatus());
   ctx.subscriptions.push(storeSync.onDidSync(renderSyncStatus));
+  // Store git sync as a job row (R2): start-of-pass fires with status "syncing".
+  ctx.subscriptions.push(
+    storeSync.onDidSync((st) => {
+      if (st.status === "syncing") {
+        jobs.start("store-sync", "store sync");
+      } else if (jobs.runningJobs().some((j) => j.id === "store-sync")) {
+        jobs.finish("store-sync", {
+          detail: st.lastChanged.length > 0 ? `pulled ${st.lastChanged.map((r) => r.split("/").pop()).join(", ")}` : st.status,
+          error: st.status === "error" || st.status === "conflict" ? (st.detail ?? st.status) : undefined,
+        });
+      }
+    }),
+  );
   ctx.subscriptions.push(
     vscode.commands.registerCommand("codeSessions.syncStoresNow", () => storeSync.syncNow()),
   );
