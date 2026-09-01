@@ -220,7 +220,7 @@ On plan/ask-phase transcripts, heuristics extract 3–7 candidate assumptions (`
 
 ## Compaction-cliff defaults (handoff recommender)
 
-Pure core in `src/compactionCliff.ts` (UI card wiring next). Heuristic thresholds — not vendor remaining-context guarantees; recommendation only (no auto-failover):
+When a session approaches a backend-specific compaction cliff, the conversation viewer shows a **Compaction cliff** card (approaching / recommend handoff only — hidden when ok). **Emit handoff pack** (`codeSessions.emitCompactionHandoff`) copies a KP-cartridge markdown primer to the clipboard for continuing on another backend. Heuristic thresholds — not vendor remaining-context guarantees; recommendation only (no auto-failover). Core: `src/compactionCliff.ts`.
 
 | Backend | Warn at compacts | Recommend handoff | Context-fill warn | Prefer handoff to |
 |---|---|---|---|---|

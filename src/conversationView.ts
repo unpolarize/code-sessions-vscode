@@ -22,6 +22,15 @@ import {
   renderAssumptionCardHtml,
   type PersistedAssumptionState,
 } from "./planAssumptions";
+import {
+  buildHandoffPack,
+  evaluateCompactionCliff,
+  eventsFromConversationTurns,
+  renderCliffCardHtmlForSession,
+  resolveCompactionSignals,
+  type CompactionSignals,
+  type CliffCard,
+} from "./compactionCliff";
 import * as fs from "fs";
 import { startSpan } from "./hostTrace";
 
@@ -301,6 +310,22 @@ const STYLE = `
   .pa-btn.pa-disabled { opacity: 0.45; }
   .pa-skip, .pa-block { margin-top: 8px; font-size: 11px; color: var(--muted); }
   .pa-block { color: var(--error, #f14c4c); }
+  .cc-card { padding: 12px 16px; background: var(--tool-bg); border: 1px solid var(--border); border-radius: 6px; margin: -12px 0 24px; }
+  .cc-card[data-level="recommend_handoff"] { border-color: var(--error, #f14c4c); }
+  .cc-card[data-level="approaching"] { border-color: var(--accent, #3794ff); }
+  .cc-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+  .cc-title { font-weight: 600; font-size: 13px; }
+  .cc-level { font-size: 11px; color: var(--muted); }
+  .cc-level.cc-warn { color: var(--error, #f14c4c); }
+  .cc-level.cc-approaching { color: var(--accent, #3794ff); }
+  .cc-sub { font-size: 12px; font-weight: 500; margin: 2px 0 4px; }
+  .cc-detail { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .cc-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
+  .cc-table th { text-align: left; font-weight: 500; color: var(--muted); padding: 2px 8px 2px 0; width: 9em; }
+  .cc-table td { padding: 2px 0; }
+  .cc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .cc-btn { display: inline-block; padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; text-decoration: none; color: var(--text); background: transparent; }
+  .cc-btn.cc-primary { border-color: var(--accent, #3794ff); color: var(--accent, #3794ff); }
 `;
 
 function renderHtml(
@@ -508,6 +533,18 @@ export function openConversationViewer(
         } finally {
           paSpan.end();
         }
+        const ccSpan = startSpan("csv.conversation.compactionCliff");
+        try {
+          const live = buildLiveCliffEvaluation(sessionId, store, parsed.turns, row);
+          if (live) {
+            const ccHtml = renderCliffCardHtmlForSession(live.card, sessionId);
+            if (ccHtml) cards.push(ccHtml);
+          }
+        } catch {
+          // Compaction-cliff card is best-effort; recommendation only.
+        } finally {
+          ccSpan.end();
+        }
         if (disposed || gen !== generation) return;
         panel.webview.html = renderHtml(
           parsed,
@@ -613,4 +650,77 @@ export function refreshAssumptionViewer(
   if (existing && (existing as any).__refresh) {
     (existing as any).__refresh();
   }
+}
+
+function parseExtrasJson(extrasJson: string | null | undefined): unknown {
+  if (!extrasJson) return null;
+  try {
+    return JSON.parse(extrasJson);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build compaction signals + cliff card for a live session (viewer + emit command).
+ * Returns null when the session row is missing and no turns were provided.
+ */
+export function buildLiveCliffEvaluation(
+  sessionId: string,
+  store?: SessionStore | null,
+  turns?: Array<{ userText?: string | null; assistantText?: string | null }>,
+  rowHint?: {
+    source?: string | null;
+    title?: string | null;
+    project_path?: string | null;
+    model?: string | null;
+    extras_json?: string | null;
+  } | null,
+): { signals: CompactionSignals; card: CliffCard } | null {
+  const row = store?.getById(sessionId) ?? null;
+  const source = (row?.source ?? rowHint?.source ?? "unknown") as string;
+  let turnList = turns;
+  if (!turnList) {
+    try {
+      const jsonlPath = row?.jsonl_path ?? null;
+      const nativeExists = !!jsonlPath && fs.existsSync(jsonlPath);
+      const storeRef = nativeExists ? null : locateStoreTurns(sessionId);
+      const kind = parserKindForSource(row?.source ?? rowHint?.source, jsonlPath);
+      const parsed = storeRef
+        ? turnsToConversation(storeRef, sessionId, row?.title ?? rowHint?.title ?? "")
+        : !jsonlPath
+          ? null
+          : kind === "grok"
+            ? parseGrokConversationAsParsed(jsonlPath)
+            : kind === "codex"
+              ? parseCodexRolloutAsParsed(jsonlPath)
+              : parseConversation(jsonlPath);
+      turnList = parsed?.turns ?? [];
+    } catch {
+      turnList = [];
+    }
+  }
+  const extras = parseExtrasJson(row?.extras_json ?? rowHint?.extras_json ?? null);
+  const events = eventsFromConversationTurns(turnList ?? []);
+  const signals = resolveCompactionSignals({
+    source,
+    extras,
+    events,
+    sessionId,
+    title: row?.title ?? rowHint?.title ?? null,
+    projectPath: row?.project_path ?? rowHint?.project_path ?? null,
+    model: row?.model ?? rowHint?.model ?? null,
+  });
+  const card = evaluateCompactionCliff(signals);
+  return { signals, card };
+}
+
+/** Build the handoff markdown pack for a live session (emit command path). */
+export function buildLiveHandoffPack(
+  sessionId: string,
+  store?: SessionStore | null,
+): string | null {
+  const live = buildLiveCliffEvaluation(sessionId, store);
+  if (!live) return null;
+  return buildHandoffPack({ signals: live.signals, card: live.card });
 }
