@@ -9,8 +9,10 @@
 
 import * as vscode from "vscode";
 import { backoffBudgetMs, formatMs, globalJobTracker } from "./jobs";
+import { PlanningChat } from "./planningChat";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync, unlinkSync } from "node:fs";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
@@ -1607,6 +1609,19 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     }
   };
 
+  // Embedded chat: headless claude in the KB repo root with kp on PATH.
+  // The board reloads after every turn (the agent may have written the store).
+  const chatInv = kpInvocation();
+  const kbRoot = path.dirname(storeRoot());
+  const planningChat = new PlanningChat({
+    cwd: fs.existsSync(kbRoot) ? kbRoot : os.homedir(),
+    env: chatInv.env,
+    model: () => planningConfig().get<string>("chat.model") || "sonnet",
+    log: (l) => log?.appendLine(l),
+    onTurnDone: () => void model.reload(log),
+  });
+  ctx.subscriptions.push(planningChat);
+
   const dashDeps: DashboardDeps = {
     extensionUri: ctx.extensionUri,
     getSnapshot: () => model.get(),
@@ -1623,6 +1638,13 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     },
     getLoadStatus: () => model.getLoadStatus(),
     onLoadStatus: (cb) => model.onStatus.event(cb),
+    chat: {
+      send: (t) => planningChat.send(t),
+      cancel: () => planningChat.cancel(),
+      onEvent: planningChat.onEvent as unknown as import("vscode").Event<unknown>,
+      history: () => planningChat.history(),
+      busy: () => planningChat.busy,
+    },
   };
 
   const loadBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 8);

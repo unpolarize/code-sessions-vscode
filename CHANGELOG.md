@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.54.0 — 2026-09-01
+
+### Planning Dashboard: embedded chat that can modify the plan
+
+New **💬 Chat** button in the dashboard header opens a right-hand chat drawer wired to a headless `claude -p` session running in the KB repo with `kp` on PATH (`src/planningChat.ts`).
+
+- Multi-turn (`--resume`), streamed: assistant text, `⚒ tool` lines, final result with per-session cost; Stop button kills the turn.
+- Primed for planning work: find/create/link ideas via the `kp` CLI, check duplicates before creating, never git commit. Suggestion chips: "Identify all ideas for today", "Find and connect sessions to ideas", "Review recent sessions — which ideas are missing?", "Create ideas from my list, skip duplicates".
+- The board snapshot reloads after every turn; each turn is an Activity job (`planning chat turn`).
+- Config: `codeSessions.planning.chat.model` (default `sonnet`).
+- Pure argv/stream-folding helpers unit-tested; webview boot test covers the drawer living inside the dashboard IIFE.
+
+
 ## 1.53.0 — 2026-09-01
 
 ### Merge: interactive jobs/daemon line × night-build cards

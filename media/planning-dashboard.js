@@ -1121,6 +1121,46 @@ function renderDrawer(o){
   if(o.parent){ const s=el('div','sec'); s.appendChild(el('h4',null,'Parent')); const rl=el('div','reflist'); rl.appendChild(refRow(o.parent,false,()=>openDetail(o.parent.id))); s.appendChild(rl); I.appendChild(s); }
   if(o.linked_sessions&&o.linked_sessions.length){ const s=el('div','sec'); s.appendChild(el('h4',null,'Linked sessions ('+o.linked_sessions.length+')')); const rl=el('div','reflist'); o.linked_sessions.forEach(u=>rl.appendChild(refRow({id:u,title:'▸ open chat — '+u.slice(0,18)+'…'},false,()=>vscode.postMessage({type:'action',action:'openSession',uuid:u})))); s.appendChild(rl); I.appendChild(s); }
 }
+
+// ---- embedded planning chat (host: src/planningChat.ts) --------------------
+(function(){
+  var drawer=$('#chatDrawer'); if(!drawer) return;
+  var msgs=$('#chatMsgs'), input=$('#chatInput'), sendBtn=$('#chatSend'), stopBtn=$('#chatStop'),
+      btn=$('#chatBtn'), closeBtn=$('#chatClose'), costEl=$('#chatCost');
+  var open=false, busy=false, agentEl=null, totalCost=0, hydrated=false;
+  function toggle(v){ open=(v===undefined)?!open:v; drawer.classList.toggle('hidden',!open);
+    if(btn)btn.classList.toggle('on',open);
+    if(open){ if(!hydrated){hydrated=true; vscode.postMessage({type:'chatHistory'});} input.focus(); scrollEnd(); } }
+  function scrollEnd(){ msgs.scrollTop=msgs.scrollHeight; }
+  function el(cls,text){ var d=document.createElement('div'); d.className=cls; d.textContent=text; msgs.appendChild(d); scrollEnd(); return d; }
+  function setBusy(v){ busy=v; sendBtn.disabled=v; stopBtn.style.display=v?'':'none';
+    if(!v){ var st=msgs.querySelector('.chat-status'); if(st)st.remove(); } }
+  function apply(ev){
+    if(!ev||!ev.kind)return;
+    if(ev.kind==='busy'){ setBusy(!!ev.busy); agentEl=null; return; }
+    if(ev.kind==='status'){ var st=msgs.querySelector('.chat-status'); if(st)st.remove(); el('chat-status',ev.text); return; }
+    if(ev.kind==='user'){ el('chat-m user',ev.text); agentEl=null; return; }
+    if(ev.kind==='text'){ el('chat-m agent',ev.text); return; }
+    if(ev.kind==='tool'){ el('chat-tool','⚒ '+ev.name+(ev.detail?' · '+ev.detail:'')); return; }
+    if(ev.kind==='result'){ if(ev.text) el('chat-m result',ev.text);
+      if(typeof ev.costUsd==='number'){ totalCost+=ev.costUsd; costEl.textContent='$'+totalCost.toFixed(2); } return; }
+    if(ev.kind==='error'){ el('chat-m error',ev.message); return; }
+  }
+  function send(text){ var t=(text!==undefined?text:input.value).trim(); if(!t||busy)return;
+    input.value=''; vscode.postMessage({type:'chatSend',text:t}); vscode.postMessage({type:'activity'}); }
+  if(btn)btn.addEventListener('click',function(){toggle();});
+  if(closeBtn)closeBtn.addEventListener('click',function(){toggle(false);});
+  sendBtn.addEventListener('click',function(){send();});
+  stopBtn.addEventListener('click',function(){vscode.postMessage({type:'chatCancel'});});
+  input.addEventListener('keydown',function(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); send(); } });
+  msgs.addEventListener('click',function(e){ var c=e.target.closest('.chat-chip'); if(c){ send(c.textContent); } });
+  window.addEventListener('message',function(e){ var m=e.data||{};
+    if(m.type==='chatEvent'){ apply(m.data); }
+    else if(m.type==='chatHistory'){ (m.data||[]).forEach(apply); setBusy(!!m.busy);
+      if(m.enabled===false){ el('chat-m error','Planning chat is unavailable (claude CLI not found or chat disabled).'); sendBtn.disabled=true; } }
+  });
+})();
+
 vscode.postMessage({type:'ready'});
 
 } catch (e) {

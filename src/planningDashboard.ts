@@ -29,6 +29,14 @@ export interface DashboardDeps {
   /** kp export / parse progress for the load overlay */
   getLoadStatus?: () => unknown;
   onLoadStatus?: (cb: (s: unknown) => void) => vscode.Disposable;
+  /** Embedded planning chat (headless claude with kp access). */
+  chat?: {
+    send: (text: string) => void;
+    cancel: () => void;
+    onEvent: vscode.Event<unknown>;
+    history: () => unknown[];
+    busy: () => boolean;
+  };
 }
 
 function nonce(): string {
@@ -72,6 +80,7 @@ export class DashboardPanel {
     // has focus (a pull that advances HEAD reloads the snapshot via onChange).
     if (this.deps.onSyncStatus) this.disposables.push(this.deps.onSyncStatus((s) => this.post({ type: "syncStatus", data: s })));
     if (this.deps.onLoadStatus) this.disposables.push(this.deps.onLoadStatus((s) => this.post({ type: "loadStatus", data: s })));
+    if (this.deps.chat) this.disposables.push(this.deps.chat.onEvent((ev) => this.post({ type: "chatEvent", data: ev })));
     this.disposables.push(
       this.panel.onDidChangeViewState((e) => {
         if (e.webviewPanel.active) this.deps.noteActivity?.();
@@ -105,6 +114,20 @@ export class DashboardPanel {
         break;
       case "activity":
         this.deps.noteActivity?.();
+        break;
+      case "chatSend":
+        this.deps.chat?.send(String(m.text ?? ""));
+        break;
+      case "chatCancel":
+        this.deps.chat?.cancel();
+        break;
+      case "chatHistory":
+        this.post({
+          type: "chatHistory",
+          data: this.deps.chat?.history() ?? [],
+          busy: this.deps.chat?.busy() ?? false,
+          enabled: !!this.deps.chat,
+        });
         break;
       case "requestSessions":
         this.post({ type: "sessions", data: this.deps.listSessions?.() ?? [] });
@@ -239,9 +262,32 @@ export class DashboardPanel {
   <span id="syncPill" class="syncpill" title="Store sync status — click to sync now">◌ sync</span>
   <span id="counts" class="counts"></span>
   <input id="search" placeholder="Search… (⌘F)" style="display:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:3px 8px;width:180px">
+  <button id="chatBtn" class="ghost" title="Chat with the planning agent — ask it to find, create, link, and review ideas/sessions">💬 Chat</button>
   <button id="captureBtn" class="ghost">＋ New</button>
   <button id="syncBtn" class="ghost" title="Run a sync script (scripts/sync/ — sync.sh is the default)">⟳ Sync</button>
   <button id="refreshBtn" class="ghost" title="Refresh snapshot">⟳</button>
+</div>
+<div id="chatDrawer" class="hidden">
+  <div class="chat-head">
+    <b>Planning chat</b>
+    <span id="chatCost" class="chat-cost"></span>
+    <span class="spacer"></span>
+    <button id="chatStop" class="ghost" style="display:none">■ Stop</button>
+    <button id="chatClose" class="ghost">✕</button>
+  </div>
+  <div id="chatMsgs" class="chat-msgs">
+    <div class="chat-hint">Ask the agent to work the plan — it can read and modify the knowledge base via <code>kp</code>.</div>
+    <div class="chat-chips">
+      <button class="chat-chip">Identify all ideas for today</button>
+      <button class="chat-chip">Find and connect sessions to ideas</button>
+      <button class="chat-chip">Review recent sessions — which ideas are missing?</button>
+      <button class="chat-chip">Create ideas from my list, skip duplicates</button>
+    </div>
+  </div>
+  <div class="chat-inputrow">
+    <textarea id="chatInput" rows="2" placeholder="Ask about or modify the plan… (Enter to send, Shift+Enter newline)"></textarea>
+    <button id="chatSend">Send</button>
+  </div>
 </div>
 <div id="main">
   <div id="board" class="view"></div>
@@ -294,6 +340,33 @@ window.addEventListener('error', function (ev) {
 
 // ---------------------------------------------------------------- styles -----
 const STYLE = `
+/* ---- embedded planning chat drawer ---- */
+#chatDrawer{position:fixed;top:40px;right:0;bottom:0;width:380px;max-width:85vw;z-index:30;display:flex;flex-direction:column;
+  background:var(--vscode-sideBar-background,#1e1e1e);border-left:1px solid var(--vscode-widget-border,#444);}
+#chatDrawer.hidden{display:none}
+.chat-head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--vscode-widget-border,#444)}
+.chat-cost{font-size:11px;opacity:.7}
+.chat-msgs{flex:1;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:8px;font-size:12.5px;line-height:1.5}
+.chat-hint{opacity:.75;font-size:12px}
+.chat-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.chat-chip{font-size:11.5px;padding:4px 8px;border-radius:10px;cursor:pointer;border:1px solid var(--vscode-widget-border,#555);
+  background:var(--vscode-button-secondaryBackground,#333);color:var(--vscode-button-secondaryForeground,#ddd)}
+.chat-chip:hover{filter:brightness(1.15)}
+.chat-m{white-space:pre-wrap;word-break:break-word;border-radius:8px;padding:6px 9px;max-width:96%}
+.chat-m.user{align-self:flex-end;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}
+.chat-m.agent{align-self:flex-start;background:var(--vscode-editorWidget-background,#2a2a2a)}
+.chat-m.result{align-self:flex-start;background:var(--vscode-editorWidget-background,#2a2a2a);border:1px solid var(--vscode-widget-border,#444)}
+.chat-m.error{align-self:flex-start;background:rgba(200,60,60,.18);border:1px solid rgba(200,60,60,.5)}
+.chat-tool{align-self:flex-start;font-size:11px;opacity:.65;font-family:var(--vscode-editor-font-family,monospace)}
+.chat-status{align-self:center;font-size:11px;opacity:.6;font-style:italic}
+.chat-inputrow{display:flex;gap:6px;padding:8px;border-top:1px solid var(--vscode-widget-border,#444)}
+.chat-inputrow textarea{flex:1;resize:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);
+  border:1px solid var(--vscode-input-border,#555);border-radius:6px;padding:6px 8px;font:inherit;font-size:12.5px}
+.chat-inputrow button{border:none;border-radius:6px;padding:0 14px;cursor:pointer;
+  background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}
+.chat-inputrow button:disabled{opacity:.5;cursor:default}
+#chatBtn.on{outline:1px solid var(--vscode-focusBorder,#0e639c)}
+
 :root{ --gap:10px; }
 *{box-sizing:border-box}
 html,body{position:fixed;inset:0;width:100%;height:100%;margin:0}
