@@ -9,11 +9,16 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_THRESHOLDS,
+  EMIT_HANDOFF_COMMAND,
   HANDOFF_PACK_SCHEMA,
   buildHandoffPack,
   countCompactionMarkers,
   evaluateCompactionCliff,
+  eventsFromConversationTurns,
+  renderCliffCardHtml,
+  renderCliffCardHtmlForSession,
   renderCliffCardMarkdown,
+  resolveCompactionSignals,
   signalsFromExtras,
   thresholdsFor,
 } from "../../src/compactionCliff";
@@ -219,5 +224,67 @@ describe("buildHandoffPack", () => {
     expect(pack).toContain("1. a");
     expect(pack).toContain("2. b");
     expect(pack).not.toContain("3. c");
+  });
+});
+
+describe("eventsFromConversationTurns + resolveCompactionSignals", () => {
+  it("counts /compact and compaction phrasing in turn text", () => {
+    const events = eventsFromConversationTurns([
+      { userText: "please /compact", assistantText: "ok" },
+      { userText: "continue", assistantText: "Context compacted successfully" },
+    ]);
+    expect(countCompactionMarkers(events)).toBe(2);
+  });
+
+  it("takes max of extras compactionCount and marker count", () => {
+    const events = eventsFromConversationTurns([
+      { userText: "/compact", assistantText: null },
+    ]);
+    const signals = resolveCompactionSignals({
+      source: "codex",
+      extras: { compactionCount: 2, contextTokensUsed: 200_000, contextWindowTokens: 256_000 },
+      events,
+      sessionId: "s1",
+    });
+    expect(signals.compactionCount).toBe(2);
+    expect(signals.contextTokensUsed).toBe(200_000);
+    const lowExtras = resolveCompactionSignals({
+      source: "codex",
+      extras: { compactionCount: 0 },
+      events,
+    });
+    expect(lowExtras.compactionCount).toBe(1);
+  });
+});
+
+describe("renderCliffCardHtml", () => {
+  it("hides the card when level is ok", () => {
+    const card = evaluateCompactionCliff({ source: "codex", compactionCount: 0 });
+    expect(renderCliffCardHtml(card)).toBe("");
+    expect(renderCliffCardHtmlForSession(card, "sess")).toBe("");
+  });
+
+  it("renders approaching/recommend cards with emit command URI", () => {
+    const approaching = evaluateCompactionCliff({ source: "codex", compactionCount: 1 });
+    const html = renderCliffCardHtmlForSession(approaching, "sess-cliff");
+    expect(html).toContain('class="cc-card"');
+    expect(html).toContain(HANDOFF_PACK_SCHEMA);
+    expect(html).toContain("approaching");
+    expect(html).toContain(`command:${EMIT_HANDOFF_COMMAND}`);
+    expect(html).toContain("sess-cliff");
+    expect(html).toContain("Emit handoff pack");
+
+    const handoff = evaluateCompactionCliff({ source: "codex", compactionCount: 2 });
+    const h2 = renderCliffCardHtmlForSession(handoff, "sess-cliff");
+    expect(h2).toContain("recommend_handoff");
+    expect(h2).toContain('data-level="recommend_handoff"');
+    expect(h2).toContain("claude");
+  });
+
+  it("omits command URI when commandUris is false", () => {
+    const card = evaluateCompactionCliff({ source: "claude", compactionCount: 3 });
+    const html = renderCliffCardHtmlForSession(card, "sess", { commandUris: false });
+    expect(html).toContain("cc-card");
+    expect(html).not.toContain(`command:${EMIT_HANDOFF_COMMAND}`);
   });
 });

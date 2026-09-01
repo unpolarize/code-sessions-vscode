@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.51.0 — 2026-09-01
+
+### Compaction-cliff card + emit-handoff command
+
+Completes the UI slice of ideas/csv-compaction-cliff-cross-backend-handoff-card (core landed in 1.46.0):
+
+- Conversation view injects a **Compaction cliff** card after first paint when the session is `approaching` or `recommend_handoff` (hidden when `ok`; same post-paint slot as Untested writes / Plan assumptions).
+- Signals merge Grok `extras_json` / `signals.json` fields with transcript `/compact` + compaction-phrasing markers (`resolveCompactionSignals`).
+- One-click **Emit handoff pack → target backend** via `codeSessions.emitCompactionHandoff` (`command:` URI, `enableScripts: false`) copies `code-sessions/compaction-cliff-handoff@1` markdown to the clipboard and offers "Open as markdown". Recommendation only — never auto-kills the session.
+- Pure HTML helpers + marker resolve covered by unit tests; README defaults table notes the viewer wiring.
+
 ## 1.50.0 — 2026-08-30
 
 ### Plan-assumption checklist card in conversation viewer

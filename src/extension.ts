@@ -5,6 +5,7 @@ import * as os from "os";
 import * as path from "path";
 import {
   buildLiveAssumptionChecklist,
+  buildLiveHandoffPack,
   loadAssumptionState,
   openConversationViewer,
   refreshAssumptionViewer,
@@ -16,6 +17,7 @@ import {
   formatConstraintsMarkdown,
   type ChecklistItemState,
 } from "./planAssumptions";
+import { EMIT_HANDOFF_COMMAND } from "./compactionCliff";
 import { locateStoreTurns, buildResumeSeed } from "./storeTranscript";
 import { computeWorkspaceRulesDoctor, openInsightsView } from "./insightsView";
 import { exportChecklist } from "./rulesDoctor";
@@ -2686,6 +2688,38 @@ export function activate(ctx: vscode.ExtensionContext) {
           return;
         }
         await vscode.commands.executeCommand("codeSessions.resumeInCodeBuild", row);
+      },
+    ),
+    // Compaction-cliff handoff pack (conversation viewer one-click, enableScripts: false).
+    vscode.commands.registerCommand(
+      EMIT_HANDOFF_COMMAND,
+      async (sessionId: string) => {
+        if (!sessionId || typeof sessionId !== "string") {
+          vscode.window.showWarningMessage(
+            "Emit handoff pack needs a session id (open a conversation and use the card button).",
+          );
+          return;
+        }
+        const pack = buildLiveHandoffPack(sessionId, store);
+        if (!pack) {
+          vscode.window.showWarningMessage(
+            `Could not build a compaction-cliff handoff pack for ${sessionId.slice(0, 8)}.`,
+          );
+          return;
+        }
+        await vscode.env.clipboard.writeText(pack);
+        const open = "Open as markdown";
+        const pick = await vscode.window.showInformationMessage(
+          "Compaction-cliff handoff pack copied (code-sessions/compaction-cliff-handoff@1). Paste into CB / KP cartridge — recommendation only, session not stopped.",
+          open,
+        );
+        if (pick === open) {
+          const doc = await vscode.workspace.openTextDocument({
+            content: pack,
+            language: "markdown",
+          });
+          await vscode.window.showTextDocument(doc, { preview: true });
+        }
       },
     ),
     vscode.commands.registerCommand("codeMemory.openFile", async (absPath: string) => {
