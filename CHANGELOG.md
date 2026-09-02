@@ -4,7 +4,7 @@
 
 ### Planning chat: alias/PATH-proof kp
 
-1.54.2's shim still lost to the user's shell profile (Claude Code's Bash initializes from the profile, and an old `~/bin/kp` shadowed it). The host now passes the shim's **absolute path** into the system prompt (`buildChatSystemPrompt`) and adds a path-scoped allow rule (`Bash(<abs>/kp:*)`), so the agent invokes the exact bundled CLI regardless of aliases or PATH rewrites.
+1.54.2's shim still lost to the user's shell profile (Claude Code's Bash initializes from the profile, and an old `~/bin/kp` shadowed it). The host now passes the shim's **absolute path** into the system prompt (`buildChatSystemPrompt`) and adds a path-scoped allow rule (`Bash(<abs>/kp:*)`), so the agent invokes the exact bundled CLI regardless of aliases or PATH rewrites. The shim moved to `~/.sessions/.daemon/bin/kp` — globalStorage's "Application Support" path contains a space, which broke both quoting and the path-prefix allow rule.
 
 
 ## 1.54.2 — 2026-09-01

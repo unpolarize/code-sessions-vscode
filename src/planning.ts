@@ -1619,7 +1619,10 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   const chatEnv = { ...chatInv.env };
   let chatKpPath: string | undefined;
   try {
-    const shimDir = path.join(ctx.globalStorageUri.fsPath, "bin");
+    // Space-free location: globalStorage lives under "Application Support",
+    // and a space in the path breaks the Bash(<path>:*) prefix match once the
+    // agent quotes the command. .daemon/bin is local-only (not git-synced).
+    const shimDir = path.join(os.homedir(), ".sessions", ".daemon", "bin");
     fs.mkdirSync(shimDir, { recursive: true });
     const shim = path.join(shimDir, "kp");
     fs.writeFileSync(shim, `#!/bin/sh
