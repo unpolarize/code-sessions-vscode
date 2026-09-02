@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.54.2 — 2026-09-01
+
+### Planning chat: real `kp` on the agent's PATH + hard deny rules
+
+Live smoke of 1.54.1 found two gaps: the agent's `kp …` could resolve to an unrelated binary/alias (the extension itself invokes node + cli.js, so `kp` was never guaranteed on PATH), and permissive user/project settings could still allow non-kp Bash despite the allowlist.
+
+- A `kp` shim (`globalStorage/bin/kp` → `exec node <bundled cli.js> "$@"`) is written on activate and prepended to the chat child's PATH — the agent now runs the exact CLI the dashboard uses, and `Bash(kp:*)` matches.
+- `--disallowedTools "Bash(git commit:*),Bash(git push:*),Bash(rm:*),Bash(sudo:*)"` in default mode — deny beats allow, so the no-commit/no-delete guardrails hold even under broad global allows. Not applied under `chat.fullAccess`.
+
+
 ## 1.54.1 — 2026-09-01
 
 ### Planning chat: review fixes + open-chat entry points

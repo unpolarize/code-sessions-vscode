@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHAT_ALLOWED_TOOLS, chatArgv, exitOutcome, foldStreamLine, PLANNING_CHAT_SYSTEM_PROMPT } from "../../src/planningChat";
+import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, chatArgv, exitOutcome, foldStreamLine, PLANNING_CHAT_SYSTEM_PROMPT } from "../../src/planningChat";
 
 describe("planning chat argv", () => {
   it("first turn appends the system prompt, no resume", () => {
@@ -60,12 +60,15 @@ describe("permission gating and exit outcomes (review findings #1/#3)", () => {
     const a = chatArgv({ prompt: "x", model: "sonnet" });
     expect(a).not.toContain("--dangerously-skip-permissions");
     expect(a[a.indexOf("--allowedTools") + 1]).toBe(CHAT_ALLOWED_TOOLS);
+    expect(a[a.indexOf("--disallowedTools") + 1]).toBe(CHAT_DENIED_TOOLS);
+    expect(CHAT_DENIED_TOOLS).toContain("git push");
   });
 
   it("fullAccess opt-in switches to skip-permissions and drops the allowlist", () => {
     const a = chatArgv({ prompt: "x", model: "sonnet", fullAccess: true });
     expect(a).toContain("--dangerously-skip-permissions");
     expect(a).not.toContain("--allowedTools");
+    expect(a).not.toContain("--disallowedTools");
   });
 
   it("a user Stop is a clean finish, not an 'exited with code null' error", () => {

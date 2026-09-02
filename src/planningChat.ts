@@ -38,6 +38,11 @@ export const PLANNING_CHAT_SYSTEM_PROMPT = [
 /** Default enforced tool boundary: the plan is modified through kp only. */
 export const CHAT_ALLOWED_TOOLS = "Bash(kp:*),Read,Grep,Glob,LS";
 
+/** Deny beats allow in Claude Code's permission system — these hold even when
+ * broad user/project settings would otherwise allow Bash. Not applied in
+ * fullAccess mode (skip-permissions bypasses the permission system). */
+export const CHAT_DENIED_TOOLS = "Bash(git commit:*),Bash(git push:*),Bash(rm:*),Bash(sudo:*)";
+
 export function chatArgv(opts: {
   prompt: string;
   model: string;
@@ -61,7 +66,7 @@ export function chatArgv(opts: {
     String(opts.maxTurns ?? 30)
   ];
   if (opts.fullAccess) args.push("--dangerously-skip-permissions");
-  else args.push("--allowedTools", CHAT_ALLOWED_TOOLS);
+  else args.push("--allowedTools", CHAT_ALLOWED_TOOLS, "--disallowedTools", CHAT_DENIED_TOOLS);
   if (opts.systemPrompt) args.push("--append-system-prompt", opts.systemPrompt);
   if (opts.resumeId) args.push("--resume", opts.resumeId);
   return args;

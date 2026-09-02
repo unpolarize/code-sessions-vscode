@@ -1611,11 +1611,27 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
 
   // Embedded chat: headless claude in the KB repo root with kp on PATH.
   // The board reloads after every turn (the agent may have written the store).
+  // `kp` is NOT reliably a binary on the user's PATH (the extension invokes
+  // node + cli.js) — write a shim into globalStorage/bin and prepend it, so
+  // the agent's `kp …` calls hit the same CLI the dashboard uses and the
+  // `Bash(kp:*)` allowlist rule matches.
   const chatInv = kpInvocation();
+  const chatEnv = { ...chatInv.env };
+  try {
+    const shimDir = path.join(ctx.globalStorageUri.fsPath, "bin");
+    fs.mkdirSync(shimDir, { recursive: true });
+    const shim = path.join(shimDir, "kp");
+    fs.writeFileSync(shim, `#!/bin/sh
+exec "${chatInv.node}" "${chatInv.cli}" "$@"
+`, { mode: 0o755 });
+    chatEnv.PATH = `${shimDir}:${chatEnv.PATH || ""}`;
+  } catch (e) {
+    log?.appendLine(`[planning-chat] kp shim failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
   const kbRoot = path.dirname(storeRoot());
   const planningChat = new PlanningChat({
     cwd: fs.existsSync(kbRoot) ? kbRoot : os.homedir(),
-    env: chatInv.env,
+    env: chatEnv,
     model: () => planningConfig().get<string>("chat.model") || "sonnet",
     fullAccess: () => planningConfig().get<boolean>("chat.fullAccess", false) === true,
     log: (l) => log?.appendLine(l),
