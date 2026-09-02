@@ -119,6 +119,11 @@ describe("CB-style runtime controls", () => {
       lane: "idea",
       search: "stale",
     });
+    expect(parseDirective('@@board {"view":"bugs","tag":"unpolarize"}')).toMatchObject({
+      view: "issues",
+      tag: "unpolarize",
+    });
+    expect(parseDirective('@@board {"view":"features"}')).toMatchObject({ view: "issues" });
     const f = new DirectiveFilter();
     const a = f.push("Found 3.\n@@boa");
     expect(a.text).toBe("Found 3.\n");

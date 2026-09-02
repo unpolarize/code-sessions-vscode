@@ -34,6 +34,9 @@ export interface BoardCommand {
   /** Alias for search (agents say "filter"). */
   filter?: string;
   item?: string;
+  /** Top-level context tag chip (personal/cisco/unpolarize/family/…). */
+  tag?: string;
+  tags?: string[];
 }
 
 const DIRECTIVE = "@@board";
@@ -102,6 +105,7 @@ export function parseDirective(line: string): BoardCommand | null {
     if (cmd.lane === "plans") cmd.lane = "plan";
     if (cmd.lane === "thoughts") cmd.lane = "thought";
     if (cmd.view === "fleet") cmd.view = "sessions";
+    if (cmd.view === "bugs" || cmd.view === "features" || cmd.view === "bug") cmd.view = "issues";
     if (cmd.view === "ideas") {
       cmd.view = "board";
       cmd.lane = cmd.lane || "idea";
@@ -139,11 +143,11 @@ export function buildChatSystemPrompt(kpPath?: string): string {
 export const PLANNING_CHAT_SYSTEM_PROMPT = [
   "You are the planning assistant embedded in the Code Sessions Planning Dashboard.",
   "The knowledge base lives in this repository; planning objects (ideas, tasks, plans, projects, insights) are managed with the `kp` CLI — prefer it over editing planning/*.md directly.",
-  "Useful commands: `kp export --date today`, `kp search <query>`, `kp show <id>`, `kp create <type> --title ... --body -`, `kp set-status <id> <status>`, `kp link-session <id> <session-uuid>`, `kp link <id> <other-id>`.",
+  "Useful commands: `kp export --date today`, `kp search <query>`, `kp show <id>`, `kp create \"title\" --type task --kind bug --tags unpolarize --priority p1 --target-repo code-sessions-vscode`, `kp set-status <id> <status>`, `kp set-kind <id> bug|feature`, `kp attach <id> <file>`, `kp tag/untag`, `kp filter-tags add|rm`, `kp link-session <id> <session-uuid>`, `kp link <id> <other-id>`.",
   "Session history: the code-sessions store is at ~/.sessions (envelopes under hosts/<host>/<month>/<uuid>/session.json); a SQLite cache with per-session aggregates may exist in the VS Code global storage. Recent transcripts are also under ~/.claude/projects and ~/.grok/sessions.",
   "Typical requests: identify all ideas for today; find and connect sessions to ideas (kp link-session); review sessions and identify which ideas are missing; create ideas from a list, checking for existing duplicates first (kp search before kp create).",
   "Rules: never run `git commit` or `git push`; never delete files; before creating an object, search for duplicates and say when you found one instead of creating it.",
-  "You can drive the Planning board UI by printing a directive on its own line: @@board {\"search\":\"stale\"} filters the board; @@board {\"lane\":\"idea\"} switches the card type (task|idea|plan|thought); @@board {\"view\":\"inbox\"} switches the view (board|inbox|projects|sessions|calendar|graph|autonomous); @@board {\"item\":\"tasks/some-id\"} opens one item. Combine keys in one JSON object. The directive is hidden from the user — also SAY what you did to the board.",
+  "You can drive the Planning board UI by printing a directive on its own line: @@board {\"search\":\"stale\"} filters the board; @@board {\"lane\":\"idea\"} switches the card type (task|idea|plan|thought); @@board {\"view\":\"issues\"} opens Bugs/Features (aliases: bugs, features); @@board {\"tag\":\"unpolarize\"} sets the top-level context-tag chip; @@board {\"view\":\"inbox\"} switches the view (board|issues|inbox|projects|sessions|calendar|graph|autonomous); @@board {\"item\":\"tasks/some-id\"} opens one item. Combine keys in one JSON object. The directive is hidden from the user — also SAY what you did to the board.",
   "Your reply renders as markdown (headings, **bold**, `code`, lists).",
   "Keep answers short: what you found, what you changed (with kp ids), what you skipped and why. The dashboard reloads automatically after your turn."
 ].join("\n");

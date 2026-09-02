@@ -1063,15 +1063,21 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     due?: string;
     priority?: string;
     body?: string;
+    kind?: string;
+    tags?: string;
+    target_repo?: string;
   }): Promise<void> => {
     const title = (f.title ?? "").trim();
     if (!title) return;
-    const type = f.type || "task";
+    const type = f.type || (f.kind === "feature" ? "idea" : "task");
     const args = ["create", title, "--type", type];
     if (f.status) args.push("--status", f.status);
     if (f.domain) args.push("--domain", f.domain);
     if (f.priority) args.push("--priority", f.priority);
     if (f.due && /^\d{4}-\d{2}-\d{2}$/.test(f.due)) args.push("--due", f.due);
+    if (f.kind) args.push("--kind", f.kind);
+    if (f.tags) args.push("--tags", f.tags);
+    if (f.target_repo) args.push("--target-repo", f.target_repo);
     const r = await runKp(args);
     if (!r.ok) {
       void vscode.window.showWarningMessage(`create failed: ${r.stderr}`);
@@ -1282,6 +1288,84 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       case "openCB":
         void openInCB(id);
         break;
+      case "setKind": {
+        const r = await runKp(["set-kind", id, String(msg.kind || "-")]);
+        if (!r.ok) void vscode.window.showWarningMessage(`set-kind failed: ${r.stderr}`);
+        await model.reload(log);
+        if (id) {
+          const det = await runKp(["show", id]);
+          if (det.ok) {
+            try { DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) }); } catch { /* ignore */ }
+          }
+        }
+        break;
+      }
+      case "setTargetRepo": {
+        const r = await runKp(["set-target-repo", id, String(msg.repo || "-")]);
+        if (!r.ok) void vscode.window.showWarningMessage(`set-target-repo failed: ${r.stderr}`);
+        await model.reload(log);
+        break;
+      }
+      case "tagItem": {
+        const r = await runKp(["tag", id, String(msg.tag || "")]);
+        if (!r.ok) void vscode.window.showWarningMessage(`tag failed: ${r.stderr}`);
+        await model.reload(log);
+        if (id) {
+          const det = await runKp(["show", id]);
+          if (det.ok) {
+            try { DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) }); } catch { /* ignore */ }
+          }
+        }
+        break;
+      }
+      case "untagItem": {
+        const r = await runKp(["untag", id, String(msg.tag || "")]);
+        if (!r.ok) void vscode.window.showWarningMessage(`untag failed: ${r.stderr}`);
+        await model.reload(log);
+        if (id) {
+          const det = await runKp(["show", id]);
+          if (det.ok) {
+            try { DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) }); } catch { /* ignore */ }
+          }
+        }
+        break;
+      }
+      case "addFilterTag": {
+        const name = await vscode.window.showInputBox({ prompt: "New board filter tag", placeHolder: "personal · cisco · unpolarize · family · …" });
+        if (!name) break;
+        const r = await runKp(["filter-tags", "add", name.trim()]);
+        if (!r.ok) void vscode.window.showWarningMessage(`filter-tags add failed: ${r.stderr}`);
+        await model.reload(log);
+        break;
+      }
+      case "removeFilterTag": {
+        const tag = String(msg.tag || "");
+        if (!tag) break;
+        const yes = await vscode.window.showWarningMessage(`Remove “${tag}” from board filters? Items keep the tag.`, { modal: true }, "Remove");
+        if (yes !== "Remove") break;
+        const r = await runKp(["filter-tags", "rm", tag]);
+        if (!r.ok) void vscode.window.showWarningMessage(`filter-tags rm failed: ${r.stderr}`);
+        await model.reload(log);
+        break;
+      }
+      case "attachImage": {
+        const picked = await vscode.window.showOpenDialog({
+          canSelectMany: true,
+          filters: { Images: ["png", "jpg", "jpeg", "gif", "webp"] },
+          title: "Attach screenshot to planning item",
+        });
+        if (!picked?.length) break;
+        const r = await runKp(["attach", id, ...picked.map((u) => u.fsPath)]);
+        if (!r.ok) void vscode.window.showWarningMessage(`attach failed: ${r.stderr}`);
+        await model.reload(log);
+        if (id) {
+          const det = await runKp(["show", id]);
+          if (det.ok) {
+            try { DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) }); } catch { /* ignore */ }
+          }
+        }
+        break;
+      }
       case "openSession":
         // default: open the session's conversation ("insides"), not the trajectory graph
         void vscode.commands.executeCommand("codeSessions.viewConversation", {

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.57.0 — 2026-09-02
+
+### Planning: Bugs/Features view, context-tag chips, screenshots
+
+- New **Bugs / Features** tab: open `issue_kind` bug|feature items with priority, target repo, implementing session, and **Launch** (Code Build) / **Open session**.
+- Top-level **tag chips** (default `personal` / `cisco` / `unpolarize` / `family`) filter the board, inbox, projects, and issues. ＋ adds a chip (`kp filter-tags add`); × removes it from the vocab (items keep the tag).
+- Item drawer: kind, tags, screenshot gallery, **Attach screenshot** (`kp attach` → `planning/media/<id>/`).
+- New-item editor: kind, tool/repo, tag chips.
+- Planning chat `@@board` aliases: `bugs`/`features` → issues view; `tag` sets the chip filter.
+- Needs KP 0.6.0 (`--kind`, `set-kind`, `attach`, `filter-tags`).
+
 ## 1.56.1 — 2026-08-29
 
 ### Planning chat: readable replies + agent can drive the board

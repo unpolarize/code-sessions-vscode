@@ -7,6 +7,8 @@
 //
 // The host (planning.ts) injects the data/runner deps so this file stays UI-only.
 
+import * as os from "node:os";
+import * as path from "node:path";
 import * as vscode from "vscode";
 
 export interface DashboardDeps {
@@ -76,10 +78,12 @@ export class DashboardPanel {
 
   private constructor(private deps: DashboardDeps, private initialView?: string, private initialItem?: string) {
     const mediaRoot = vscode.Uri.joinPath(deps.extensionUri, "media");
+    const snap = deps.getSnapshot() as { root?: string } | null;
+    const storeRoot = snap?.root || path.join(os.homedir(), "docs", "planning");
     this.panel = vscode.window.createWebviewPanel("codePlanningDashboard", "Planning Dashboard", vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
-      localResourceRoots: [mediaRoot],
+      localResourceRoots: [mediaRoot, vscode.Uri.file(storeRoot)],
     });
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     this.panel.webview.onDidReceiveMessage((m) => void this.onMessage(m), null, this.disposables);
@@ -152,7 +156,7 @@ export class DashboardPanel {
         const res = await this.deps.runKp(["show", String(m.id)]);
         if (res.ok) {
           try {
-            this.panel.webview.postMessage({ type: "detail", data: JSON.parse(res.stdout) });
+            this.panel.webview.postMessage({ type: "detail", data: this.rewriteMedia(JSON.parse(res.stdout)) });
           } catch {
             /* ignore */
           }
@@ -201,7 +205,27 @@ export class DashboardPanel {
   }
 
   post(msg: unknown): void {
+    const m = msg as { type?: string; data?: unknown };
+    if (m && m.type === "detail" && m.data) {
+      this.panel.webview.postMessage({ ...m, data: this.rewriteMedia(m.data) });
+      return;
+    }
     this.panel.webview.postMessage(msg);
+  }
+
+  /** Turn store-relative `](media/…)` markdown into webview URIs so screenshots render. */
+  private rewriteMedia(data: unknown): unknown {
+    if (!data || typeof data !== "object") return data;
+    const rec = data as { body?: unknown };
+    const body = typeof rec.body === "string" ? rec.body : "";
+    if (!body.includes("](media/")) return data;
+    const snap = this.deps.getSnapshot() as { root?: string } | null;
+    const root = snap?.root || path.join(os.homedir(), "docs", "planning");
+    const next = body.replace(/!\[([^\]]*)\]\((media\/[^)]+)\)/g, (_m, alt, rel) => {
+      const uri = this.panel.webview.asWebviewUri(vscode.Uri.file(path.join(root, String(rel))));
+      return `![${alt}](${uri.toString()})`;
+    });
+    return { ...(data as object), body: next };
   }
 
   private dispose(): void {
@@ -218,7 +242,7 @@ export class DashboardPanel {
     // script-src must allow the vscode-webview: origin so <script src> loads.
     // The dashboard JS is an external file — never interpolate it through a
     // TS template (that turns '\n' into a real newline and document.write throws).
-    const csp = `default-src 'none'; style-src 'unsafe-inline' ${cs}; script-src 'nonce-${n}' ${cs}; img-src data:;`;
+    const csp = `default-src 'none'; style-src 'unsafe-inline' ${cs}; script-src 'nonce-${n}' ${cs}; img-src data: ${cs} https:;`;
     return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>${STYLE}</style></head>
@@ -227,6 +251,7 @@ export class DashboardPanel {
   <span class="brand">◧ Planning</span>
   <div class="seg" id="viewSeg">
     <button data-view="board" class="on">Board</button>
+    <button data-view="issues">Bugs / Features</button>
     <button data-view="inbox">Inbox</button>
     <button data-view="autonomous">🤖 Auto</button>
     <button data-view="projects">Projects</button>
@@ -276,6 +301,7 @@ export class DashboardPanel {
   <button id="syncBtn" class="ghost" title="Run a sync script (scripts/sync/ — sync.sh is the default)">⟳ Sync</button>
   <button id="refreshBtn" class="ghost" title="Refresh snapshot">⟳</button>
 </div>
+<div id="tagBar"></div>
 <div id="chatDrawer" class="hidden">
   <div class="chat-head">
     <b>Planning chat</b>
@@ -309,6 +335,7 @@ export class DashboardPanel {
 </div>
 <div id="main">
   <div id="board" class="view"></div>
+  <div id="issues" class="view hidden"></div>
   <div id="inbox" class="view hidden"></div>
   <div id="autonomous" class="view hidden"></div>
   <div id="projects" class="view hidden"></div>
@@ -429,7 +456,25 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);backgr
 .resactions .primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:var(--vscode-button-background)}
 /* Scrollable content views: fill #main (absolute inset:0) and scroll inside.
    Without overflow + min-height chain, minimized panes clip sessions/lists. */
-#autonomous,#sessions,#social,#inbox,#projects,#calendar{padding:16px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;min-height:0}
+#autonomous,#sessions,#social,#inbox,#projects,#calendar,#issues{padding:16px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;min-height:0}
+#tagBar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--vscode-widget-border);flex:0 0 auto;min-width:0}
+#tagBar .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.4px;opacity:.55;margin-right:4px}
+#tagBar .tchip{font-size:11px;padding:2px 8px;border-radius:11px;border:1px solid var(--vscode-widget-border);background:transparent;color:var(--vscode-foreground);cursor:pointer;display:inline-flex;gap:5px;align-items:center}
+#tagBar .tchip:hover{background:var(--vscode-toolbar-hoverBackground)}
+#tagBar .tchip.on{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:var(--vscode-button-background)}
+#tagBar .tchip .x{opacity:.6;font-size:12px;line-height:1}
+#tagBar .tchip .x:hover{opacity:1}
+.issuelist{display:flex;flex-direction:column;gap:8px;max-width:980px}
+.issuecard{background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-widget-border);border-radius:8px;padding:10px 12px;cursor:pointer}
+.issuecard:hover{border-color:var(--vscode-focusBorder)}
+.issuecard .ih{display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap}
+.issuecard .ct{font-weight:600;font-size:13px}
+.issuecard .im{display:flex;gap:8px;flex-wrap:wrap;opacity:.75;font-size:11px;margin-top:5px;align-items:center}
+.issuecard .iacts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.kindbug{background:#d16969;color:#fff;padding:1px 7px;border-radius:9px;font-size:10px;font-weight:600}
+.kindfeat{background:#4ec9b0;color:#1e1e1e;padding:1px 7px;border-radius:9px;font-size:10px;font-weight:600}
+.shotwrap{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.shotwrap img{max-width:100%;max-height:220px;border-radius:6px;border:1px solid var(--vscode-widget-border)}
 #sessions.fleet-shell{padding:0;overflow:hidden;display:flex;flex-direction:column}
 #autonomous{max-width:900px}
 .autorow{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px}
