@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.56.0 — 2026-09-01
+
+### Rename everywhere + jump from a session to its planning item
+
+- **Rename propagates to all surfaces:** native file (as before) + CSV cache + CB (`setSessionTitle`, now native-id aware + store-first in CB 0.23.0) + the **daemon envelope** (`session.patchMeta {title}`), so `~/.sessions`-backed views (KP dashboard Fleet, other hosts) show the same name.
+- **Show in Planning board:** session context menu → jumps to the Planning board and opens the linked idea/task (reverse lookup of `linked_sessions` across the planning store; quickpick when several; offers the board when none).
+- **Planning chat: full access is the default** (`codeSessions.planning.chat.fullAccess` now defaults true; the access picker pre-selects it). Set it to false to restore the enforced kp-only boundary.
+
+
 ## 1.55.0 — 2026-09-01
 
 ### Planning chat: CB-style runtime controls (provider · model · effort · access)

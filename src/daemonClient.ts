@@ -117,3 +117,14 @@ export async function refreshDaemonTasks(): Promise<DaemonTaskList | null> {
   }
   return cachedTasks;
 }
+
+/** Best-effort envelope title patch so KP/Fleet views (daemon session.list)
+ * show the same name CSV/CB do after a rename. */
+export async function patchDaemonSessionTitle(id: string, title: string): Promise<boolean> {
+  try {
+    await rpcCall("session.patchMeta", { id, patch: { title } });
+    return true;
+  } catch {
+    return false;
+  }
+}

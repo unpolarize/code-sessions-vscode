@@ -32,7 +32,7 @@ import { syncToStore } from "./jsonlIndexer";
 import { locateGrokChatHistory, syncGrokToStore } from "./grokIndexer";
 import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
-import { cachedDaemonTasks, daemonIsUp, refreshDaemonSessions, refreshDaemonTasks } from "./daemonClient";
+import { cachedDaemonTasks, daemonIsUp, patchDaemonSessionTitle, refreshDaemonSessions, refreshDaemonTasks } from "./daemonClient";
 import { startEventLoopLagMonitor } from "./eventLoopLag";
 import { IndexCoalesce } from "./indexCoalesce";
 import { newerWriterActive } from "./writerGuard";
@@ -3665,11 +3665,19 @@ export function activate(ctx: vscode.ExtensionContext) {
       try {
         await vscode.commands.executeCommand("codeBuild.setSessionTitle", { id: row.session, title: next });
       } catch { /* CB not installed or different id */ }
+      // Daemon envelope (~/.sessions) — KP dashboard / Fleet read from there.
+      void patchDaemonSessionTitle(row.session, next);
       sessions.refresh();
       vscode.window.setStatusBarMessage(
         `Renamed session — the native ${row.source === "grok" ? "grok" : "claude"} CLI will show the new title next time you resume.`,
         5000,
       );
+    }),
+
+    vscode.commands.registerCommand("codeSessions.showInPlanning", async (arg: SessionRow | SessionItem | undefined) => {
+      const row = unwrapRow(arg);
+      if (!row?.session) return;
+      await vscode.commands.executeCommand("codePlanning.showForSession", row.session, row.title ?? "");
     }),
 
     vscode.commands.registerCommand("codeKbChanges.openFile", (c: FileChange) => openChangedFile(c)),

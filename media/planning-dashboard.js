@@ -1177,7 +1177,8 @@ function renderDrawer(o){
     else if(m.type==='chatHistory'){ (m.data||[]).forEach(apply); setBusy(!!m.busy);
       var ri=m.runtime||{}; fullAllowed=!!ri.fullAllowed; initControls(ri.defaultModel);
       if(selAccess){ var fo=selAccess.querySelector('option[value="full"]');
-        if(fo){ fo.disabled=!fullAllowed; fo.textContent=fullAllowed?'full access':'full access (locked — enable chat.fullAccess)'; } }
+        if(fo){ fo.disabled=!fullAllowed; fo.textContent=fullAllowed?'full access':'full access (locked — enable chat.fullAccess)'; }
+        if(fullAllowed) selAccess.value='full'; }
       if(m.enabled===false){ el('chat-m error','Planning chat is unavailable (claude CLI not found or chat disabled).'); sendBtn.disabled=true; } }
   });
   // Hydrate at script boot (not first open): a reopened panel must know the

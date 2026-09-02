@@ -1640,7 +1640,7 @@ exec "${chatInv.node}" "${chatInv.cli}" "$@"
     cwd: fs.existsSync(kbRoot) ? kbRoot : os.homedir(),
     env: chatEnv,
     model: () => planningConfig().get<string>("chat.model") || "sonnet",
-    fullAccess: () => planningConfig().get<boolean>("chat.fullAccess", false) === true,
+    fullAccess: () => planningConfig().get<boolean>("chat.fullAccess", true) === true,
     kpPath: chatKpPath,
     log: (l) => log?.appendLine(l),
     onTurnDone: () => void model.reload(log),
@@ -1666,7 +1666,7 @@ exec "${chatInv.node}" "${chatInv.cli}" "$@"
     chat: {
       send: (t, runtime) => planningChat.send(t, runtime as never),
       runtimeInfo: () => ({
-        fullAllowed: planningConfig().get<boolean>("chat.fullAccess", false) === true,
+        fullAllowed: planningConfig().get<boolean>("chat.fullAccess", true) === true,
         defaultModel: planningConfig().get<string>("chat.model") || "default",
       }),
       cancel: () => planningChat.cancel(),
@@ -1763,6 +1763,40 @@ exec "${chatInv.node}" "${chatInv.cli}" "$@"
         if (p === "Preview session") void vscode.commands.executeCommand("codeSessions.showTrajectory", uuid);
       }
     }),
+    vscode.commands.registerCommand("codePlanning.showForSession", async (uuid: string, title?: string) => {
+      if (!uuid) return;
+      // Reverse lookup: linked_sessions live in the objects' markdown
+      // frontmatter — a store-wide grep is exact and fast (few MB).
+      const root = storeRoot();
+      const ids = await new Promise<string[]>((resolve) => {
+        execFile("grep", ["-rl", "--include=*.md", uuid, root], { timeout: 15_000 }, (err, stdout) => {
+          if (err && !stdout) return resolve([]);
+          const out: string[] = [];
+          for (const f of stdout.split("\n")) {
+            if (!f.trim() || !f.endsWith(".md")) continue;
+            const rel = path.relative(root, f).replace(/\.md$/, "");
+            if (!rel.startsWith("..")) out.push(rel);
+          }
+          resolve(out);
+        });
+      });
+      if (ids.length === 0) {
+        const pick = await vscode.window.showInformationMessage(
+          `No planning item is linked to session ${uuid.slice(0, 8)}${title ? ` (“${title.slice(0, 40)}”)` : ""}.`,
+          "Open board",
+        );
+        if (pick === "Open board") DashboardPanel.show(dashDeps, "board");
+        return;
+      }
+      let target = ids[0];
+      if (ids.length > 1) {
+        const pick = await vscode.window.showQuickPick(ids, { title: "Linked planning items — jump to" });
+        if (!pick) return;
+        target = pick;
+      }
+      DashboardPanel.show(dashDeps, "board", target);
+    }),
+
     vscode.commands.registerCommand("codePlanning.startWork", async (item) => {
       const id = idOf(item);
       const abs = item instanceof PlanningItem ? item.absFsPath : undefined;
