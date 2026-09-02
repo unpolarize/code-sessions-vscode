@@ -372,7 +372,12 @@ const STYLE = `
 .chat-chip:hover{filter:brightness(1.15)}
 .chat-m{white-space:pre-wrap;word-break:break-word;border-radius:8px;padding:6px 9px;max-width:96%}
 .chat-m.user{align-self:flex-end;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}
-.chat-m.agent{align-self:flex-start;background:var(--vscode-editorWidget-background,#2a2a2a)}
+.chat-m.agent{align-self:flex-start;background:var(--vscode-editorWidget-background,#2a2a2a);white-space:normal}
+.chat-m.agent h2,.chat-m.agent h3{font-size:13px;margin:8px 0 4px;font-weight:600}
+.chat-m.agent ul{margin:4px 0 4px 18px;padding:0}
+.chat-m.agent li{margin:2px 0}
+.chat-m.agent code{font-size:11.5px;font-family:var(--vscode-editor-font-family,monospace)}
+.chat-m.agent a{color:var(--vscode-textLink-foreground,#4fc1ff)}
 .chat-m.result{align-self:flex-start;background:var(--vscode-editorWidget-background,#2a2a2a);border:1px solid var(--vscode-widget-border,#444)}
 .chat-m.error{align-self:flex-start;background:rgba(200,60,60,.18);border:1px solid rgba(200,60,60,.5)}
 .chat-tool{align-self:flex-start;font-size:11px;opacity:.65;font-family:var(--vscode-editor-font-family,monospace)}

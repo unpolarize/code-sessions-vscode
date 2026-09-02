@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.56.1 — 2026-08-29
+
+### Planning chat: readable replies + agent can drive the board
+
+- Agent stream chunks **coalesce** into one markdown bubble (`**bold**`, lists, ``code``) instead of a new plain-text div per delta. Duplicate `result` text is no longer shown.
+- `@@board {…}` is actually applied: `view` (board/inbox/projects/sessions/…), `lane` (task/idea/plan/thought), `search`/`filter`, `item`. Hidden from the reply. The agent can filter tasks and switch to Ideas.
+
 ## 1.56.0 — 2026-09-01
 
 ### Rename everywhere + jump from a session to its planning item

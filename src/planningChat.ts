@@ -16,13 +16,102 @@ export type ChatEvent =
   // seq is stamped on transcript-worthy events so a re-hydrating webview can
   // dedupe live events it already painted (review finding #2).
   | { kind: "status"; text: string }
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; append?: boolean }
+  | { kind: "board"; cmd: BoardCommand }
   | { kind: "tool"; name: string; detail?: string }
   | { kind: "result"; text: string; costUsd?: number; isError?: boolean }
   | { kind: "error"; message: string }
   | { kind: "busy"; busy: boolean };
 
 export type SeqChatEvent = ChatEvent & { seq?: number };
+
+/** Board control the agent can request by printing `@@board {json}` on its
+ * own line. Stripped from the visible reply and routed to the dashboard. */
+export interface BoardCommand {
+  view?: string;
+  lane?: string;
+  search?: string;
+  /** Alias for search (agents say "filter"). */
+  filter?: string;
+  item?: string;
+}
+
+const DIRECTIVE = "@@board";
+
+/**
+ * Streaming filter: passes normal text through, swallows complete
+ * `@@board {json}` lines into commands. Chunk boundaries can split the
+ * marker or the JSON (grok streams word-level deltas), so a possible
+ * marker prefix / an open directive line is held until resolvable.
+ */
+export class DirectiveFilter {
+  private buf = "";
+
+  push(delta: string): { text: string; cmds: BoardCommand[] } {
+    this.buf += delta;
+    let out = "";
+    const cmds: BoardCommand[] = [];
+    for (;;) {
+      const idx = this.buf.indexOf(DIRECTIVE);
+      if (idx < 0) {
+        // Emit everything except a tail that could still become the marker.
+        let keep = 0;
+        for (let k = Math.min(DIRECTIVE.length - 1, this.buf.length); k > 0; k--) {
+          if (this.buf.endsWith(DIRECTIVE.slice(0, k))) {
+            keep = k;
+            break;
+          }
+        }
+        out += this.buf.slice(0, this.buf.length - keep);
+        this.buf = this.buf.slice(this.buf.length - keep);
+        break;
+      }
+      out += this.buf.slice(0, idx);
+      this.buf = this.buf.slice(idx);
+      const nl = this.buf.indexOf("\n");
+      if (nl < 0) break; // directive line still streaming
+      const line = this.buf.slice(0, nl);
+      this.buf = this.buf.slice(nl + 1);
+      const cmd = parseDirective(line);
+      if (cmd) cmds.push(cmd);
+      else out += line + "\n"; // malformed — show it rather than eat it
+    }
+    return { text: out, cmds };
+  }
+
+  flush(): { text: string; cmds: BoardCommand[] } {
+    const rest = this.buf;
+    this.buf = "";
+    if (rest.startsWith(DIRECTIVE)) {
+      const cmd = parseDirective(rest);
+      if (cmd) return { text: "", cmds: [cmd] };
+    }
+    return { text: rest, cmds: [] };
+  }
+}
+
+export function parseDirective(line: string): BoardCommand | null {
+  const j = line.indexOf("{");
+  if (j < 0) return null;
+  try {
+    const cmd = JSON.parse(line.slice(j)) as BoardCommand;
+    if (!cmd || typeof cmd !== "object") return null;
+    if (cmd.filter && !cmd.search) cmd.search = cmd.filter;
+    if (cmd.lane === "ideas") cmd.lane = "idea";
+    if (cmd.lane === "tasks") cmd.lane = "task";
+    if (cmd.lane === "plans") cmd.lane = "plan";
+    if (cmd.lane === "thoughts") cmd.lane = "thought";
+    if (cmd.view === "fleet") cmd.view = "sessions";
+    if (cmd.view === "ideas") {
+      cmd.view = "board";
+      cmd.lane = cmd.lane || "idea";
+    }
+    return cmd;
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
 
 /** CB-style runtime controls, chosen per message in the drawer. */
 export interface ChatRuntime {
@@ -54,6 +143,8 @@ export const PLANNING_CHAT_SYSTEM_PROMPT = [
   "Session history: the code-sessions store is at ~/.sessions (envelopes under hosts/<host>/<month>/<uuid>/session.json); a SQLite cache with per-session aggregates may exist in the VS Code global storage. Recent transcripts are also under ~/.claude/projects and ~/.grok/sessions.",
   "Typical requests: identify all ideas for today; find and connect sessions to ideas (kp link-session); review sessions and identify which ideas are missing; create ideas from a list, checking for existing duplicates first (kp search before kp create).",
   "Rules: never run `git commit` or `git push`; never delete files; before creating an object, search for duplicates and say when you found one instead of creating it.",
+  "You can drive the Planning board UI by printing a directive on its own line: @@board {\"search\":\"stale\"} filters the board; @@board {\"lane\":\"idea\"} switches the card type (task|idea|plan|thought); @@board {\"view\":\"inbox\"} switches the view (board|inbox|projects|sessions|calendar|graph|autonomous); @@board {\"item\":\"tasks/some-id\"} opens one item. Combine keys in one JSON object. The directive is hidden from the user — also SAY what you did to the board.",
+  "Your reply renders as markdown (headings, **bold**, `code`, lists).",
   "Keep answers short: what you found, what you changed (with kp ids), what you skipped and why. The dashboard reloads automatically after your turn."
 ].join("\n");
 
@@ -233,6 +324,7 @@ export class PlanningChat {
   private lastProvider: ChatRuntime["provider"] | undefined;
   private cancelled = false;
   private seq = 0;
+  private dir = new DirectiveFilter();
 
   constructor(private readonly deps: PlanningChatDeps) {}
 
@@ -246,12 +338,19 @@ export class PlanningChat {
 
   private emit(ev: ChatEvent): void {
     let out: SeqChatEvent = ev;
-    if (ev.kind !== "busy" && ev.kind !== "status") {
+    // Board commands are live-only — replaying history must not yank the UI.
+    if (ev.kind !== "busy" && ev.kind !== "status" && ev.kind !== "board") {
       out = { ...ev, seq: ++this.seq };
       this.transcript.push(out);
       if (this.transcript.length > 400) this.transcript.splice(0, this.transcript.length - 400);
     }
     this.emitter.fire(out);
+  }
+
+  private emitTextThroughFilter(delta: string): void {
+    const { text, cmds } = this.dir.push(delta);
+    for (const cmd of cmds) this.emit({ kind: "board", cmd });
+    if (text) this.emit({ kind: "text", text, append: true });
   }
 
   send(text: string, runtime?: Partial<ChatRuntime>): void {
@@ -287,6 +386,7 @@ export class PlanningChat {
     globalJobTracker()?.start("planning-chat", `planning chat (${rt.provider}${rt.model !== "default" ? " " + rt.model : ""})`);
 
     this.cancelled = false;
+    this.dir = new DirectiveFilter();
     const systemPrompt = this.primed[rt.provider] ? undefined : buildChatSystemPrompt(this.deps.kpPath);
     const args =
       rt.provider === "grok"
@@ -323,7 +423,16 @@ export class PlanningChat {
         const { events, sessionId } = rt.provider === "grok" ? foldGrokStreamLine(line) : foldStreamLine(line);
         if (sessionId) this.resumeIds[rt.provider] = sessionId;
         for (const ev of events) {
-          if (ev.kind === "result") sawResult = true;
+          if (ev.kind === "text") {
+            this.emitTextThroughFilter(ev.text);
+            continue;
+          }
+          if (ev.kind === "result") {
+            sawResult = true;
+            const flushed = this.dir.flush();
+            for (const cmd of flushed.cmds) this.emit({ kind: "board", cmd });
+            if (flushed.text) this.emit({ kind: "text", text: flushed.text, append: true });
+          }
           this.emit(ev);
         }
       }
@@ -353,6 +462,9 @@ export class PlanningChat {
 
   private finishTurn(outcome: { error?: string }): void {
     this.child = undefined;
+    const flushed = this.dir.flush();
+    for (const cmd of flushed.cmds) this.emit({ kind: "board", cmd });
+    if (flushed.text) this.emit({ kind: "text", text: flushed.text, append: true });
     if (outcome.error) this.emit({ kind: "error", message: outcome.error });
     globalJobTracker()?.finish("planning-chat", outcome.error ? { error: outcome.error } : { detail: "turn done" });
     this.emit({ kind: "busy", busy: false });

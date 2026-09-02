@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, buildChatSystemPrompt, chatArgv, exitOutcome, foldGrokStreamLine, foldStreamLine, grokChatArgv, PLANNING_CHAT_SYSTEM_PROMPT } from "../../src/planningChat";
+import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, buildChatSystemPrompt, chatArgv, DirectiveFilter, exitOutcome, foldGrokStreamLine, foldStreamLine, grokChatArgv, parseDirective, PLANNING_CHAT_SYSTEM_PROMPT } from "../../src/planningChat";
 
 describe("planning chat argv", () => {
   it("first turn appends the system prompt, no resume", () => {
@@ -111,6 +111,22 @@ describe("CB-style runtime controls", () => {
     expect(a).toContain("--always-approve");
     expect(a).not.toContain("--allow");
     expect(a).not.toContain("--deny");
+  });
+
+  it("@@board directive: parse aliases and strip from streamed text", () => {
+    expect(parseDirective('@@board {"view":"fleet","lane":"ideas","filter":"stale"}')).toMatchObject({
+      view: "sessions",
+      lane: "idea",
+      search: "stale",
+    });
+    const f = new DirectiveFilter();
+    const a = f.push("Found 3.\n@@boa");
+    expect(a.text).toBe("Found 3.\n");
+    expect(a.cmds).toEqual([]);
+    const b = f.push('rd {"lane":"idea","search":"onboard"}\nDone.');
+    expect(b.cmds).toEqual([{ lane: "idea", search: "onboard" }]);
+    expect(b.text).toContain("Done.");
+    expect(b.text).not.toContain("@@board");
   });
 
   it("folds grok streaming-json: text, end→result+sessionId, thought ignored", () => {

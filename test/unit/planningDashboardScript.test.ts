@@ -17,4 +17,11 @@ describe("planning-dashboard.js", () => {
   it("does not close the HTML script tag", () => {
     expect(src.toLowerCase()).not.toContain("</script");
   });
+
+  it("coalesces agent chat and applies @@board commands", () => {
+    expect(src).toContain("paintAgent");
+    expect(src).toContain("applyBoardCmd");
+    expect(src).toContain("ev.kind==='board'");
+    expect(src).toContain("mdChat");
+  });
 });
