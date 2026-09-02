@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.54.1 — 2026-09-01
+
+### Planning chat: review fixes + open-chat entry points
+
+Fixes from the 1.54.0 code review:
+
+- **Permissions gated (was: unconditional `--dangerously-skip-permissions`).** Default is now an *enforced* allowlist — `Bash(kp:*),Read,Grep,Glob,LS` — so the agent can modify the plan only through the `kp` CLI and can otherwise only read. Opt in to full access with `codeSessions.planning.chat.fullAccess`.
+- **Stop is clean.** A user cancel no longer surfaces "agent exited with code null" or marks the Activity job failed (`exitOutcome` is pure + tested).
+- **No duplicated transcript.** Transcript events carry a `seq`; the webview dedupes live events against the history replay, and hydrates at script boot instead of first drawer open, so closing/reopening the dashboard mid-turn paints each bubble once.
+
+New entry points: command **Planning: Open Chat** (`codePlanning.openChat`) opens the dashboard with the drawer already open; the item detail drawer gains a **💬** button that opens the chat pre-filled with "About <id> — ".
+
+
 ## 1.54.0 — 2026-09-01
 
 ### Planning Dashboard: embedded chat that can modify the plan

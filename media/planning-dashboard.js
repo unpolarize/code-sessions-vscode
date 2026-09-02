@@ -1001,7 +1001,7 @@ function openCreateDrawer(prefill){
   prefill=prefill||{};
   $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden');
   const I=$('#drawerInner'); I.innerHTML='';
-  const head=el('div','dh'); head.appendChild(el('h2',null,'New item')); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
+  const head=el('div','dh'); head.appendChild(el('h2',null,'New item')); const ask=el('button','dclose','💬'); ask.title='Ask the planning chat about this item'; ask.addEventListener('click',function(){ closeDrawer(); if(window.__openPlanningChatWith)window.__openPlanningChatWith('About '+o.id+' — '); }); head.appendChild(ask); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
   const STAT={task:['inbox','today','in_progress','done','deferred','outdated'],idea:['capture','refine','accepted','parked','done'],plan:['plan','prototype','implement','validate','done','parked'],thought:['new','kept','converted','archived']};
   // tasks default to 'today' (new items are things to do now); ideas/plans/thoughts keep theirs
   const DEF={task:'today',idea:'capture',plan:'plan',thought:'new'};
@@ -1127,16 +1127,19 @@ function renderDrawer(o){
   var drawer=$('#chatDrawer'); if(!drawer) return;
   var msgs=$('#chatMsgs'), input=$('#chatInput'), sendBtn=$('#chatSend'), stopBtn=$('#chatStop'),
       btn=$('#chatBtn'), closeBtn=$('#chatClose'), costEl=$('#chatCost');
-  var open=false, busy=false, agentEl=null, totalCost=0, hydrated=false;
+  var open=false, busy=false, agentEl=null, totalCost=0, lastSeq=0;
   function toggle(v){ open=(v===undefined)?!open:v; drawer.classList.toggle('hidden',!open);
     if(btn)btn.classList.toggle('on',open);
-    if(open){ if(!hydrated){hydrated=true; vscode.postMessage({type:'chatHistory'});} input.focus(); scrollEnd(); } }
+    if(open){ input.focus(); scrollEnd(); } }
   function scrollEnd(){ msgs.scrollTop=msgs.scrollHeight; }
   function el(cls,text){ var d=document.createElement('div'); d.className=cls; d.textContent=text; msgs.appendChild(d); scrollEnd(); return d; }
   function setBusy(v){ busy=v; sendBtn.disabled=v; stopBtn.style.display=v?'':'none';
     if(!v){ var st=msgs.querySelector('.chat-status'); if(st)st.remove(); } }
   function apply(ev){
     if(!ev||!ev.kind)return;
+    // Transcript events carry seq; skip anything already painted (a
+    // re-opened panel gets live events AND the full history replay).
+    if(typeof ev.seq==='number'){ if(ev.seq<=lastSeq)return; lastSeq=ev.seq; }
     if(ev.kind==='busy'){ setBusy(!!ev.busy); agentEl=null; return; }
     if(ev.kind==='status'){ var st=msgs.querySelector('.chat-status'); if(st)st.remove(); el('chat-status',ev.text); return; }
     if(ev.kind==='user'){ el('chat-m user',ev.text); agentEl=null; return; }
@@ -1156,9 +1159,15 @@ function renderDrawer(o){
   msgs.addEventListener('click',function(e){ var c=e.target.closest('.chat-chip'); if(c){ send(c.textContent); } });
   window.addEventListener('message',function(e){ var m=e.data||{};
     if(m.type==='chatEvent'){ apply(m.data); }
+    else if(m.type==='openChat'){ toggle(true); }
+    else if(m.type==='chatAsk'){ toggle(true); input.value=m.text||''; input.focus(); }
     else if(m.type==='chatHistory'){ (m.data||[]).forEach(apply); setBusy(!!m.busy);
       if(m.enabled===false){ el('chat-m error','Planning chat is unavailable (claude CLI not found or chat disabled).'); sendBtn.disabled=true; } }
   });
+  // Hydrate at script boot (not first open): a reopened panel must know the
+  // transcript + busy state before any live event lands.
+  vscode.postMessage({type:'chatHistory'});
+  window.__openPlanningChatWith=function(text){ toggle(true); if(text){ input.value=text; } input.focus(); };
 })();
 
 vscode.postMessage({type:'ready'});

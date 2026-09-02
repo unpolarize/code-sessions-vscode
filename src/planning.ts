@@ -1617,6 +1617,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     cwd: fs.existsSync(kbRoot) ? kbRoot : os.homedir(),
     env: chatInv.env,
     model: () => planningConfig().get<string>("chat.model") || "sonnet",
+    fullAccess: () => planningConfig().get<boolean>("chat.fullAccess", false) === true,
     log: (l) => log?.appendLine(l),
     onTurnDone: () => void model.reload(log),
   });
@@ -1757,6 +1758,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       if (id) term.sendText(`# Working on ${id}. After the session: kp link-session ${id} <session-uuid>`, false);
     }),
     vscode.commands.registerCommand("codePlanning.openDashboard", () => DashboardPanel.show(dashDeps)),
+    vscode.commands.registerCommand("codePlanning.openChat", () => DashboardPanel.showChat(dashDeps)),
     vscode.commands.registerCommand("codePlanning.openFleet", () => DashboardPanel.show(dashDeps, "sessions")),
     vscode.commands.registerCommand("codeSessions.openFleet", () => DashboardPanel.show(dashDeps, "sessions")),
     // Session → planning: from a session item, jump to the planning object(s) it is

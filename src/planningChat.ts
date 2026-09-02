@@ -13,12 +13,16 @@ import { globalJobTracker } from "./jobs";
 
 export type ChatEvent =
   | { kind: "user"; text: string }
+  // seq is stamped on transcript-worthy events so a re-hydrating webview can
+  // dedupe live events it already painted (review finding #2).
   | { kind: "status"; text: string }
   | { kind: "text"; text: string }
   | { kind: "tool"; name: string; detail?: string }
   | { kind: "result"; text: string; costUsd?: number; isError?: boolean }
   | { kind: "error"; message: string }
   | { kind: "busy"; busy: boolean };
+
+export type SeqChatEvent = ChatEvent & { seq?: number };
 
 export const PLANNING_CHAT_SYSTEM_PROMPT = [
   "You are the planning assistant embedded in the Code Sessions Planning Dashboard.",
@@ -31,12 +35,19 @@ export const PLANNING_CHAT_SYSTEM_PROMPT = [
 ].join("\n");
 
 /** argv for one headless turn. Exported for tests. */
+/** Default enforced tool boundary: the plan is modified through kp only. */
+export const CHAT_ALLOWED_TOOLS = "Bash(kp:*),Read,Grep,Glob,LS";
+
 export function chatArgv(opts: {
   prompt: string;
   model: string;
   resumeId?: string;
   systemPrompt?: string;
   maxTurns?: number;
+  /** Opt-in (codeSessions.planning.chat.fullAccess): skip the permission
+   * system entirely. Default is a kp-only Bash allowlist — an enforced
+   * boundary, not a system-prompt suggestion (review finding #3). */
+  fullAccess?: boolean;
 }): string[] {
   const args = [
     "-p",
@@ -46,13 +57,26 @@ export function chatArgv(opts: {
     "--output-format",
     "stream-json",
     "--verbose",
-    "--dangerously-skip-permissions",
     "--max-turns",
     String(opts.maxTurns ?? 30)
   ];
+  if (opts.fullAccess) args.push("--dangerously-skip-permissions");
+  else args.push("--allowedTools", CHAT_ALLOWED_TOOLS);
   if (opts.systemPrompt) args.push("--append-system-prompt", opts.systemPrompt);
   if (opts.resumeId) args.push("--resume", opts.resumeId);
   return args;
+}
+
+/** Outcome of a finished child: null = clean. Pure for tests (finding #1). */
+export function exitOutcome(
+  code: number | null,
+  sawResult: boolean,
+  cancelled: boolean,
+  errBuf: string
+): string | null {
+  if (cancelled) return null;
+  if (sawResult || code === 0) return null;
+  return `agent exited with code ${code}: ${errBuf.trim().slice(0, 300)}`;
 }
 
 /** Fold one claude stream-json line into chat events. Exported for tests. */
@@ -108,6 +132,7 @@ export interface PlanningChatDeps {
   /** Extra env (PATH with homebrew bins, KP_ROOT) — reuse kpInvocation(). */
   env: Record<string, string>;
   model: () => string;
+  fullAccess?: () => boolean;
   bin?: string;
   log?: (line: string) => void;
   /** Called after a turn finishes so the board can reload the snapshot. */
@@ -122,6 +147,8 @@ export class PlanningChat {
   private child: ChildProcess | undefined;
   private resumeId: string | undefined;
   private firstTurn = true;
+  private cancelled = false;
+  private seq = 0;
 
   constructor(private readonly deps: PlanningChatDeps) {}
 
@@ -134,9 +161,13 @@ export class PlanningChat {
   }
 
   private emit(ev: ChatEvent): void {
-    if (ev.kind !== "busy" && ev.kind !== "status") this.transcript.push(ev);
-    if (this.transcript.length > 400) this.transcript.splice(0, this.transcript.length - 400);
-    this.emitter.fire(ev);
+    let out: SeqChatEvent = ev;
+    if (ev.kind !== "busy" && ev.kind !== "status") {
+      out = { ...ev, seq: ++this.seq };
+      this.transcript.push(out);
+      if (this.transcript.length > 400) this.transcript.splice(0, this.transcript.length - 400);
+    }
+    this.emitter.fire(out);
   }
 
   send(text: string): void {
@@ -151,11 +182,13 @@ export class PlanningChat {
     this.emit({ kind: "status", text: this.resumeId ? "thinking…" : "starting planning agent…" });
     globalJobTracker()?.start("planning-chat", "planning chat turn");
 
+    this.cancelled = false;
     const args = chatArgv({
       prompt,
       model: this.deps.model(),
       resumeId: this.resumeId,
-      systemPrompt: this.firstTurn ? PLANNING_CHAT_SYSTEM_PROMPT : undefined
+      systemPrompt: this.firstTurn ? PLANNING_CHAT_SYSTEM_PROMPT : undefined,
+      fullAccess: this.deps.fullAccess?.() === true
     });
     const bin = this.deps.bin ?? "claude";
     let child: ChildProcess;
@@ -204,16 +237,14 @@ export class PlanningChat {
     });
     child.on("exit", (code) => {
       clearTimeout(killTimer);
-      if (!sawResult && code !== 0) {
-        this.finishTurn({ error: `agent exited with code ${code}: ${errBuf.trim().slice(0, 300)}` });
-      } else {
-        this.finishTurn({});
-      }
+      const error = exitOutcome(code, sawResult, this.cancelled, errBuf);
+      this.finishTurn(error ? { error } : {});
     });
   }
 
   cancel(): void {
     if (!this.child) return;
+    this.cancelled = true;
     this.child.kill("SIGKILL");
     this.emit({ kind: "status", text: "stopped" });
   }

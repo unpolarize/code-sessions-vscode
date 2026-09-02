@@ -51,6 +51,12 @@ export class DashboardPanel {
   private panel: vscode.WebviewPanel;
   private disposables: vscode.Disposable[] = [];
 
+  /** Open (or reveal) the dashboard with the chat drawer opened. */
+  static showChat(deps: DashboardDeps): void {
+    DashboardPanel.show(deps);
+    DashboardPanel.current?.post({ type: "openChat" });
+  }
+
   /** Close the board if open (planning-mode toggle keybinding). */
   static close(): void {
     DashboardPanel.current?.panel.dispose();

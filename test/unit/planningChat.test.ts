@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { chatArgv, foldStreamLine, PLANNING_CHAT_SYSTEM_PROMPT } from "../../src/planningChat";
+import { CHAT_ALLOWED_TOOLS, chatArgv, exitOutcome, foldStreamLine, PLANNING_CHAT_SYSTEM_PROMPT } from "../../src/planningChat";
 
 describe("planning chat argv", () => {
   it("first turn appends the system prompt, no resume", () => {
     const a = chatArgv({ prompt: "identify all ideas for today", model: "sonnet", systemPrompt: PLANNING_CHAT_SYSTEM_PROMPT });
     expect(a.slice(0, 2)).toEqual(["-p", "identify all ideas for today"]);
     expect(a).toContain("--append-system-prompt");
-    expect(a).toContain("--dangerously-skip-permissions");
     expect(a).not.toContain("--resume");
   });
 
@@ -52,5 +51,27 @@ describe("stream-json folding", () => {
     const err = foldStreamLine(JSON.stringify({ type: "result", subtype: "error_max_turns", is_error: true }));
     expect(err.events[0]).toMatchObject({ kind: "result", isError: true });
     expect(foldStreamLine("not json").events).toEqual([]);
+  });
+
+});
+
+describe("permission gating and exit outcomes (review findings #1/#3)", () => {
+  it("defaults to an enforced kp-only allowlist, not skip-permissions", () => {
+    const a = chatArgv({ prompt: "x", model: "sonnet" });
+    expect(a).not.toContain("--dangerously-skip-permissions");
+    expect(a[a.indexOf("--allowedTools") + 1]).toBe(CHAT_ALLOWED_TOOLS);
+  });
+
+  it("fullAccess opt-in switches to skip-permissions and drops the allowlist", () => {
+    const a = chatArgv({ prompt: "x", model: "sonnet", fullAccess: true });
+    expect(a).toContain("--dangerously-skip-permissions");
+    expect(a).not.toContain("--allowedTools");
+  });
+
+  it("a user Stop is a clean finish, not an 'exited with code null' error", () => {
+    expect(exitOutcome(null, false, true, "whatever")).toBeNull();
+    expect(exitOutcome(0, false, false, "")).toBeNull();
+    expect(exitOutcome(1, true, false, "")).toBeNull(); // result already arrived
+    expect(exitOutcome(1, false, false, "boom")).toMatch(/code 1: boom/);
   });
 });
