@@ -24,6 +24,23 @@ export type ChatEvent =
 
 export type SeqChatEvent = ChatEvent & { seq?: number };
 
+/** CB-style runtime controls, chosen per message in the drawer. */
+export interface ChatRuntime {
+  provider: "claude" | "grok";
+  model: string;
+  effort: string;
+  access: "kp" | "full";
+}
+
+export const DEFAULT_RUNTIME: ChatRuntime = { provider: "claude", model: "default", effort: "default", access: "kp" };
+
+/** Same sets CB's header offers (backendRegistry.ts is the source of truth). */
+export const CHAT_PROVIDERS: Record<ChatRuntime["provider"], { label: string; models: string[] }> = {
+  claude: { label: "Claude Code", models: ["default", "fable", "opus", "sonnet", "haiku"] },
+  grok: { label: "Grok Build", models: ["default", "grok-4.6", "grok-4.5", "grok-code-fast-1"] }
+};
+export const CHAT_EFFORTS = ["default", "low", "medium", "high", "xhigh", "max"];
+
 /** kpPath: absolute path of the kp shim — aliases/profile PATH cannot shadow it. */
 export function buildChatSystemPrompt(kpPath?: string): string {
   const kp = kpPath ?? "kp";
@@ -55,6 +72,7 @@ export function chatArgv(opts: {
   resumeId?: string;
   systemPrompt?: string;
   maxTurns?: number;
+  effort?: string;
   /** Absolute kp shim path — adds a path-scoped allow rule. */
   kpPath?: string;
   /** Opt-in (codeSessions.planning.chat.fullAccess): skip the permission
@@ -62,17 +80,11 @@ export function chatArgv(opts: {
    * boundary, not a system-prompt suggestion (review finding #3). */
   fullAccess?: boolean;
 }): string[] {
-  const args = [
-    "-p",
-    opts.prompt,
-    "--model",
-    opts.model,
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--max-turns",
-    String(opts.maxTurns ?? 30)
-  ];
+  const args = ["-p", opts.prompt, "--output-format", "stream-json", "--verbose", "--max-turns", String(opts.maxTurns ?? 30)];
+  if (opts.model && opts.model !== "default") args.push("--model", opts.model);
+  // claude effort levels: low/medium/high/xhigh/max; `default` omits the flag
+  // (same mapping as CB's backendRegistry).
+  if (opts.effort && opts.effort !== "default") args.push("--effort", opts.effort);
   if (opts.fullAccess) args.push("--dangerously-skip-permissions");
   else {
     const allowed = opts.kpPath ? `Bash(${opts.kpPath}:*),${CHAT_ALLOWED_TOOLS}` : CHAT_ALLOWED_TOOLS;
@@ -142,6 +154,59 @@ export function foldStreamLine(
   return { events: [] };
 }
 
+/** argv for one headless Grok Build turn (`grok -p`, streaming-json). */
+export function grokChatArgv(opts: {
+  prompt: string;
+  model: string;
+  effort?: string;
+  resumeId?: string;
+  systemPrompt?: string;
+  maxTurns?: number;
+  kpPath?: string;
+  fullAccess?: boolean;
+}): string[] {
+  const args = ["-p", opts.prompt, "--output-format", "streaming-json", "--max-turns", String(opts.maxTurns ?? 30)];
+  if (opts.model && opts.model !== "default") args.push("-m", opts.model);
+  // grok rejects `max`; its ceiling is xhigh (same mapping CB uses).
+  if (opts.effort && opts.effort !== "default") args.push("--reasoning-effort", opts.effort === "max" ? "xhigh" : opts.effort);
+  if (opts.resumeId) args.push("--resume", opts.resumeId);
+  if (opts.fullAccess) args.push("--always-approve");
+  else {
+    const allowed = (opts.kpPath ? [`Bash(${opts.kpPath}:*)`] : []).concat(CHAT_ALLOWED_TOOLS.split(","));
+    for (const r of allowed) args.push("--allow", r);
+    for (const r of CHAT_DENIED_TOOLS.split(",")) args.push("--deny", r);
+  }
+  if (opts.systemPrompt) args.push("--rules", opts.systemPrompt);
+  return args;
+}
+
+/** Fold one grok streaming-json line (text/thought/tool/end shapes). */
+export function foldGrokStreamLine(line: string): { events: ChatEvent[]; sessionId?: string; done?: boolean } {
+  let rec: any;
+  try {
+    rec = JSON.parse(line);
+  } catch {
+    return { events: [] };
+  }
+  if (!rec || typeof rec !== "object") return { events: [] };
+  if (rec.type === "text" && typeof rec.data === "string" && rec.data.trim()) {
+    return { events: [{ kind: "text", text: rec.data }] };
+  }
+  if ((rec.type === "tool_call" || rec.type === "tool") && rec.data) {
+    const name = String(rec.data.name ?? rec.data.tool ?? rec.type);
+    const detail = typeof rec.data.command === "string" ? rec.data.command : typeof rec.data.args === "string" ? rec.data.args : "";
+    return { events: [{ kind: "tool", name, detail: detail.slice(0, 160) }] };
+  }
+  if (rec.type === "end") {
+    return {
+      events: [{ kind: "result", text: "", isError: rec.stopReason === "error" }],
+      sessionId: typeof rec.sessionId === "string" ? rec.sessionId : undefined,
+      done: true
+    };
+  }
+  return { events: [] };
+}
+
 export interface PlanningChatDeps {
   /** Working directory for the agent — the docs/KB repo root. */
   cwd: string;
@@ -163,8 +228,9 @@ export class PlanningChat {
   readonly onEvent = this.emitter.event;
   private readonly transcript: ChatEvent[] = [];
   private child: ChildProcess | undefined;
-  private resumeId: string | undefined;
-  private firstTurn = true;
+  private readonly resumeIds: Partial<Record<ChatRuntime["provider"], string>> = {};
+  private readonly primed: Partial<Record<ChatRuntime["provider"], boolean>> = {};
+  private lastProvider: ChatRuntime["provider"] | undefined;
   private cancelled = false;
   private seq = 0;
 
@@ -188,28 +254,45 @@ export class PlanningChat {
     this.emitter.fire(out);
   }
 
-  send(text: string): void {
+  send(text: string, runtime?: Partial<ChatRuntime>): void {
     const prompt = text.trim();
     if (!prompt) return;
     if (this.child) {
       this.emit({ kind: "error", message: "A turn is still running — Stop it first or wait." });
       return;
     }
+    const rt: ChatRuntime = {
+      ...DEFAULT_RUNTIME,
+      model: this.deps.model(),
+      ...(runtime ?? {})
+    };
+    if (!CHAT_PROVIDERS[rt.provider]) rt.provider = "claude";
+    // Full access must be unlocked in settings — the webview cannot grant it.
+    let fullAccess = rt.access === "full";
+    if (fullAccess && this.deps.fullAccess?.() !== true) {
+      fullAccess = false;
+      this.emit({
+        kind: "error",
+        message: "Full access is locked — enable codeSessions.planning.chat.fullAccess in settings first. Running with the kp-only boundary."
+      });
+    }
+    if (this.lastProvider && this.lastProvider !== rt.provider) {
+      this.emit({ kind: "status", text: `switched to ${CHAT_PROVIDERS[rt.provider].label} — context is per-provider` });
+    }
+    this.lastProvider = rt.provider;
+    const resumeId = this.resumeIds[rt.provider];
     this.emit({ kind: "user", text: prompt });
     this.emit({ kind: "busy", busy: true });
-    this.emit({ kind: "status", text: this.resumeId ? "thinking…" : "starting planning agent…" });
-    globalJobTracker()?.start("planning-chat", "planning chat turn");
+    this.emit({ kind: "status", text: resumeId ? "thinking…" : `starting ${CHAT_PROVIDERS[rt.provider].label} agent…` });
+    globalJobTracker()?.start("planning-chat", `planning chat (${rt.provider}${rt.model !== "default" ? " " + rt.model : ""})`);
 
     this.cancelled = false;
-    const args = chatArgv({
-      prompt,
-      model: this.deps.model(),
-      resumeId: this.resumeId,
-      systemPrompt: this.firstTurn ? buildChatSystemPrompt(this.deps.kpPath) : undefined,
-      fullAccess: this.deps.fullAccess?.() === true,
-      kpPath: this.deps.kpPath
-    });
-    const bin = this.deps.bin ?? "claude";
+    const systemPrompt = this.primed[rt.provider] ? undefined : buildChatSystemPrompt(this.deps.kpPath);
+    const args =
+      rt.provider === "grok"
+        ? grokChatArgv({ prompt, model: rt.model, effort: rt.effort, resumeId, systemPrompt, kpPath: this.deps.kpPath, fullAccess })
+        : chatArgv({ prompt, model: rt.model, effort: rt.effort, resumeId, systemPrompt, fullAccess, kpPath: this.deps.kpPath });
+    const bin = rt.provider === "grok" ? "grok" : (this.deps.bin ?? "claude");
     let child: ChildProcess;
     try {
       child = spawn(bin, args, {
@@ -222,7 +305,7 @@ export class PlanningChat {
       return;
     }
     this.child = child;
-    this.firstTurn = false;
+    this.primed[rt.provider] = true;
     const killTimer = setTimeout(() => {
       this.deps.log?.("[planning-chat] turn timeout — killing agent");
       child.kill("SIGKILL");
@@ -237,8 +320,8 @@ export class PlanningChat {
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
-        const { events, sessionId } = foldStreamLine(line);
-        if (sessionId) this.resumeId = sessionId;
+        const { events, sessionId } = rt.provider === "grok" ? foldGrokStreamLine(line) : foldStreamLine(line);
+        if (sessionId) this.resumeIds[rt.provider] = sessionId;
         for (const ev of events) {
           if (ev.kind === "result") sawResult = true;
           this.emit(ev);

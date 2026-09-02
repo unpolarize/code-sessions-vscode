@@ -1664,7 +1664,11 @@ exec "${chatInv.node}" "${chatInv.cli}" "$@"
     getLoadStatus: () => model.getLoadStatus(),
     onLoadStatus: (cb) => model.onStatus.event(cb),
     chat: {
-      send: (t) => planningChat.send(t),
+      send: (t, runtime) => planningChat.send(t, runtime as never),
+      runtimeInfo: () => ({
+        fullAllowed: planningConfig().get<boolean>("chat.fullAccess", false) === true,
+        defaultModel: planningConfig().get<string>("chat.model") || "default",
+      }),
       cancel: () => planningChat.cancel(),
       onEvent: planningChat.onEvent as unknown as import("vscode").Event<unknown>,
       history: () => planningChat.history(),

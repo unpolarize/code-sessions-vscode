@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.55.0 — 2026-09-01
+
+### Planning chat: CB-style runtime controls (provider · model · effort · access)
+
+The drawer gains the same picker row as Code Build's header, while every turn still runs in the planning context (KB repo cwd, `KP_ROOT`, alias-proof kp shim, kp-only boundary by default):
+
+- **Provider:** Claude Code (`claude -p`, stream-json) or Grok Build (`grok -p`, streaming-json; resume via `-r`, primer via `--rules`, kp allow/deny rules, `--always-approve` only under full access). Context is per-provider; switching posts a notice.
+- **Model:** same catalogs as CB (claude: default/fable/opus/sonnet/haiku · grok: default/grok-4.6/grok-4.5/grok-code-fast-1); `default` omits the flag.
+- **Effort:** default/low/medium/high/xhigh/max — claude `--effort`, grok `--reasoning-effort` with CB's `max→xhigh` mapping.
+- **Access:** `kp-only` (enforced allowlist + deny rules) or `full access` — the option is disabled until `codeSessions.planning.chat.fullAccess` is enabled; the host re-checks and refuses a webview that asks anyway.
+- Per-provider `--resume` bookkeeping; Activity job names the provider/model.
+
+
 ## 1.54.3 — 2026-09-01
 
 ### Planning chat: alias/PATH-proof kp

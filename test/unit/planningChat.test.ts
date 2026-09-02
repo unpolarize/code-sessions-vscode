@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, buildChatSystemPrompt, chatArgv, exitOutcome, foldStreamLine, PLANNING_CHAT_SYSTEM_PROMPT } from "../../src/planningChat";
+import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, buildChatSystemPrompt, chatArgv, exitOutcome, foldGrokStreamLine, foldStreamLine, grokChatArgv, PLANNING_CHAT_SYSTEM_PROMPT } from "../../src/planningChat";
 
 describe("planning chat argv", () => {
   it("first turn appends the system prompt, no resume", () => {
@@ -84,5 +84,41 @@ describe("permission gating and exit outcomes (review findings #1/#3)", () => {
     expect(exitOutcome(0, false, false, "")).toBeNull();
     expect(exitOutcome(1, true, false, "")).toBeNull(); // result already arrived
     expect(exitOutcome(1, false, false, "boom")).toMatch(/code 1: boom/);
+  });
+
+});
+
+describe("CB-style runtime controls", () => {
+  it("claude argv maps effort and skips --model for default", () => {
+    const a = chatArgv({ prompt: "x", model: "default", effort: "high" });
+    expect(a).not.toContain("--model");
+    expect(a[a.indexOf("--effort") + 1]).toBe("high");
+    expect(chatArgv({ prompt: "x", model: "opus" })).not.toContain("--effort");
+  });
+
+  it("grok argv: model/effort mapping (max→xhigh), resume, allow/deny in kp mode", () => {
+    const a = grokChatArgv({ prompt: "x", model: "grok-4.6", effort: "max", resumeId: "01a0-1", kpPath: "/b/kp" });
+    expect(a[a.indexOf("-m") + 1]).toBe("grok-4.6");
+    expect(a[a.indexOf("--reasoning-effort") + 1]).toBe("xhigh");
+    expect(a[a.indexOf("--resume") + 1]).toBe("01a0-1");
+    expect(a).not.toContain("--always-approve");
+    expect(a[a.indexOf("--allow") + 1]).toBe("Bash(/b/kp:*)");
+    expect(a).toContain("--deny");
+  });
+
+  it("grok argv: fullAccess uses --always-approve and no allow/deny", () => {
+    const a = grokChatArgv({ prompt: "x", model: "default", fullAccess: true });
+    expect(a).toContain("--always-approve");
+    expect(a).not.toContain("--allow");
+    expect(a).not.toContain("--deny");
+  });
+
+  it("folds grok streaming-json: text, end→result+sessionId, thought ignored", () => {
+    expect(foldGrokStreamLine('{"type":"thought","data":"hm"}').events).toEqual([]);
+    expect(foldGrokStreamLine('{"type":"text","data":"hi"}').events).toEqual([{ kind: "text", text: "hi" }]);
+    const end = foldGrokStreamLine('{"type":"end","stopReason":"end_turn","sessionId":"01a0-9"}');
+    expect(end.sessionId).toBe("01a0-9");
+    expect(end.done).toBe(true);
+    expect(end.events[0]).toMatchObject({ kind: "result", isError: false });
   });
 });

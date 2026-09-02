@@ -31,11 +31,13 @@ export interface DashboardDeps {
   onLoadStatus?: (cb: (s: unknown) => void) => vscode.Disposable;
   /** Embedded planning chat (headless claude with kp access). */
   chat?: {
-    send: (text: string) => void;
+    send: (text: string, runtime?: unknown) => void;
     cancel: () => void;
     onEvent: vscode.Event<unknown>;
     history: () => unknown[];
     busy: () => boolean;
+    /** { fullAllowed, defaultModel } for the drawer's runtime controls. */
+    runtimeInfo?: () => unknown;
   };
 }
 
@@ -122,7 +124,7 @@ export class DashboardPanel {
         this.deps.noteActivity?.();
         break;
       case "chatSend":
-        this.deps.chat?.send(String(m.text ?? ""));
+        this.deps.chat?.send(String(m.text ?? ""), m.runtime);
         break;
       case "chatCancel":
         this.deps.chat?.cancel();
@@ -133,6 +135,7 @@ export class DashboardPanel {
           data: this.deps.chat?.history() ?? [],
           busy: this.deps.chat?.busy() ?? false,
           enabled: !!this.deps.chat,
+          runtime: this.deps.chat?.runtimeInfo?.(),
         });
         break;
       case "requestSessions":
@@ -290,6 +293,15 @@ export class DashboardPanel {
       <button class="chat-chip">Create ideas from my list, skip duplicates</button>
     </div>
   </div>
+  <div class="chat-ctlrow">
+    <select id="chatProvider" title="Provider"></select>
+    <select id="chatModel" title="Model"></select>
+    <select id="chatEffort" title="Reasoning effort"></select>
+    <select id="chatAccess" title="Tool access — kp-only is an enforced boundary; full requires the fullAccess setting">
+      <option value="kp">kp-only</option>
+      <option value="full">full access</option>
+    </select>
+  </div>
   <div class="chat-inputrow">
     <textarea id="chatInput" rows="2" placeholder="Ask about or modify the plan… (Enter to send, Shift+Enter newline)"></textarea>
     <button id="chatSend">Send</button>
@@ -365,7 +377,9 @@ const STYLE = `
 .chat-m.error{align-self:flex-start;background:rgba(200,60,60,.18);border:1px solid rgba(200,60,60,.5)}
 .chat-tool{align-self:flex-start;font-size:11px;opacity:.65;font-family:var(--vscode-editor-font-family,monospace)}
 .chat-status{align-self:center;font-size:11px;opacity:.6;font-style:italic}
-.chat-inputrow{display:flex;gap:6px;padding:8px;border-top:1px solid var(--vscode-widget-border,#444)}
+.chat-ctlrow{display:flex;gap:6px;padding:6px 8px 0 8px;border-top:1px solid var(--vscode-widget-border,#444)}
+.chat-ctlrow select{flex:1;min-width:0;font-size:11px;background:var(--vscode-dropdown-background,#3c3c3c);color:var(--vscode-dropdown-foreground,#ddd);border:1px solid var(--vscode-dropdown-border,#555);border-radius:5px;padding:2px 4px}
+.chat-inputrow{display:flex;gap:6px;padding:8px;border-top:none}
 .chat-inputrow textarea{flex:1;resize:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);
   border:1px solid var(--vscode-input-border,#555);border-radius:6px;padding:6px 8px;font:inherit;font-size:12.5px}
 .chat-inputrow button{border:none;border-radius:6px;padding:0 14px;cursor:pointer;

@@ -1126,8 +1126,21 @@ function renderDrawer(o){
 (function(){
   var drawer=$('#chatDrawer'); if(!drawer) return;
   var msgs=$('#chatMsgs'), input=$('#chatInput'), sendBtn=$('#chatSend'), stopBtn=$('#chatStop'),
-      btn=$('#chatBtn'), closeBtn=$('#chatClose'), costEl=$('#chatCost');
-  var open=false, busy=false, agentEl=null, totalCost=0, lastSeq=0;
+      btn=$('#chatBtn'), closeBtn=$('#chatClose'), costEl=$('#chatCost'),
+      selProv=$('#chatProvider'), selModel=$('#chatModel'), selEffort=$('#chatEffort'), selAccess=$('#chatAccess');
+  var open=false, busy=false, agentEl=null, totalCost=0, lastSeq=0, fullAllowed=false;
+  // Same catalogs CB's header offers (host: planningChat.ts CHAT_PROVIDERS).
+  var PROVIDERS={claude:{label:'Claude Code',models:['default','fable','opus','sonnet','haiku']},
+                 grok:{label:'Grok Build',models:['default','grok-4.6','grok-4.5','grok-code-fast-1']}};
+  var EFFORTS=['default','low','medium','high','xhigh','max'];
+  function fillSel(sel,opts,cur){ if(!sel)return; sel.innerHTML=''; opts.forEach(function(o){ var op=document.createElement('option'); op.value=o.v; op.textContent=o.t; if(o.v===cur)op.selected=true; sel.appendChild(op); }); }
+  function initControls(defModel){ if(!selProv)return;
+    fillSel(selProv,Object.keys(PROVIDERS).map(function(k){return {v:k,t:PROVIDERS[k].label};}),'claude');
+    fillSel(selModel,PROVIDERS.claude.models.map(function(m){return {v:m,t:m};}),defModel&&PROVIDERS.claude.models.indexOf(defModel)>=0?defModel:'default');
+    fillSel(selEffort,EFFORTS.map(function(e2){return {v:e2,t:e2==='default'?'auto · effort':e2};}),'default');
+    selProv.addEventListener('change',function(){ var p2=PROVIDERS[selProv.value]||PROVIDERS.claude; fillSel(selModel,p2.models.map(function(m){return {v:m,t:m};}),'default'); });
+  }
+  function runtime(){ return { provider: selProv?selProv.value:'claude', model: selModel?selModel.value:'default', effort: selEffort?selEffort.value:'default', access: selAccess?selAccess.value:'kp' }; }
   function toggle(v){ open=(v===undefined)?!open:v; drawer.classList.toggle('hidden',!open);
     if(btn)btn.classList.toggle('on',open);
     if(open){ input.focus(); scrollEnd(); } }
@@ -1150,7 +1163,7 @@ function renderDrawer(o){
     if(ev.kind==='error'){ el('chat-m error',ev.message); return; }
   }
   function send(text){ var t=(text!==undefined?text:input.value).trim(); if(!t||busy)return;
-    input.value=''; vscode.postMessage({type:'chatSend',text:t}); vscode.postMessage({type:'activity'}); }
+    input.value=''; vscode.postMessage({type:'chatSend',text:t,runtime:runtime()}); vscode.postMessage({type:'activity'}); }
   if(btn)btn.addEventListener('click',function(){toggle();});
   if(closeBtn)closeBtn.addEventListener('click',function(){toggle(false);});
   sendBtn.addEventListener('click',function(){send();});
@@ -1162,6 +1175,9 @@ function renderDrawer(o){
     else if(m.type==='openChat'){ toggle(true); }
     else if(m.type==='chatAsk'){ toggle(true); input.value=m.text||''; input.focus(); }
     else if(m.type==='chatHistory'){ (m.data||[]).forEach(apply); setBusy(!!m.busy);
+      var ri=m.runtime||{}; fullAllowed=!!ri.fullAllowed; initControls(ri.defaultModel);
+      if(selAccess){ var fo=selAccess.querySelector('option[value="full"]');
+        if(fo){ fo.disabled=!fullAllowed; fo.textContent=fullAllowed?'full access':'full access (locked — enable chat.fullAccess)'; } }
       if(m.enabled===false){ el('chat-m error','Planning chat is unavailable (claude CLI not found or chat disabled).'); sendBtn.disabled=true; } }
   });
   // Hydrate at script boot (not first open): a reopened panel must know the
