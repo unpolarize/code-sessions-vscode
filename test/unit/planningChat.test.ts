@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, chatArgv, exitOutcome, foldStreamLine, PLANNING_CHAT_SYSTEM_PROMPT } from "../../src/planningChat";
+import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, buildChatSystemPrompt, chatArgv, exitOutcome, foldStreamLine, PLANNING_CHAT_SYSTEM_PROMPT } from "../../src/planningChat";
 
 describe("planning chat argv", () => {
   it("first turn appends the system prompt, no resume", () => {
@@ -62,6 +62,14 @@ describe("permission gating and exit outcomes (review findings #1/#3)", () => {
     expect(a[a.indexOf("--allowedTools") + 1]).toBe(CHAT_ALLOWED_TOOLS);
     expect(a[a.indexOf("--disallowedTools") + 1]).toBe(CHAT_DENIED_TOOLS);
     expect(CHAT_DENIED_TOOLS).toContain("git push");
+  });
+
+  it("a kp shim path adds a path-scoped allow rule and rewrites the primer", () => {
+    const a = chatArgv({ prompt: "x", model: "sonnet", kpPath: "/gs/bin/kp" });
+    expect(a[a.indexOf("--allowedTools") + 1]).toBe(`Bash(/gs/bin/kp:*),${CHAT_ALLOWED_TOOLS}`);
+    const sp = buildChatSystemPrompt("/gs/bin/kp");
+    expect(sp).toContain("/gs/bin/kp export --date today");
+    expect(sp).toContain("/gs/bin/kp search");
   });
 
   it("fullAccess opt-in switches to skip-permissions and drops the allowlist", () => {

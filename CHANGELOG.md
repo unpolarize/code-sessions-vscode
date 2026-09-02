@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.54.3 — 2026-09-01
+
+### Planning chat: alias/PATH-proof kp
+
+1.54.2's shim still lost to the user's shell profile (Claude Code's Bash initializes from the profile, and an old `~/bin/kp` shadowed it). The host now passes the shim's **absolute path** into the system prompt (`buildChatSystemPrompt`) and adds a path-scoped allow rule (`Bash(<abs>/kp:*)`), so the agent invokes the exact bundled CLI regardless of aliases or PATH rewrites.
+
+
 ## 1.54.2 — 2026-09-01
 
 ### Planning chat: real `kp` on the agent's PATH + hard deny rules

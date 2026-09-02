@@ -1617,6 +1617,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   // `Bash(kp:*)` allowlist rule matches.
   const chatInv = kpInvocation();
   const chatEnv = { ...chatInv.env };
+  let chatKpPath: string | undefined;
   try {
     const shimDir = path.join(ctx.globalStorageUri.fsPath, "bin");
     fs.mkdirSync(shimDir, { recursive: true });
@@ -1625,6 +1626,9 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
 exec "${chatInv.node}" "${chatInv.cli}" "$@"
 `, { mode: 0o755 });
     chatEnv.PATH = `${shimDir}:${chatEnv.PATH || ""}`;
+    // The user's shell profile can rewrite PATH (an old ~/bin/kp shadowed the
+    // shim in live testing) — hand the agent the absolute path instead.
+    chatKpPath = shim;
   } catch (e) {
     log?.appendLine(`[planning-chat] kp shim failed: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -1634,6 +1638,7 @@ exec "${chatInv.node}" "${chatInv.cli}" "$@"
     env: chatEnv,
     model: () => planningConfig().get<string>("chat.model") || "sonnet",
     fullAccess: () => planningConfig().get<boolean>("chat.fullAccess", false) === true,
+    kpPath: chatKpPath,
     log: (l) => log?.appendLine(l),
     onTurnDone: () => void model.reload(log),
   });

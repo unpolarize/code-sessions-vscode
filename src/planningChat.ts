@@ -24,6 +24,12 @@ export type ChatEvent =
 
 export type SeqChatEvent = ChatEvent & { seq?: number };
 
+/** kpPath: absolute path of the kp shim — aliases/profile PATH cannot shadow it. */
+export function buildChatSystemPrompt(kpPath?: string): string {
+  const kp = kpPath ?? "kp";
+  return PLANNING_CHAT_SYSTEM_PROMPT.replace(/\bkp /g, `${kp} `).replace("the `kp` CLI", `the planning CLI at \`${kp}\``);
+}
+
 export const PLANNING_CHAT_SYSTEM_PROMPT = [
   "You are the planning assistant embedded in the Code Sessions Planning Dashboard.",
   "The knowledge base lives in this repository; planning objects (ideas, tasks, plans, projects, insights) are managed with the `kp` CLI — prefer it over editing planning/*.md directly.",
@@ -49,6 +55,8 @@ export function chatArgv(opts: {
   resumeId?: string;
   systemPrompt?: string;
   maxTurns?: number;
+  /** Absolute kp shim path — adds a path-scoped allow rule. */
+  kpPath?: string;
   /** Opt-in (codeSessions.planning.chat.fullAccess): skip the permission
    * system entirely. Default is a kp-only Bash allowlist — an enforced
    * boundary, not a system-prompt suggestion (review finding #3). */
@@ -66,7 +74,10 @@ export function chatArgv(opts: {
     String(opts.maxTurns ?? 30)
   ];
   if (opts.fullAccess) args.push("--dangerously-skip-permissions");
-  else args.push("--allowedTools", CHAT_ALLOWED_TOOLS, "--disallowedTools", CHAT_DENIED_TOOLS);
+  else {
+    const allowed = opts.kpPath ? `Bash(${opts.kpPath}:*),${CHAT_ALLOWED_TOOLS}` : CHAT_ALLOWED_TOOLS;
+    args.push("--allowedTools", allowed, "--disallowedTools", CHAT_DENIED_TOOLS);
+  }
   if (opts.systemPrompt) args.push("--append-system-prompt", opts.systemPrompt);
   if (opts.resumeId) args.push("--resume", opts.resumeId);
   return args;
@@ -138,6 +149,8 @@ export interface PlanningChatDeps {
   env: Record<string, string>;
   model: () => string;
   fullAccess?: () => boolean;
+  /** Absolute path of the kp shim written by planning.ts. */
+  kpPath?: string;
   bin?: string;
   log?: (line: string) => void;
   /** Called after a turn finishes so the board can reload the snapshot. */
@@ -192,8 +205,9 @@ export class PlanningChat {
       prompt,
       model: this.deps.model(),
       resumeId: this.resumeId,
-      systemPrompt: this.firstTurn ? PLANNING_CHAT_SYSTEM_PROMPT : undefined,
-      fullAccess: this.deps.fullAccess?.() === true
+      systemPrompt: this.firstTurn ? buildChatSystemPrompt(this.deps.kpPath) : undefined,
+      fullAccess: this.deps.fullAccess?.() === true,
+      kpPath: this.deps.kpPath
     });
     const bin = this.deps.bin ?? "claude";
     let child: ChildProcess;
