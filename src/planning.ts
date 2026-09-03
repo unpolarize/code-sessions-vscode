@@ -10,7 +10,7 @@
 import * as vscode from "vscode";
 import { backoffBudgetMs, formatMs, globalJobTracker } from "./jobs";
 import { PlanningChat } from "./planningChat";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync, unlinkSync } from "node:fs";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -291,6 +291,8 @@ interface ObjRow {
   domain: string | null;
   project: string | null;
   path: string;
+  /** host-computed: `kp attach` media exists under <store>/media/<id>/ (tasks/ideas only) */
+  has_screenshot?: boolean;
 }
 interface BlockedRow {
   id: string;
@@ -415,6 +417,22 @@ export interface PlanningLoadStatus {
   error?: string;
 }
 
+/** Mark coding items (tasks/ideas) with whether an implementation screenshot is
+ * attached — `kp attach` copies images to `<store>/media/<id>/`, so a non-empty
+ * dir is the signal. The board uses it to flag done items missing evidence. */
+function annotateScreenshots(snap: Snapshot): void {
+  if (!snap?.root || !Array.isArray(snap.objects)) return;
+  for (const o of snap.objects) {
+    if (o.type !== "task" && o.type !== "idea") continue;
+    try {
+      const dir = path.join(snap.root, "media", ...String(o.id).split("/"));
+      o.has_screenshot = existsSync(dir) && readdirSync(dir).length > 0;
+    } catch {
+      o.has_screenshot = false;
+    }
+  }
+}
+
 /** Shared snapshot, reloaded on refresh and consumed by every provider/view.
  *
  * reload() coalesces: while an export is in flight, further requests set a
@@ -506,6 +524,7 @@ class PlanningModel {
             this.setLoad({ phase: "parse", detail: `parsing ${(res.stdout.length / 1024).toFixed(0)} KB (${ms}ms)` });
             try {
               this.snap = JSON.parse(res.stdout) as Snapshot;
+              annotateScreenshots(this.snap);
               this.lastOk = true;
               this.failStreak = 0;
               const n = this.snap.objects?.length ?? 0;
@@ -1158,6 +1177,161 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     else void vscode.window.showInformationMessage(r.stdout.trim());
   };
 
+  // ── unified pipeline board helpers (inbox → approved → implementation → done) ──
+  const objById = (oid: string): any => (((model.get() as any)?.objects as any[]) || []).find((x) => x.id === oid);
+  type ImplRoute = { backend?: string; model?: string; effort?: string };
+  const lastImplRoute = () => ctx.globalState.get<ImplRoute>("kp.implRoute.last");
+  const persistImplPrefs = async (prefs: ImplRoute): Promise<ImplRoute> => {
+    const clean: ImplRoute = {
+      backend: !prefs.backend || prefs.backend === "-" ? "" : String(prefs.backend),
+      model: !prefs.model || prefs.model === "-" ? "" : String(prefs.model),
+      effort: !prefs.effort || prefs.effort === "-" ? "" : String(prefs.effort),
+    };
+    await ctx.globalState.update("kp.implRoute.last", clean);
+    DashboardPanel.current?.post({ type: "implPrefs", data: clean });
+    return clean;
+  };
+  const applyRememberedRoute = async (oid: string, override?: ImplRoute): Promise<void> => {
+    const o = objById(oid);
+    if (o && (o.implement_backend || o.implement_model)) return; // explicit route wins
+    const last =
+      override && (override.backend || override.model || override.effort) ? override : lastImplRoute();
+    if (!last || (!last.backend && !last.model && !last.effort)) return;
+    await runKp(["set-implement", oid, "--model", last.model || "-", "--effort", last.effort || "-", "--backend", last.backend || "-"]);
+  };
+  // The auto-implementer only targets coding items: a target_repo is what
+  // makes an item coding work. Ask for one when missing.
+  const ensureTargetRepo = async (oid: string, why: string): Promise<{ ok: boolean; err?: string }> => {
+    const o = objById(oid);
+    if (o?.target_repo) return { ok: true };
+    const known = ["knowledge-planning", "code-sessions-vscode", "code-build-vscode"];
+    const pick = await vscode.window.showQuickPick([...known, "$(edit) other…"], {
+      placeHolder: `Target repo for “${o?.title || oid}” — ${why}`,
+    });
+    if (!pick) return { ok: false, err: "needs a target repo (cancelled)" };
+    let repo = pick;
+    if (pick.startsWith("$(edit)")) {
+      const typed = await vscode.window.showInputBox({ prompt: "Target repo slug", placeHolder: "my-repo" });
+      if (!typed?.trim()) return { ok: false, err: "needs a target repo (cancelled)" };
+      repo = typed.trim();
+    }
+    const tr = await runKp(["set-target-repo", oid, repo]);
+    return tr.ok ? { ok: true } : { ok: false, err: tr.stderr || tr.stdout };
+  };
+  // Kick a user-triggered auto-implement session for one item (detached — the
+  // orchestrator publishes running state to plan.json; the board's watcher
+  // picks it up and shows the ▶ implementing chip).
+  const kickAutoImplement = (oid: string, opts?: { quietQueued?: boolean }): boolean => {
+    const snap: any = model.get();
+    const auto = snap?.autonomous;
+    if (auto && auto.enabled === false) {
+      void vscode.window.showWarningMessage("Autonomous builder is paused (STOP) — status set, but no session started. Enable it in the 🤖 Auto tab first.");
+      return false;
+    }
+    if (auto?.current_window?.implement?.status === "running") {
+      if (!opts?.quietQueued) {
+        void vscode.window.showWarningMessage("An auto-implement session is already running — this item stays queued in the implementation lane.");
+      }
+      return false;
+    }
+    const script = path.join(os.homedir(), "docs", "scripts", "night-orchestrator.py");
+    if (!existsSync(script)) {
+      void vscode.window.showWarningMessage("night-orchestrator.py not found — status set, no session started.");
+      return false;
+    }
+    try {
+      spawn("python3", [script, "--implement-now", oid], { detached: true, stdio: "ignore" }).unref();
+      const o = objById(oid);
+      void vscode.window.showInformationMessage(`🤖 Auto-implementation started for “${o?.title || oid}” — watch the ▶ chip on the Pipeline.`);
+      return true;
+    } catch (e) {
+      void vscode.window.showWarningMessage(`auto-implement kick failed: ${String(e)}`);
+      return false;
+    }
+  };
+  const approvePipeline = async (oid: string, route?: ImplRoute): Promise<{ ok: boolean; err?: string }> => {
+    const o = objById(oid);
+    if (!o) return { ok: false, err: "item not found" };
+    if (o.type !== "task" && o.type !== "idea") {
+      return { ok: false, err: `only coding tasks/ideas can be auto-implemented (got ${o.type} — convert it first)` };
+    }
+    const tr = await ensureTargetRepo(oid, "required for auto-implementation");
+    if (!tr.ok) return tr;
+    await applyRememberedRoute(oid, route);
+    const stMap: Record<string, string> = { task: "today", idea: "accepted" };
+    const st = stMap[String(o.type)];
+    if (st && o.status !== st && !["in_progress", "done"].includes(String(o.status))) await runKp(["set-status", oid, st]);
+    // board approval is explicit human intent — --force skips the Acceptance/Constraints preflight
+    const r = await runKp(["set-auto-implement", oid, "ready", "--force"]);
+    return r.ok ? { ok: true } : { ok: false, err: r.stderr || r.stdout };
+  };
+  // Screenshot attach flow — shared by the drawer button, the done-lane 📷
+  // badge, and the "done without a screenshot" nudge after a pipeline move.
+  const attachScreenshotsTo = async (oid: string): Promise<void> => {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      filters: { Images: ["png", "jpg", "jpeg", "gif", "webp"] },
+      title: "Attach screenshot to planning item",
+    });
+    if (!picked?.length) return;
+    const r = await runKp(["attach", oid, ...picked.map((u) => u.fsPath)]);
+    if (!r.ok) void vscode.window.showWarningMessage(`attach failed: ${r.stderr}`);
+    await model.reload(log);
+    const det = await runKp(["show", oid]);
+    if (det.ok) {
+      try { DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) }); } catch { /* ignore */ }
+    }
+  };
+  const pipelineMoveTo = async (
+    oid: string,
+    lane: string,
+    note: string,
+    opts?: { route?: ImplRoute; kick?: boolean; reload?: boolean; quietQueued?: boolean },
+  ): Promise<{ ok: boolean; kicked?: boolean }> => {
+    const o = objById(oid);
+    if (!o) return { ok: false };
+    const t = String(o.type);
+    if (t !== "task" && t !== "idea") {
+      void vscode.window.showWarningMessage(`the coding pipeline holds tasks/ideas only (got ${t})`);
+      return { ok: false };
+    }
+    const withNote = (args: string[]) => (note ? args.concat(["--note", note]) : args);
+    let r: { ok: boolean; stdout: string; stderr: string } | null = null;
+    let kicked = false;
+    if (lane === "inbox") {
+      if (o.auto_implement) await runKp(["set-auto-implement", oid, "-"]);
+      r = await runKp(["set-status", oid, t === "task" ? "inbox" : "capture"]);
+    } else if (lane === "approved") {
+      const a = await approvePipeline(oid, opts?.route);
+      if (!a.ok) void vscode.window.showWarningMessage(`approve failed: ${a.err}`);
+      if (opts?.reload !== false) await model.reload(log);
+      return { ok: !!a.ok };
+    } else if (lane === "implementation") {
+      // moving to implementation = start building it: mark running, apply the
+      // board/remembered route, and trigger a user-kicked auto-implement session
+      const tr = await ensureTargetRepo(oid, "required to auto-implement");
+      if (!tr.ok) {
+        void vscode.window.showWarningMessage(`implementation move: ${tr.err}`);
+        if (opts?.reload !== false) await model.reload(log);
+        return { ok: false };
+      }
+      await applyRememberedRoute(oid, opts?.route);
+      r = await runKp(withNote(["set-status", oid, t === "task" ? "in_progress" : "plan"]));
+      if (r.ok && opts?.kick !== false) kicked = kickAutoImplement(oid, { quietQueued: opts?.quietQueued });
+    } else if (lane === "done") {
+      r = await runKp(withNote(["set-status", oid, "done"]));
+      // done without implementation evidence — nudge once, with a one-click fix
+      if (r.ok && (o as ObjRow).has_screenshot === false) {
+        void vscode.window
+          .showWarningMessage(`“${o.title || oid}” marked done without an implementation screenshot.`, "Attach screenshot…")
+          .then((pick) => { if (pick) void attachScreenshotsTo(oid); });
+      }
+    }
+    if (r && !r.ok) void vscode.window.showWarningMessage(`pipeline move failed: ${r.stderr || r.stdout}`);
+    if (opts?.reload !== false) await model.reload(log);
+    return { ok: !r || r.ok, kicked };
+  };
+
   const dashAction = async (msg: any): Promise<void> => {
     if (!msg) return;
     const snap = model.get();
@@ -1306,6 +1480,76 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         await model.reload(log);
         break;
       }
+      case "pipelineMove": {
+        const ids = Array.isArray(msg.ids) && msg.ids.length
+          ? (msg.ids as unknown[]).map((x) => String(x)).filter(Boolean)
+          : id ? [id] : [];
+        const lane = String(msg.lane || "");
+        const note = typeof msg.note === "string" ? msg.note.trim() : "";
+        const route = msg.route && typeof msg.route === "object" ? (msg.route as ImplRoute) : undefined;
+        if (route && (route.backend || route.model || route.effort)) await persistImplPrefs(route);
+        let kicked = false;
+        for (let i = 0; i < ids.length; i++) {
+          const last = i === ids.length - 1;
+          const r = await pipelineMoveTo(ids[i], lane, note, {
+            route,
+            kick: lane === "implementation" && !kicked,
+            reload: last,
+            quietQueued: ids.length > 1,
+          });
+          if (r.kicked) kicked = true;
+        }
+        if (ids.length > 1 && lane === "implementation" && kicked) {
+          void vscode.window.showInformationMessage(
+            `${ids.length} items moved to implementation — one session started, the rest stay queued.`,
+          );
+        }
+        break;
+      }
+      case "setImplPrefs": {
+        await persistImplPrefs({
+          backend: String(msg.backend || ""),
+          model: String(msg.model || ""),
+          effort: String(msg.effort || ""),
+        });
+        break;
+      }
+      case "approveItem": {
+        const a = await approvePipeline(id);
+        if (!a.ok) void vscode.window.showWarningMessage(`approve failed: ${a.err}`);
+        await model.reload(log);
+        if (id) {
+          const det = await runKp(["show", id]);
+          if (det.ok) {
+            try { DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) }); } catch { /* ignore */ }
+          }
+        }
+        break;
+      }
+      case "setAutoImplement": {
+        const v = String(msg.value || "-");
+        const r = await runKp(["set-auto-implement", id, v]);
+        if (!r.ok) void vscode.window.showWarningMessage(`set-auto-implement failed: ${r.stderr}`);
+        await model.reload(log);
+        if (id) {
+          const det = await runKp(["show", id]);
+          if (det.ok) {
+            try { DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) }); } catch { /* ignore */ }
+          }
+        }
+        break;
+      }
+      case "setImplement": {
+        const backend = String(msg.backend || "-"), mdl = String(msg.model || "-"), eff = String(msg.effort || "-");
+        const r = await runKp(["set-implement", id, "--model", mdl, "--effort", eff, "--backend", backend]);
+        if (!r.ok) void vscode.window.showWarningMessage(`set-implement failed: ${r.stderr}`);
+        else if (backend !== "-" || mdl !== "-" || eff !== "-") {
+          // remember the last explicit route — the default for the next approval / pipeline drop
+          await persistImplPrefs({ backend, model: mdl, effort: eff });
+        }
+        await model.reload(log);
+        break;
+      }
       case "tagItem": {
         const r = await runKp(["tag", id, String(msg.tag || "")]);
         if (!r.ok) void vscode.window.showWarningMessage(`tag failed: ${r.stderr}`);
@@ -1349,21 +1593,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         break;
       }
       case "attachImage": {
-        const picked = await vscode.window.showOpenDialog({
-          canSelectMany: true,
-          filters: { Images: ["png", "jpg", "jpeg", "gif", "webp"] },
-          title: "Attach screenshot to planning item",
-        });
-        if (!picked?.length) break;
-        const r = await runKp(["attach", id, ...picked.map((u) => u.fsPath)]);
-        if (!r.ok) void vscode.window.showWarningMessage(`attach failed: ${r.stderr}`);
-        await model.reload(log);
-        if (id) {
-          const det = await runKp(["show", id]);
-          if (det.ok) {
-            try { DashboardPanel.current?.post({ type: "detail", data: JSON.parse(det.stdout) }); } catch { /* ignore */ }
-          }
-        }
+        if (id) await attachScreenshotsTo(id);
         break;
       }
       case "openSession":
@@ -1747,6 +1977,7 @@ exec "${chatInv.node}" "${chatInv.cli}" "$@"
     },
     getLoadStatus: () => model.getLoadStatus(),
     onLoadStatus: (cb) => model.onStatus.event(cb),
+    getImplPrefs: () => lastImplRoute(),
     chat: {
       send: (t, runtime) => planningChat.send(t, runtime as never),
       runtimeInfo: () => ({

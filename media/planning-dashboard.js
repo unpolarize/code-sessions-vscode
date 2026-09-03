@@ -14,6 +14,12 @@ const LANES = {
 };
 const TYPE_COLOR = {idea:'#d7ba7d',plan:'#4ec9b0',task:'#569cd6',project:'#c586c0',catalog_entry:'#c586c0',domain:'#808080',daily_plan:'#dcdcaa',insight:'#4fc1ff',reflection:'#9cdcfe',knowledge:'#ce9178',session:'#608b4e',thought:'#e2c08d'};
 const LANE_COLOR = {inbox:'#888',today:'#569cd6',in_progress:'#dcdcaa',done:'#4ec9b0',deferred:'#a08',outdated:'#d16969',capture:'#d7ba7d',refine:'#dcdcaa',accepted:'#4ec9b0',parked:'#888',plan:'#569cd6',prototype:'#c586c0',implement:'#dcdcaa',validate:'#4fc1ff',new:'#d7ba7d',kept:'#4ec9b0',converted:'#569cd6',archived:'#666'};
+// Coding pipeline view: bugs/features/auto coding items in one lifecycle,
+// separate from the per-type Board (tasks/ideas/plans/thoughts don't fit it).
+const PIPE_LANES=['inbox','approved','implementation','done'];
+const PIPE_COLOR={inbox:'#888',approved:'#4ec9b0',implementation:'#dcdcaa',done:'#569cd6'};
+const IMPL_PROV={claude:['default','fable','opus','sonnet','haiku'],grok:['default','grok-4.6','grok-4.5','grok-code-fast-1']};
+const IMPL_EFF=['default','low','medium','high','xhigh','max'];
 let S = null, view='board', laneSet='task';
 let renderError=null;
 let SESS=null, sessFilter='today', sessSearch='', sessHost='all', sessUnlinked=false, sessHideAuto=true, sessOpenUuid=null, sessExplain={};
@@ -26,7 +32,17 @@ let customLanes = _st.customLanes || [];
 let doneWindow = _st.doneWindow || 'week'; // hide done items older than: yesterday|week|month|all
 let sortBy = _st.sortBy || 'priority';
 let tagFilter = Array.isArray(_st.tagFilter) ? _st.tagFilter.slice() : [];
-function saveState(){ try{ vscode.setState({groupBy, customLanes, doneWindow, sortBy, tagFilter}); }catch(e){} }
+laneSet = (_st.laneSet && _st.laneSet !== 'pipeline') ? _st.laneSet : 'task';
+let implPrefs = null; // host-persisted last provider/model/effort (globalState)
+const selectedIds = new Set(); // multi-select on board/pipeline cards
+let lastSel = {id:null, lane:null};
+let didDrag = false;
+// pipeline quick filters: kind ('' | bug | feature | auto), project, worked-on window
+let pipeKind = _st.pipeKind || '';
+let pipeProject = _st.pipeProject || '';
+let pipeWindow = _st.pipeWindow || '';
+let pipeGroupProj = !!_st.pipeGroupProj;
+function saveState(){ try{ vscode.setState({groupBy, customLanes, doneWindow, sortBy, tagFilter, laneSet, pipeKind, pipeProject, pipeWindow, pipeGroupProj}); }catch(e){} }
 const BOARD_TYPES=['task','idea','plan','thought'];
 const $=s=>document.querySelector(s), el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
 const esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -39,14 +55,15 @@ function blockedSet(){ return new Set(((S&&S.blocked)||[]).map(b=>b.id)); }
 function addDays(d,n){ const x=new Date(d+'T00:00:00Z'); x.setUTCDate(x.getUTCDate()+n); return x.toISOString().slice(0,10); }
 
 window.addEventListener('message',e=>{const m=e.data;
-  if(m.type==='snapshot'){S=m.data; window.__paintTried=false; render();}
+  if(m.type==='snapshot'){S=m.data; if(m.implPrefs)implPrefs=m.implPrefs; window.__paintTried=false; render();}
+  else if(m.type==='implPrefs'){ implPrefs=m.data||implPrefs; if(view==='pipeline') syncPipeRouteBar(); }
   else if(m.type==='loadStatus'){ applyLoadStatus(m.data); }
   else if(m.type==='detail'){renderDrawer(m.data);}
   else if(m.type==='setView'){view=m.view;syncSeg();render();}
   else if(m.type==='laneAdded'){ if(groupBy!=='lane'){groupBy='lane';const gb=$('#groupBy');if(gb)gb.value='lane';} if(m.name&&!customLanes.includes(m.name))customLanes.push(m.name); saveState(); renderBoard(); }
   else if(m.type==='openItem'){ view='board'; syncSeg(); render(); if(m.id)openDetail(m.id); }
   else if(m.type==='syncStatus'){ renderSyncPill(m.data); }
-  else if(m.type==='sessions'){ SESS=m.data||[]; if(view==='sessions')renderSessions(); }
+  else if(m.type==='sessions'){ const prev=sessSig(SESS); SESS=m.data||[]; if(view==='sessions')renderSessions(); else if(view==='pipeline'&&sessSig(SESS)!==prev)renderBoard(); }
   else if(m.type==='sessionExplain'||m.type==='sessionAsk'||m.type==='sessionExplainStatus'){ applySessionExplain(m); }
   else if(m.type==='fleetChat'||m.type==='fleetChatApplied'){ onFleetChatHost(m); }
 });
@@ -73,7 +90,7 @@ function reportActivity(){ const now=Date.now(); if(now-lastActivity>10000){ las
 
 // top bar
 $('#viewSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;view=b.dataset.view;syncSeg();render();});
-$('#laneSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;laneSet=b.dataset.lane;syncSeg();renderBoard();});
+$('#laneSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;laneSet=b.dataset.lane;saveState();syncSeg();renderBoard();});
 $('#calModeSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;calMode=b.dataset.cm;syncSeg();renderCalendar();});
 $('#refreshBtn').addEventListener('click',()=>vscode.postMessage({type:'refresh'}));
 $('#captureBtn').addEventListener('click',()=>openCreateDrawer({}));
@@ -82,12 +99,16 @@ function objTags(o){ let t=o&&o.tags; if(typeof t==='string'){try{t=JSON.parse(t
 function tagMatch(o){ if(!tagFilter.length) return true; const t=objTags(o); return tagFilter.every(x=>t.indexOf(x)>=0); }
 function issueKindOf(o){ const k=o&&o.issue_kind; if(k==='bug'||k==='feature') return k; const t=objTags(o); if(t.indexOf('bug')>=0) return 'bug'; if(t.indexOf('feature')>=0) return 'feature'; return ''; }
 function applySearch(){const q=searchTerm.toLowerCase();
-  document.querySelectorAll('#board .card, #inbox .socialcard, #projects .pcard, #autonomous .card, #social .socialcard, #issues .issuecard').forEach(c=>{
-    c.style.display=(!q||(c.textContent||'').toLowerCase().includes(q))?'':'none';
-  });}
+  const vis=c=>!q||(c.textContent||'').toLowerCase().includes(q);
+  ['#board','#pipeline'].forEach(sel=>{ const n=$(sel); if(n) n.querySelectorAll('.card').forEach(c=>{c.style.display=vis(c)?'':'none';}); });
+  ['#inbox','#social'].forEach(sel=>{ const n=$(sel); if(n) n.querySelectorAll('.socialcard').forEach(c=>{c.style.display=vis(c)?'':'none';}); });
+  const proj=$('#projects'); if(proj) proj.querySelectorAll('.pcard').forEach(c=>{c.style.display=vis(c)?'':'none';});
+  const auto=$('#autonomous'); if(auto) auto.querySelectorAll('.card').forEach(c=>{c.style.display=vis(c)?'':'none';});
+  const iss=$('#issues'); if(iss) iss.querySelectorAll('.issuecard').forEach(c=>{c.style.display=vis(c)?'':'none';});
+  paintSelection();}
 function applyBoardCmd(cmd){
   if(!cmd)return;
-  const VIEWS=['board','issues','inbox','autonomous','projects','sessions','social','calendar','graph','canvas'];
+  const VIEWS=['board','pipeline','issues','inbox','autonomous','projects','sessions','social','calendar','graph','canvas'];
   if(cmd.view && VIEWS.indexOf(cmd.view)>=0) view=cmd.view;
   if(cmd.lane && BOARD_TYPES.indexOf(cmd.lane)>=0) laneSet=cmd.lane;
   if(typeof cmd.tag==='string'){ tagFilter = cmd.tag ? [cmd.tag] : []; saveState(); }
@@ -107,6 +128,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){const s=$('#search');
     if(document.activeElement===s){searchTerm='';s.value='';s.style.display='none';applySearch();}
     else if(!$('#drawer').classList.contains('hidden')){closeDrawer();}
+    else if(selectedIds.size){selectedIds.clear();lastSel={id:null,lane:null};paintSelection();}
     else if(maxLane){maxLane=null;renderBoard();}
     else if(searchTerm){searchTerm='';s.value='';s.style.display='none';applySearch();}}
 });
@@ -125,9 +147,11 @@ function syncSeg(){
   // inline display in sync for older hosts / no-CSS-fallback.
   $('#laneSeg').style.display = view==='board'?'inline-flex':'none';
   $('#calModeSeg').style.display = view==='calendar'?'inline-flex':'none';
+  // The coding pipeline has fixed lifecycle lanes — group/custom-lane controls don't apply.
   const boardOnly = ['#groupBy','#sortBy','#addLaneBtn'];
-  boardOnly.forEach(sel=>{ const n=$(sel); if(n) n.style.display = view==='board'?'':'none'; });
+  boardOnly.forEach(sel=>{ const n=$(sel); if(n) n.style.display = (view==='board'||(view==='pipeline'&&sel==='#sortBy'))?'':'none'; });
   $('#board').classList.toggle('hidden',view!=='board');
+  $('#pipeline')&&$('#pipeline').classList.toggle('hidden',view!=='pipeline');
   $('#issues').classList.toggle('hidden',view!=='issues');
   $('#inbox').classList.toggle('hidden',view!=='inbox');
   $('#autonomous').classList.toggle('hidden',view!=='autonomous');
@@ -156,6 +180,7 @@ function loadElapsed(){
 }
 function boardPainted(){
   if(view==='board') return !!document.querySelector('#board .lanes .col');
+  if(view==='pipeline') return !!document.querySelector('#pipeline .lanes .col');
   return true;
 }
 function paintLoadOverlay(){
@@ -208,7 +233,7 @@ function render(){
     renderOverduePill();
     renderInboxPill();
     renderTagBar();
-    if(view==='board')renderBoard(); else if(view==='issues')renderIssues(); else if(view==='inbox')renderInbox(); else if(view==='autonomous')renderAutonomous(); else if(view==='projects')renderProjects(); else if(view==='sessions')renderSessions(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
+    if(view==='board'||view==='pipeline')renderBoard(); else if(view==='issues')renderIssues(); else if(view==='inbox')renderInbox(); else if(view==='autonomous')renderAutonomous(); else if(view==='projects')renderProjects(); else if(view==='sessions')renderSessions(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
     applySearch();
     renderError=null;
   } catch (e) {
@@ -225,15 +250,35 @@ $('#overduePill')&&$('#overduePill').addEventListener('click',()=>{
 $('#inboxPill')&&$('#inboxPill').addEventListener('click',()=>{ view=(view==='inbox')?'board':'inbox'; syncSeg(); render(); });
 
 // closing statuses prompt for a resolution note (host shows the InputBox; Esc aborts)
-function postStatus(id,status){ if(CLOSING.has(status))openResModal(id,status); else vscode.postMessage({type:'setStatus',id:id,status:status}); }
+function postStatus(id,status,ids){
+  const all=(ids&&ids.length)?ids.slice():[id];
+  if(CLOSING.has(status))openResModal(all[0],status,false,all);
+  else vscode.postMessage({type:'setStatus',id:all[0],ids:all,status:status});
+}
 // Multi-line resolution note modal for closing moves (nicer than a one-line input).
 let resCtx=null;
-function openResModal(id,status){
-  resCtx={id:id,status:status};
+function openResModal(id,status,pipe,ids){
+  const all=(ids&&ids.length)?ids.slice():[id];
+  resCtx={id:id,ids:all,status:status,pipe:!!pipe};
   const o=(S&&S.objects||[]).find(x=>x.id===id);
-  $('#resTitle').textContent=(o&&(o.title||o.id))||id;
-  $('#resSub').textContent='Moving to “'+status+'” — add a resolution note (optional).';
+  $('#resTitle').textContent=all.length>1?(all.length+' items'):((o&&(o.title||o.id))||id);
+  $('#resSub').textContent=all.length>1
+    ?('Moving '+all.length+' items to “'+status+'” — add a resolution note (optional, applied to all).')
+    :('Moving to “'+status+'” — add a resolution note (optional).');
   const ta=$('#resNote'); ta.value='';
+  // moving to done without an implementation screenshot → inline nudge + attach
+  const warn=$('#resWarn');
+  if(warn){
+    const miss=(status==='done')?all.map(x=>(S&&S.objects||[]).find(y=>y.id===x)).filter(x=>x&&x.has_screenshot===false):[];
+    warn.innerHTML='';
+    if(miss.length){
+      warn.classList.remove('hidden');
+      warn.appendChild(el('span',null,'⚠ '+(miss.length>1?miss.length+' items have':'“'+esc(miss[0].title||miss[0].id)+'” has')+' no implementation screenshot.'));
+      const b=el('button','ghost mini','📷 Attach now'); b.title='pick image file(s) — attaches to '+(miss[0].title||miss[0].id);
+      b.addEventListener('click',()=>vscode.postMessage({type:'action',action:'attachImage',id:miss[0].id}));
+      warn.appendChild(b);
+    } else warn.classList.add('hidden');
+  }
   $('#resmodal').classList.remove('hidden');
   setTimeout(()=>ta.focus(),40);
 }
@@ -241,7 +286,10 @@ function closeResModal(apply,withNote){
   const m=$('#resmodal'); if(m.classList.contains('hidden'))return;
   const ctx=resCtx; m.classList.add('hidden'); resCtx=null;
   if(!ctx)return;
-  if(apply)vscode.postMessage({type:'setStatusApply',id:ctx.id,status:ctx.status,note:withNote?$('#resNote').value.trim():''});
+  const ids=ctx.ids&&ctx.ids.length?ctx.ids:[ctx.id];
+  const note=withNote?$('#resNote').value.trim():'';
+  if(apply&&ctx.pipe)vscode.postMessage({type:'action',action:'pipelineMove',id:ctx.id,ids:ids,lane:'done',note:note,route:implPrefs||undefined});
+  else if(apply)vscode.postMessage({type:'setStatusApply',id:ctx.id,ids:ids,status:ctx.status,note:note});
   else vscode.postMessage({type:'refresh'}); // cancel → snap the board back
 }
 $('#resSave').addEventListener('click',()=>closeResModal(true,true));
@@ -249,7 +297,135 @@ $('#resSkip').addEventListener('click',()=>closeResModal(true,false));
 $('#resCancel').addEventListener('click',()=>closeResModal(false));
 $('#resX').addEventListener('click',()=>closeResModal(false));
 $('#resNote').addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();closeResModal(true,true);} if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeResModal(false);} });
+// ── coding pipeline: bugs/features/auto coding items in one lifecycle view ────
+// inbox → approved (auto_implement: ready / accepted / today) → implementation
+// (in_progress statuses, or the item the night implementer is running right
+// now, from planning/autonomous/plan.json) → done. Only coding work belongs
+// here: tasks/ideas that are bugs/features, target a repo, are routed to an
+// implementer, or came from the night ideation. The Board keeps per-type lanes.
+function isCodingItem(o){
+  if(o.type!=='task'&&o.type!=='idea') return false;
+  if(issueKindOf(o)||o.target_repo||o.auto_implement||o.implement_backend||o.implement_model||isAutoTagged(o)) return true;
+  const run=runningImpl(); return !!(run&&run.id===o.id); // whatever is being built is coding
+}
+function runningImpl(){
+  const a=S&&S.autonomous, cw=a&&a.current_window, im=cw&&cw.implement;
+  if(!im||im.status!=='running') return null;
+  // ignore a stale "running" from a crashed orchestrator (window long over)
+  try{ if(cw.end&&new Date(cw.end).getTime()<Date.now()-3600000) return null; }catch(e){}
+  return {id:im.item||null, session:im.session||null};
+}
+function isAutoTagged(o){ return objTags(o).indexOf('autogenerated')>=0; }
+// Sessions attached to an item: explicit linked_sessions ∪ fleet sessions whose
+// planning_refs point back at it. Newest activity first; rows without fleet
+// metadata (other laptop, store lag) fall back to a bare {uuid}.
+function sessionsFor(o){
+  const ids=parseLinked(o).slice(), seen=new Set(ids), meta={};
+  (SESS||[]).forEach(s=>{ meta[s.uuid]=s; if((s.planningRefs||[]).indexOf(o.id)>=0&&!seen.has(s.uuid)){seen.add(s.uuid);ids.push(s.uuid);} });
+  return ids.map(u=>meta[u]||{uuid:u}).sort((a,b)=>((b.lastActivity||b.mtime||0)-(a.lastActivity||a.mtime||0)));
+}
+function sessStateLabel(s){ const st=s&&s.status;
+  return st==='live-local'?'live':st==='active-remote'?'remote':st==='open'?'open':(s&&(s.lastActivity||s.mtime))?agoStr(s.lastActivity||s.mtime):'session'; }
+function sessSig(list){ return (list||[]).map(s=>s.uuid+':'+(s.status||'')+':'+(s.lastActivity||0)).join('|'); }
+function pipeLaneOf(o){
+  const run=runningImpl();
+  if(run&&run.id&&run.id===o.id) return 'implementation';
+  const st=String(o.status||'');
+  if(CLOSING.has(st)||st==='converted'||st==='archived') return 'done';
+  // idea@plan = being planned/implemented (ideas have no in_progress status)
+  if(st==='in_progress'||(o.type==='idea'&&st==='plan')) return 'implementation';
+  if(o.auto_implement==='ready'||st==='accepted'||st==='today') return 'approved';
+  return 'inbox';
+}
+function pipeMove(id,lane,ids){
+  const all=(ids&&ids.length)?ids.slice():[id];
+  if(!all.length) return;
+  if(lane==='done'){ openResModal(all[0],'done',true,all); return; }
+  vscode.postMessage({type:'action',action:'pipelineMove',id:all[0],ids:all,lane:lane,route:implPrefs||undefined});
+  selectedIds.clear(); lastSel={id:null,lane:null}; paintSelection();
+}
+function dragIds(ev){
+  const raw=(ev&&ev.dataTransfer&&ev.dataTransfer.getData('text/plain'))||'';
+  return raw.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+}
+function boardRoot(){ return $(view==='pipeline'?'#pipeline':'#board'); }
+function visibleLaneCards(lane){
+  const root=boardRoot(); if(!root) return [];
+  const col=Array.from(root.querySelectorAll('.col')).find(c=>c.dataset.lane===lane);
+  if(!col) return [];
+  return Array.from(col.querySelectorAll('.card')).filter(c=>c.style.display!=='none');
+}
+function paintSelection(){
+  ['#board','#pipeline'].forEach(sel=>{
+    const n=$(sel); if(!n) return;
+    n.querySelectorAll('.card').forEach(c=>c.classList.toggle('selected', selectedIds.has(c.dataset.id)));
+  });
+  document.querySelectorAll('.selHint').forEach(n=>{
+    n.textContent=selectedIds.size?(selectedIds.size+' selected · drag to a lane · Esc clears'):'';
+  });
+}
+function toggleSelect(id,lane,ev){
+  if(!id) return;
+  if(ev.shiftKey && lastSel.id && lastSel.lane===lane){
+    const vis=visibleLaneCards(lane);
+    const a=vis.findIndex(c=>c.dataset.id===lastSel.id);
+    const b=vis.findIndex(c=>c.dataset.id===id);
+    if(a>=0 && b>=0){
+      const lo=Math.min(a,b), hi=Math.max(a,b);
+      for(let i=lo;i<=hi;i++) if(vis[i].dataset.id) selectedIds.add(vis[i].dataset.id);
+    } else selectedIds.add(id);
+  } else if(ev.metaKey || ev.ctrlKey){
+    if(selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+  } else {
+    selectedIds.clear(); selectedIds.add(id);
+  }
+  lastSel={id:id,lane:lane};
+  paintSelection();
+}
+function selectLane(lane){
+  const vis=visibleLaneCards(lane);
+  vis.forEach(c=>{ if(c.dataset.id) selectedIds.add(c.dataset.id); });
+  if(vis.length) lastSel={id:vis[vis.length-1].dataset.id, lane:lane};
+  paintSelection();
+}
+function commitImplPrefs(){
+  const prefs={
+    backend:(implPrefs&&implPrefs.backend)||'',
+    model:(implPrefs&&implPrefs.model)||'',
+    effort:(implPrefs&&implPrefs.effort)||''
+  };
+  implPrefs=prefs;
+  vscode.postMessage({type:'action',action:'setImplPrefs',backend:prefs.backend||'-',model:prefs.model||'-',effort:prefs.effort||'-'});
+}
+function fillSelect(sel, opts, cur){
+  if(!sel) return;
+  sel.innerHTML='';
+  opts.forEach(([v,l])=>{ const op=el('option',null,l); op.value=v; if(v===cur) op.selected=true; sel.appendChild(op); });
+}
+function syncPipeRouteBar(){
+  const pb=$('#ppProv'), pm=$('#ppModel'), pe=$('#ppEffort');
+  if(!pb||!pm||!pe) return;
+  const cur=implPrefs||{};
+  fillSelect(pb, [['','(provider)'],['claude','Claude Code'],['grok','Grok']], cur.backend||'');
+  fillSelect(pm, [['','(model)']].concat((IMPL_PROV[pb.value]||IMPL_PROV.claude).map(m=>[m,m])), cur.model||'');
+  fillSelect(pe, [['','(effort)']].concat(IMPL_EFF.map(e2=>[e2,e2])), cur.effort||'');
+}
+function wirePipeRouteBar(pb){
+  const prov=pb.querySelector('#ppProv'), model=pb.querySelector('#ppModel'), effort=pb.querySelector('#ppEffort');
+  if(!prov||!model||!effort) return;
+  const read=()=>{ implPrefs={backend:prov.value||'', model:model.value||'', effort:effort.value||''}; };
+  prov.addEventListener('change',()=>{
+    read();
+    fillSelect(model, [['','(model)']].concat((IMPL_PROV[prov.value]||IMPL_PROV.claude).map(m=>[m,m])), '');
+    implPrefs.model='';
+    commitImplPrefs();
+  });
+  model.addEventListener('change',()=>{ read(); commitImplPrefs(); });
+  effort.addEventListener('change',()=>{ read(); commitImplPrefs(); });
+  syncPipeRouteBar();
+}
 function laneFieldAndList(objs){
+  if(view==='pipeline') return {field:'__pipe', lanes:PIPE_LANES.slice()};
   if(groupBy==='status') return {field:'status', lanes:(LANES[laneSet]||[...new Set(objs.map(o=>o.status||'inbox'))])};
   if(groupBy==='type') return {field:'type', lanes:BOARD_TYPES.slice()};
   const vals=new Set(objs.map(o=>o[groupBy]||'(none)')); customLanes.forEach(l=>vals.add(l)); const lanes=[...vals]; if(!lanes.includes('(none)'))lanes.push('(none)');
@@ -277,10 +453,55 @@ function renderTagBar(){
 }
 function renderBoard(){
   const bl=blockedSet();
-  let objs = groupBy==='type' ? (S.objects||[]).filter(o=>BOARD_TYPES.indexOf(o.type)>=0) : (S.objects||[]).filter(o=>o.type===laneSet);
+  const pipe=view==='pipeline';
+  let objs = pipe ? (S.objects||[]).filter(isCodingItem)
+    : groupBy==='type' ? (S.objects||[]).filter(o=>BOARD_TYPES.indexOf(o.type)>=0)
+    : (S.objects||[]).filter(o=>o.type===laneSet);
   objs=objs.filter(tagMatch);
+  if(pipe)objs.forEach(o=>{o.__pipe=pipeLaneOf(o);});
+  const board=$(pipe?'#pipeline':'#board'); board.innerHTML='';
   const {field, lanes} = laneFieldAndList(objs);
-  const board=$('#board'); board.innerHTML='';
+  if(pipe){
+    // ── pipeline quick filters: kind · project (filter + group) · worked-on window ──
+    const pb=el('div','boardfilter');
+    const kindSeg=[['','All'],['bug','🐛 Bugs'],['feature','✨ Features'],['auto','🤖 Auto']]
+      .map(([v,l])=>'<button class="ghost'+(pipeKind===v?' on':'')+'" data-pk="'+v+'">'+l+'</button>').join('');
+    const winSeg=[['','All'],['today','Today'],['yesterday','Yesterday'],['week','Week'],['month','Month']]
+      .map(([v,l])=>'<button class="ghost'+(pipeWindow===v?' on':'')+'" data-pw="'+v+'" title="worked on (updated) within">'+l+'</button>').join('');
+    const projs=[...new Set(objs.map(o=>o.project).filter(Boolean))].sort();
+    const projOpts='<option value="">all projects</option>'+projs.map(p=>'<option value="'+esc(p)+'"'+(pipeProject===p?' selected':'')+'>'+esc(String(p).split('/').pop())+'</option>').join('');
+    pb.innerHTML='<span style="display:inline-flex;gap:4px">'+kindSeg+'</span>'+
+      '<select id="ppProj" title="Filter by project">'+projOpts+'</select>'+
+      '<button class="ghost'+(pipeGroupProj?' on':'')+'" id="ppGroup" title="Group cards by project within each lane">⫶ by project</button>'+
+      '<span style="display:inline-flex;gap:4px">'+winSeg+'</span>'+
+      '<span class="piperoute" title="Default provider · model · effort applied when an unrouted card is dropped on Implementation">'+
+        '<span style="opacity:.6">route</span>'+
+        '<select id="ppProv" title="Default auto-implement provider"></select>'+
+        '<select id="ppModel" title="Default auto-implement model"></select>'+
+        '<select id="ppEffort" title="Default auto-implement effort"></select>'+
+      '</span>'+
+      '<span style="opacity:.6" id="ppN"></span>'+
+      '<span class="selHint"></span>';
+    board.appendChild(pb);
+    pb.querySelectorAll('[data-pk]').forEach(b=>b.addEventListener('click',()=>{pipeKind=b.getAttribute('data-pk')||'';saveState();renderBoard();}));
+    pb.querySelectorAll('[data-pw]').forEach(b=>b.addEventListener('click',()=>{pipeWindow=b.getAttribute('data-pw')||'';saveState();renderBoard();}));
+    pb.querySelector('#ppProj').addEventListener('change',e=>{pipeProject=e.target.value;saveState();renderBoard();});
+    pb.querySelector('#ppGroup').addEventListener('click',()=>{pipeGroupProj=!pipeGroupProj;saveState();renderBoard();});
+    wirePipeRouteBar(pb);
+    if(pipeKind==='auto')objs=objs.filter(isAutoTagged);
+    else if(pipeKind)objs=objs.filter(o=>issueKindOf(o)===pipeKind);
+    if(pipeProject)objs=objs.filter(o=>o.project===pipeProject);
+    if(pipeWindow){
+      const t=todayStr();
+      const from=pipeWindow==='today'?t:pipeWindow==='yesterday'?addDays(t,-1):pipeWindow==='week'?addDays(t,-7):addDays(t,-30);
+      // only "yesterday" is a closed day; the rest are open-ended (clock-skew safe)
+      objs=objs.filter(o=>{const u=String(o.updated||o.created||'').slice(0,10);
+        return u>=from&&(pipeWindow!=='yesterday'||u<=from);});
+    }
+    pb.querySelector('#ppN').textContent=objs.length+' item(s)';
+    if(SESS===null)vscode.postMessage({type:'requestSessions'}); // session chips need fleet metadata
+    armSessPoll();
+  } else {
   // date filter bar (worked-on / due) — full-width row above the lanes
   const fb=el('div','boardfilter');
   const odCount=overdueList().length;
@@ -291,7 +512,8 @@ function renderBoard(){
     (boardDateVal?'<button class="ghost" id="bfClear">clear ✕</button>':'')+
     '<button class="ghost'+(overdueOnly?' on':'')+'" id="bfOverdue" title="Show only past-due, not-completed tasks">⚠ Overdue'+(odCount?' ('+odCount+')':'')+'</button>'+
     '<button class="ghost'+(staleOnly?' on':'')+'" id="bfStale" title="Open items untouched for 21+ days">🕸 Stale</button>'+
-    '<span style="opacity:.6" id="bfN"></span>';
+    '<span style="opacity:.6" id="bfN"></span>'+
+    '<span class="selHint"></span>';
   board.appendChild(fb);
   fb.querySelector('#bfField').addEventListener('change',e=>{boardDateField=e.target.value;renderBoard();});
   fb.querySelector('#bfDate').addEventListener('change',e=>{boardDateVal=e.target.value;renderBoard();});
@@ -303,6 +525,7 @@ function renderBoard(){
   if(overdueOnly)objs=objs.filter(isOverdue);
   if(staleOnly)objs=objs.filter(isStale);
   if(fb.querySelector('#bfN'))fb.querySelector('#bfN').textContent=overdueOnly?(objs.length+' overdue'):staleOnly?(objs.length+' stale'):(boardDateVal?(objs.length+' '+laneSet+'(s) '+boardDateField+' '+boardDateVal):'');
+  }
   const lanesWrap=el('div','lanes');board.appendChild(lanesWrap);
   const shown=(maxLane&&lanes.includes(maxLane))?[maxLane]:lanes;
   shown.forEach(lane=>{
@@ -317,7 +540,8 @@ function renderBoard(){
       type:(a,b)=>String(a.type).localeCompare(String(b.type)),
     };
     rows.sort(CMP[sortBy]||CMP.priority); // unset values sort last (except updated: newest first)
-    const isDone = field==='status' && lane==='done';
+    if(pipe&&pipeGroupProj)rows.sort((a,b)=>String(a.project||'~').localeCompare(String(b.project||'~'))||(CMP[sortBy]||CMP.priority)(a,b));
+    const isDone = (field==='status'||field==='__pipe') && lane==='done';
     let hidDone=0;
     if(isDone && doneWindow!=='all'){
       const days={yesterday:1,week:7,month:30}[doneWindow]||7;
@@ -328,9 +552,9 @@ function renderBoard(){
     }
     const isMax=maxLane===lane;
     const col=el('div','col'+(isMax?' max':'')); col.dataset.lane=lane;
-    const h=el('h3',null,'<span class="dot" style="background:'+(LANE_COLOR[lane]||TYPE_COLOR[lane]||'#888')+'"></span>'+esc(lane)+(isMax?' <span style="opacity:.5;font-weight:400;text-transform:none">(double-click or Esc to restore)</span>':'')+'<span class="cnt">'+rows.length+(hidDone?' <span style="opacity:.55" title="'+hidDone+' older done hidden">+'+hidDone+' older</span>':'')+'</span>');
+    const h=el('h3',null,'<span class="dot" style="background:'+((pipe&&PIPE_COLOR[lane])||LANE_COLOR[lane]||TYPE_COLOR[lane]||'#888')+'"></span>'+esc(lane)+(isMax?' <span style="opacity:.5;font-weight:400;text-transform:none">(double-click or Esc to restore)</span>':'')+'<span class="cnt">'+rows.length+(hidDone?' <span style="opacity:.55" title="'+hidDone+' older done hidden">+'+hidDone+' older</span>':'')+'</span>');
     col.title='double-click to '+(isMax?'restore':'maximize as a list');
-    col.addEventListener('dblclick',ev=>{ if(ev.target.closest('.card')||ev.target.tagName==='SELECT')return; maxLane=isMax?null:lane; renderBoard(); });
+    col.addEventListener('dblclick',ev=>{ if(ev.target.closest('.card')||ev.target.closest('.laneselect')||ev.target.tagName==='SELECT')return; maxLane=isMax?null:lane; renderBoard(); });
     if(isDone){
       const sel=el('select','donewin');
       ['yesterday','week','month','all'].forEach(w=>{const op=el('option',null,w);op.value=w;if(w===doneWindow)op.selected=true;sel.appendChild(op);});
@@ -339,37 +563,98 @@ function renderBoard(){
       sel.addEventListener('change',()=>{doneWindow=sel.value;saveState();renderBoard();});
       h.insertBefore(sel,h.querySelector('.cnt'));
     }
+    const selAll=el('button','laneselect','☑');
+    selAll.title='Select all visible cards in this lane (respects search filter). Then drag to another lane.';
+    selAll.addEventListener('click',ev=>{ev.stopPropagation();ev.preventDefault();selectLane(lane);});
+    h.insertBefore(selAll, h.querySelector('.cnt'));
     col.appendChild(h);
     const cards=el('div','cards');
+    let prevProj=null;
     rows.forEach(o=>{
-      const card=el('div','card'+(bl.has(o.id)?' blocked':'')+(isMax?' compact':'')); card.draggable=true; card.dataset.id=o.id;
+      if(pipe&&pipeGroupProj){
+        const pj=String(o.project||'(no project)');
+        if(pj!==prevProj){ prevProj=pj; cards.appendChild(el('div','planehead','⫶ '+esc(pj.split('/').pop()))); }
+      }
+      const card=el('div','card'+(bl.has(o.id)?' blocked':'')+(isMax?' compact':'')+(selectedIds.has(o.id)?' selected':'')); card.draggable=true; card.dataset.id=o.id; card.dataset.lane=lane;
       const isThought=o.type==='thought';
+      const kind=issueKindOf(o);
+      const run=runningImpl();
+      const isRun=!!(run&&run.id&&run.id===o.id);
+      const runSess=isRun?(run.session||parseLinked(o).slice(-1)[0]||''):'';
+      const chips=(kind?'<span class="badge '+(kind==='bug'?'kindbug':'kindfeat')+'">'+(kind==='bug'?'🐛':'✨')+' '+kind+'</span>':'')+
+        (isAutoTagged(o)?'<span class="badge" title="autogenerated by night ideation">🤖</span>':'')+
+        ((o.implement_backend||o.implement_model)?'<span class="badge implchip" title="auto-implement route (provider · model)">⚙ '+esc(o.implement_backend||'claude')+(o.implement_model?' · '+esc(o.implement_model):'')+'</span>':'')+
+        (isRun?'<span class="runchip" title="auto-implementer is working on this now — click to open the session"'+(runSess?' data-sess="'+esc(runSess)+'"':'')+'>▶ implementing</span>':'')+
+        (pipe&&o.status?'<span class="badge" title="underlying status">'+esc(o.status)+'</span>':'');
+      // pipeline: session chip (open the latest attached session, or start one
+      // with the item's context) + 📷-missing badge on evidence-less done cards
+      let extra='';
+      if(pipe&&!isRun){
+        const ss=sessionsFor(o);
+        if(ss.length){
+          const top=ss[0], st=top.status||'';
+          extra+='<span class="sesschip'+(st==='live-local'||st==='active-remote'?' live':st==='open'?' opensess':'')+'" data-sess="'+esc(top.uuid)+'" title="'+esc((top.title||top.uuid)+(top.host?' · '+top.host:'')+(top.agent?' · '+top.agent:''))+' — click to open the session">▸ '+esc(sessStateLabel(top))+(ss.length>1?' ×'+ss.length:'')+'</span>';
+        } else if(lane==='implementation'||lane==='done'){
+          extra+='<span class="sesschip none" data-newsess="1" title="no linked session — click to open a Code Build session with this item’s context">▸ no session</span>';
+        }
+      }
+      if(pipe&&lane==='done'&&o.has_screenshot===false){
+        extra+='<span class="badge noshot" data-shot="1" title="done without an implementation screenshot — click to attach one">📷 missing</span>';
+      }
       card.innerHTML='<div class="cact">'+(isThought?'<button data-act="toIdea" title="Convert → idea">→💡</button><button data-act="toTask" title="Convert → task">→☑</button>':'')+'<button data-act="edit" title="Edit">✎</button><button data-act="clone" title="Clone">⧉</button><button data-act="recat" title="Recategorize / move">⇄</button><button data-act="del" title="Delete">✕</button></div>'+
-        '<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm"><span class="badge">'+o.type+'</span>'+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+(o.due?'<span class="due'+(o.due<todayStr()&&o.status!=='done'&&o.status!=='outdated'?' late':'')+'">⏰ '+esc(o.due)+'</span>':'')+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.lane?'<span>⋔ '+esc(o.lane)+'</span>':'')+(o.project?'<span>· '+esc(o.project.split('/').pop())+'</span>':'')+(isThought&&o.context?'<span title="where this was captured">◔ '+esc(o.context)+'</span>':'')+(isThought&&(o.surfaced_on||o.created)?'<span>'+esc(o.surfaced_on||o.created)+'</span>':'')+'</div>';
-      card.addEventListener('click',ev=>{ if(ev.target.closest('[data-act]'))return; openDetail(o.id); });
+        '<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm"><span class="badge">'+o.type+'</span>'+chips+extra+(o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+(o.due?'<span class="due'+(o.due<todayStr()&&o.status!=='done'&&o.status!=='outdated'?' late':'')+'">⏰ '+esc(o.due)+'</span>':'')+(o.domain?'<span>'+esc(o.domain)+'</span>':'')+(o.lane?'<span>⋔ '+esc(o.lane)+'</span>':'')+(o.project?'<span>· '+esc(o.project.split('/').pop())+'</span>':'')+(isThought&&o.context?'<span title="where this was captured">◔ '+esc(o.context)+'</span>':'')+(isThought&&(o.surfaced_on||o.created)?'<span>'+esc(o.surfaced_on||o.created)+'</span>':'')+'</div>';
+      card.addEventListener('click',ev=>{ if(ev.target.closest('[data-act]'))return;
+        if(didDrag){ didDrag=false; return; }
+        if(ev.shiftKey||ev.metaKey||ev.ctrlKey){ ev.preventDefault(); toggleSelect(o.id,lane,ev); return; }
+        const rc=ev.target.closest('.runchip');
+        if(rc){ const su=rc.getAttribute('data-sess'); if(su){vscode.postMessage({type:'action',action:'openSession',uuid:su,title:o.title||o.id}); return;} }
+        const sc=ev.target.closest('.sesschip');
+        if(sc){
+          if(sc.getAttribute('data-newsess'))vscode.postMessage({type:'action',action:'openCB',id:o.id});
+          else vscode.postMessage({type:'action',action:'openSession',uuid:sc.getAttribute('data-sess'),title:o.title||o.id});
+          return;
+        }
+        if(ev.target.closest('.noshot')){ vscode.postMessage({type:'action',action:'attachImage',id:o.id}); return; }
+        openDetail(o.id); });
       card.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',ev=>{ev.stopPropagation();const a=b.dataset.act;vscode.postMessage({type:'action',action:a==='edit'?'editItem':a==='recat'?'recategorize':a==='clone'?'cloneItem':a==='toIdea'?'convertToIdea':a==='toTask'?'convertToTask':'deleteItem',id:o.id});}));
-      card.addEventListener('dragstart',ev=>{ev.dataTransfer.setData('text/plain',o.id);card.classList.add('dragging');});
-      card.addEventListener('dragend',()=>card.classList.remove('dragging'));
+      card.addEventListener('dragstart',ev=>{
+        const ids=selectedIds.has(o.id)&&selectedIds.size?Array.from(selectedIds):[o.id];
+        if(ev.dataTransfer){ ev.dataTransfer.setData('text/plain', ids.join('\n')); ev.dataTransfer.effectAllowed='move'; }
+        didDrag=true;
+        ['#board','#pipeline'].forEach(sel=>{ const n=$(sel); if(!n) return; n.querySelectorAll('.card').forEach(c=>c.classList.toggle('dragging', ids.indexOf(c.dataset.id)>=0)); });
+      });
+      card.addEventListener('dragend',()=>{
+        ['#board','#pipeline'].forEach(sel=>{ const n=$(sel); if(!n) return; n.querySelectorAll('.card').forEach(c=>c.classList.remove('dragging')); });
+        setTimeout(()=>{ didDrag=false; },0);
+      });
       // drop a card ON another card => adopt its priority (drag-to-sort within a lane);
-      // across lanes it also takes the target lane's status
+      // across lanes it also takes the target lane's status. Multi-select moves skip priority copy.
       card.addEventListener('dragover',ev=>{ev.preventDefault();ev.stopPropagation();card.classList.add('dropover');});
       card.addEventListener('dragleave',()=>card.classList.remove('dropover'));
       card.addEventListener('drop',ev=>{ev.preventDefault();ev.stopPropagation();card.classList.remove('dropover');
-        const id=ev.dataTransfer.getData('text/plain'); if(!id||id===o.id)return;
-        const src=(S.objects||[]).find(x=>x.id===id);
-        if(field==='status'&&src&&String(src.status||'')!==String(lane))postStatus(id,lane);
-        vscode.postMessage({type:'setPriority',id:id,priority:o.priority||'-'});});
+        const ids=dragIds(ev).filter(x=>x!==o.id); if(!ids.length)return;
+        const src=(S.objects||[]).find(x=>x.id===ids[0]);
+        if(field==='__pipe'&&src&&pipeLaneOf(src)!==lane)pipeMove(ids[0],lane,ids);
+        else if(field==='status'&&src&&String(src.status||'')!==String(lane))postStatus(ids[0],lane,ids);
+        if(ids.length===1) vscode.postMessage({type:'setPriority',id:ids[0],priority:o.priority||'-'});});
       cards.appendChild(card);
     });
     col.appendChild(cards);
     col.addEventListener('dragover',ev=>{ev.preventDefault();col.classList.add('over');});
     col.addEventListener('dragleave',()=>col.classList.remove('over'));
-    col.addEventListener('drop',ev=>{ev.preventDefault();col.classList.remove('over');const id=ev.dataTransfer.getData('text/plain');if(!id)return;
-      if(field==='status')postStatus(id,lane);
-      else if(field==='type')vscode.postMessage({type:'action',action:'setType',id:id,toType:lane});
-      else vscode.postMessage({type:'action',action:'setField',id:id,field:field,value:lane==='(none)'?'':lane});});
+    col.addEventListener('drop',ev=>{ev.preventDefault();col.classList.remove('over');
+      const ids=dragIds(ev); if(!ids.length)return;
+      if(field==='__pipe')pipeMove(ids[0],lane,ids);
+      else if(field==='status')postStatus(ids[0],lane,ids);
+      else ids.forEach(id=>{
+        if(field==='type')vscode.postMessage({type:'action',action:'setType',id:id,toType:lane});
+        else vscode.postMessage({type:'action',action:'setField',id:id,field:field,value:lane==='(none)'?'':lane});
+      });
+      if(field!=='__pipe'){ selectedIds.clear(); lastSel={id:null,lane:null}; paintSelection(); }
+    });
     lanesWrap.appendChild(col);
   });
+  paintSelection();
 }
 
 function lastSession(o){ const ls=parseLinked(o); return ls.length?ls[ls.length-1]:''; }
@@ -667,7 +952,8 @@ function applySessionExplain(m){
 }
 function armSessPoll(){
   if(sessPoll)return;
-  sessPoll=setInterval(()=>{ if(view==='sessions') vscode.postMessage({type:'requestSessions'}); }, 8000);
+  // pipeline cards carry live session chips, so keep them fresh there too
+  sessPoll=setInterval(()=>{ if(view==='sessions'||view==='pipeline') vscode.postMessage({type:'requestSessions'}); }, 8000);
 }
 function fleetAct(label, title, fn){
   const b=el('button','ghost mini',label); b.title=title; b.addEventListener('click',ev=>{ev.stopPropagation(); fn();}); return b;
@@ -1082,8 +1368,8 @@ function renderCanvas(){ $('#canvas').innerHTML='<div style="font-size:40px">✎
 
 // detail drawer
 let flushAutosave=null;
-function openDetail(id){ vscode.postMessage({type:'show',id:id}); $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden'); $('#drawerInner').innerHTML='<div style="opacity:.6">Loading '+esc(id)+'…</div>'; }
-function closeDrawer(){ if(flushAutosave){try{flushAutosave();}catch(e){}} flushAutosave=null; $('#drawer').classList.add('hidden'); $('#backdrop').classList.add('hidden'); }
+function openDetail(id){ vscode.postMessage({type:'show',id:id}); const d=$('#drawer'); d.classList.remove('hidden'); d.classList.add('center'); $('#backdrop').classList.remove('hidden'); $('#drawerInner').innerHTML='<div style="opacity:.6">Loading '+esc(id)+'…</div>'; }
+function closeDrawer(){ if(flushAutosave){try{flushAutosave();}catch(e){}} flushAutosave=null; const d=$('#drawer'); d.classList.add('hidden'); d.classList.remove('center'); $('#backdrop').classList.add('hidden'); }
 function domainOptions(){ const s=new Set(); ((S&&S.objects)||[]).forEach(x=>{ if(x.type==='domain')s.add(String(x.title||x.id.split('/').pop())); else if(x.domain)s.add(String(x.domain)); }); return [...s].sort(); }
 function projectOptions(){ return ((S&&S.objects)||[]).filter(x=>x.type==='project').map(x=>({id:x.id,title:x.title||x.id.split('/').pop()})).sort((a,b)=>a.title.localeCompare(b.title)); }
 // New-item editor rendered in the side drawer — all fields editable before it's
@@ -1091,7 +1377,7 @@ function projectOptions(){ return ((S&&S.objects)||[]).filter(x=>x.type==='proje
 function openCreateDrawer(prefill){
   flushAutosave=null;
   prefill=prefill||{};
-  $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden');
+  $('#drawer').classList.remove('hidden'); $('#drawer').classList.remove('center'); $('#backdrop').classList.remove('hidden');
   const I=$('#drawerInner'); I.innerHTML='';
   const head=el('div','dh'); head.appendChild(el('h2',null,'New item')); const ask=el('button','dclose','💬'); ask.title='Ask the planning chat about this item'; ask.addEventListener('click',function(){ closeDrawer(); if(window.__openPlanningChatWith)window.__openPlanningChatWith('About '+o.id+' — '); }); head.appendChild(ask); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
   const STAT={task:['inbox','today','in_progress','done','deferred','outdated'],idea:['capture','refine','accepted','parked','done'],plan:['plan','prototype','implement','validate','done','parked'],thought:['new','kept','converted','archived']};
@@ -1148,24 +1434,27 @@ function renderDrawer(o){
   const I=$('#drawerInner'); I.innerHTML='';
   const head=el('div','dh'); const ti=el('input','titleEdit'); ti.value=o.title||''; ti.title='Edit name — Enter or click away to save'; ti.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:'title',value:ti.value})); head.appendChild(ti); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
   const fm=o.frontmatter||{};
-  const meta=el('div','drow'); meta.innerHTML='<span class="badge">'+o.type+'</span>'+(o.status?'<span class="badge">'+esc(o.status)+'</span>':'')+(o.domain?'<span class="badge">'+esc(o.domain)+'</span>':'')+(fm.context?'<span class="badge" title="captured under">◔ '+esc(fm.context)+'</span>':'')+(fm.surfaced_on?'<span class="badge" title="surfaced on">'+esc(fm.surfaced_on)+'</span>':''); I.appendChild(meta);
+  const meta=el('div','drow'); meta.innerHTML='<span class="badge">'+o.type+'</span>'+(o.status?'<span class="badge">'+esc(o.status)+'</span>':'')+(o.domain?'<span class="badge">'+esc(o.domain)+'</span>':'')+(fm.priority?'<span class="badge">'+esc(fm.priority)+'</span>':'')+(fm.target_repo?'<span class="badge">'+esc(fm.target_repo)+'</span>':'')+(fm.context?'<span class="badge" title="captured under">◔ '+esc(fm.context)+'</span>':'')+(fm.surfaced_on?'<span class="badge" title="surfaced on">'+esc(fm.surfaced_on)+'</span>':''); I.appendChild(meta);
   if(fm.source_url){ const sr=el('div','drow'); const a=el('span','badge','↗ '+esc(fm.source||'source')); a.style.cursor='pointer'; a.title=fm.source_url; a.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openUrl',url:fm.source_url})); sr.appendChild(a); I.appendChild(sr); }
+  // Two-column layout: description/screenshots/references are the primary
+  // surface (left); fields + actions live in a compact side rail (right).
+  const lay=el('div','dgrid'); const main=el('div'); const side=el('div'); lay.appendChild(main); lay.appendChild(side); I.appendChild(lay);
   // status changer
-  const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>postStatus(o.id,sel.value)); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); I.appendChild(sr); }
+  const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>postStatus(o.id,sel.value)); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); side.appendChild(sr); }
   { const fr=el('div','statusrow'); const mkf=(field,val)=>{ const inp=el('input','fldEdit'); inp.value=val||''; inp.placeholder=field; inp.title='Edit '+field; inp.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:field,value:inp.value})); return inp; };
     const dl=el('datalist'); dl.id='domList';
     const doms=new Set(); ((S&&S.objects)||[]).forEach(x=>{ if(x.type==='domain')doms.add(String(x.title||x.id.split('/').pop())); else if(x.domain)doms.add(String(x.domain)); });
     [...doms].sort().forEach(d=>{const op=el('option');op.value=d;dl.appendChild(op);});
     fr.appendChild(dl);
     fr.appendChild(el('span',null,'Category:')); const di2=mkf('domain',o.domain); di2.setAttribute('list','domList'); di2.title='Category / domain — pick an existing one or type a new one'; fr.appendChild(di2);
-    fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); I.appendChild(fr); }
+    fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); side.appendChild(fr); }
   { const pr=el('div','statusrow'); pr.appendChild(el('span',null,'Project:'));
     const sel=el('select'); const none=el('option',null,'(none)'); none.value='-'; sel.appendChild(none);
     const cur=o.project||(o.frontmatter&&o.frontmatter.project)||'';
     ((S&&S.objects)||[]).filter(x=>x.type==='project').forEach(p=>{const op=el('option',null,p.title||p.id);op.value=p.id;if(p.id===cur)op.selected=true;sel.appendChild(op);});
     if(!cur)none.selected=true;
     sel.addEventListener('change',()=>vscode.postMessage({type:'setProject',id:o.id,project:sel.value}));
-    pr.appendChild(sel); I.appendChild(pr); }
+    pr.appendChild(sel); side.appendChild(pr); }
   { const dr=el('div','statusrow'); dr.appendChild(el('span',null,'Due:')); const di=el('input','fldEdit'); di.type='date'; di.style.width='150px';
     let lastDue=String(o.due||(o.frontmatter&&o.frontmatter.due)||'').slice(0,10); di.value=lastDue; di.title='Assign a due date — clear to unset';
     // chromium fires 'change' per keystroke in the year segment (year "2" => valid 0002-07-25),
@@ -1181,7 +1470,7 @@ function renderDrawer(o){
     const pi=el('select'); ['-','p0','p1','p2','p3'].forEach(p=>{const op=el('option',null,p);op.value=p;if(p===((o.frontmatter&&o.frontmatter.priority)||'-'))op.selected=true;pi.appendChild(op);});
     pi.addEventListener('change',()=>vscode.postMessage({type:'setPriority',id:o.id,priority:pi.value}));
     dr.appendChild(pi);
-    I.appendChild(dr); }
+    side.appendChild(dr); }
   { const kr=el('div','statusrow'); kr.appendChild(el('span',null,'Kind:'));
     const ks=el('select'); [['','(none)'],['bug','bug'],['feature','feature']].forEach(([v,l])=>{const op=el('option',null,l);op.value=v;if(v===String((o.frontmatter&&o.frontmatter.issue_kind)||o.issue_kind||''))op.selected=true;ks.appendChild(op);});
     ks.addEventListener('change',()=>vscode.postMessage({type:'action',action:'setKind',id:o.id,kind:ks.value||'-'}));
@@ -1189,7 +1478,53 @@ function renderDrawer(o){
     kr.appendChild(el('span',null,'Repo:'));
     const ri=el('input','fldEdit'); ri.placeholder='target repo'; ri.value=String((o.frontmatter&&o.frontmatter.target_repo)||o.target_repo||'');
     ri.addEventListener('change',()=>vscode.postMessage({type:'action',action:'setTargetRepo',id:o.id,repo:ri.value.trim()||'-'}));
-    kr.appendChild(ri); I.appendChild(kr); }
+    kr.appendChild(ri); side.appendChild(kr); }
+  // Auto-implement (coding items only — tasks/ideas): approval state +
+  // provider/model routing. The route is per-item frontmatter
+  // (implement_backend/model/effort); the host remembers the last explicit
+  // choice and applies it when approving an unrouted item.
+  if(o.type==='task'||o.type==='idea'){ const ar=el('div','statusrow');
+    const st=String(fm.auto_implement||o.auto_implement||'');
+    ar.appendChild(el('span',null,'Auto-impl:'));
+    ar.appendChild(el('span','badge',st||'(off)'));
+    const mkb=(lab,title,fn)=>{const b=el('button','ghost mini',lab);b.title=title;b.addEventListener('click',fn);return b;};
+    if(st!=='ready')ar.appendChild(mkb('▶ Approve','queue for the auto-implementer (moves to the approved lane)',()=>vscode.postMessage({type:'action',action:'approveItem',id:o.id})));
+    if(st!=='blocked')ar.appendChild(mkb('⏸ Block','keep on the board but block auto-implementation',()=>vscode.postMessage({type:'action',action:'setAutoImplement',id:o.id,value:'blocked'})));
+    if(st)ar.appendChild(mkb('✕ Clear','remove from the auto-implement queue',()=>vscode.postMessage({type:'action',action:'setAutoImplement',id:o.id,value:'-'})));
+    side.appendChild(ar);
+    const rr=el('div','statusrow'); rr.appendChild(el('span',null,'Route:'));
+    const pb=el('select'); [['','(provider)'],['claude','Claude Code'],['grok','Grok']].forEach(([v,l])=>{const op=el('option',null,l);op.value=v;if(v===String(fm.implement_backend||''))op.selected=true;pb.appendChild(op);});
+    const pm=el('select');
+    const fillModels=sel=>{pm.innerHTML='';[''].concat(IMPL_PROV[pb.value]||IMPL_PROV.claude).forEach(m=>{const op=el('option',null,m||'(model)');op.value=m;if(m===sel)op.selected=true;pm.appendChild(op);});};
+    fillModels(String(fm.implement_model||''));
+    const pe=el('select'); [''].concat(IMPL_EFF).forEach(e2=>{const op=el('option',null,e2||'(effort)');op.value=e2;if(e2===String(fm.implement_effort||''))op.selected=true;pe.appendChild(op);});
+    const commit=()=>vscode.postMessage({type:'action',action:'setImplement',id:o.id,backend:pb.value||'-',model:pm.value||'-',effort:pe.value||'-'});
+    pb.addEventListener('change',()=>{fillModels('');commit();});
+    pm.addEventListener('change',commit); pe.addEventListener('change',commit);
+    rr.appendChild(pb); rr.appendChild(pm); rr.appendChild(pe);
+    if(implPrefs&&(implPrefs.backend||implPrefs.model)){ const hint=el('span',null,'last: '+esc(implPrefs.backend||'claude')+(implPrefs.model?' · '+esc(implPrefs.model):'')); hint.style.opacity='.55'; hint.style.fontSize='11px'; rr.appendChild(hint); }
+    side.appendChild(rr); }
+  // Sessions: open the latest implementation session in one click, or start a
+  // fresh Code Build session seeded with this item's context.
+  { const sr=el('div','statusrow'); sr.appendChild(el('span',null,'Session:'));
+    if(SESS===null)vscode.postMessage({type:'requestSessions'});
+    const ss=sessionsFor(o);
+    if(ss.length){
+      const top=ss[0], st=top.status||'';
+      const chip=el('button','ghost mini sesschip'+(st==='live-local'||st==='active-remote'?' live':''),
+        '▸ '+esc(top.title?String(top.title).slice(0,36):top.uuid.slice(0,10)+'…')+' <span style="opacity:.6">'+esc(sessStateLabel(top))+'</span>');
+      chip.title='open the latest linked session'+(top.host?' — '+top.host:'')+(top.agent?' · '+top.agent:'');
+      chip.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openSession',uuid:top.uuid,title:o.title||o.id}));
+      sr.appendChild(chip);
+      if(ss.length>1){const n2=el('span',null,'+'+(ss.length-1)+' more ↓');n2.style.opacity='.55';n2.style.fontSize='11px';n2.title='all linked sessions are listed at the bottom of the drawer';sr.appendChild(n2);}
+    } else sr.appendChild(el('span','badge','(none)'));
+    const nb=el('button','ghost mini','＋ New with context'); nb.title='open a Code Build session seeded with this item + @refs';
+    nb.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openCB',id:o.id}));
+    sr.appendChild(nb);
+    const lb=el('button','ghost mini','🔗 Link'); lb.title='search sessions and attach one to this item';
+    lb.addEventListener('click',()=>vscode.postMessage({type:'action',action:'link',id:o.id}));
+    sr.appendChild(lb);
+    side.appendChild(sr); }
   { const tr=el('div','statusrow'); tr.appendChild(el('span',null,'Tags:'));
     const box=el('div'); box.style.display='flex'; box.style.flexWrap='wrap'; box.style.gap='6px';
     const cur=new Set(objTags(Object.assign({},o,o.frontmatter||{})));
@@ -1199,22 +1534,26 @@ function renderDrawer(o){
       b.addEventListener('click',()=>vscode.postMessage({type:'action',action:on?'untagItem':'tagItem',id:o.id,tag:t}));
       box.appendChild(b);
     });
-    tr.appendChild(box); I.appendChild(tr); }
-  // agent actions
+    tr.appendChild(box); side.appendChild(tr); }
+  // agent actions — primary Run/Open up front, the rest behind "More actions"
   const act=el('div','sec'); act.appendChild(el('h4',null,'Agent actions'));
   const grid=el('div','actions');
   const mk=(k,d,action,primary)=>{const b=el('button','act'+(primary?' primary':''),'<span class="k">'+k+'</span><span class="d">'+d+'</span>');b.addEventListener('click',()=>vscode.postMessage({type:'action',action:action,id:o.id}));return b;};
-  grid.appendChild(mk('Ideate','expand into sub-ideas','ideate'));
-  grid.appendChild(mk('Draft spec','speckit FRs + criteria','spec'));
-  grid.appendChild(mk('Decompose','break into tasks','decompose'));
-  grid.appendChild(mk('Research KB','find + connect knowledge','research'));
+  grid.appendChild(mk('Run in Code Build ▸','review prompt, then run','execute',true));
+  grid.appendChild(mk('Open in Code Build','whole-item context + @refs','openCB'));
   act.appendChild(grid);
-  const grid2=el('div','actions'); grid2.style.marginTop='7px';
-  grid2.appendChild(mk('Run in Code Build ▸','review prompt, then run','execute',true));
-  grid2.appendChild(mk('Open in Code Build','whole-item context + @refs','openCB'));
+  const moreBtn=el('button','ghost mini','⋯ More actions'); moreBtn.style.marginTop='7px';
+  const more=el('div','morebox hidden');
+  moreBtn.addEventListener('click',()=>{ const h=more.classList.toggle('hidden'); moreBtn.textContent=h?'⋯ More actions':'× Fewer actions'; });
+  act.appendChild(moreBtn); act.appendChild(more);
+  const grid2=el('div','actions');
+  grid2.appendChild(mk('Ideate','expand into sub-ideas','ideate'));
+  grid2.appendChild(mk('Draft spec','speckit FRs + criteria','spec'));
+  grid2.appendChild(mk('Decompose','break into tasks','decompose'));
+  grid2.appendChild(mk('Research KB','find + connect knowledge','research'));
   grid2.appendChild(mk('Open file','edit markdown','openFile'));
   grid2.appendChild(mk('Link session','search + attach','link'));
-  act.appendChild(grid2);
+  more.appendChild(grid2);
   const grid3=el('div','actions'); grid3.style.marginTop='7px';
   grid3.appendChild(mk('Edit','title / fields','editItem'));
   grid3.appendChild(mk('Clone','duplicate this item','cloneItem'));
@@ -1229,27 +1568,35 @@ function renderDrawer(o){
     grid3.appendChild(mk('Polish → social post','draft in Code Build','polishSocial'));
   }
   grid3.appendChild(mk('Delete','remove item','deleteItem'));
-  act.appendChild(grid3); I.appendChild(act);
+  more.appendChild(grid3); side.appendChild(act);
   // body
-  { const s=el('div','sec'); const h=el('div','bodyhead'); h.appendChild(el('h4',null,'Notes / details')); const st=el('span','savenote',''); h.appendChild(st); s.appendChild(h);
+  { const s=el('div','sec'); s.style.marginTop='0'; const h=el('div','bodyhead'); h.appendChild(el('h4',null,'Notes / details')); const st=el('span','savenote',''); h.appendChild(st); s.appendChild(h);
     const ta=el('textarea','bodyEdit'); ta.value=o.body||''; ta.placeholder='Markdown details… (autosaves)'; s.appendChild(ta);
     let t=null, saved=ta.value;
     const save=()=>{ if(ta.value===saved)return; saved=ta.value; vscode.postMessage({type:'action',action:'autosaveField',id:o.id,field:'body',value:ta.value}); st.textContent='saved ✓'; setTimeout(()=>{if(st.textContent==='saved ✓')st.textContent='';},1500); };
     ta.addEventListener('input',()=>{clearTimeout(t);st.textContent='…';t=setTimeout(save,800);});
     ta.addEventListener('blur',()=>{clearTimeout(t);save();});
     flushAutosave=save;
-    I.appendChild(s); }
+    main.appendChild(s); }
   { const shots=extractImgs(o.body||'');
     const s=el('div','sec'); const h=el('div','bodyhead'); h.appendChild(el('h4',null,'Screenshots'+(shots.length?' ('+shots.length+')':''))); s.appendChild(h);
+    if(!shots.length&&String(o.status||'')==='done'){ const w=el('div',null,'⚠ marked done without an implementation screenshot'); w.style.cssText='color:#dcdcaa;font-size:12px;margin:2px 0 4px'; s.appendChild(w); }
     if(shots.length){ const wrap=el('div','shotwrap'); shots.forEach(im=>{ const img=document.createElement('img'); img.alt=im.alt||''; img.src=im.src; wrap.appendChild(img); }); s.appendChild(wrap); }
     const ab=el('button','ghost mini','＋ Attach screenshot'); ab.style.marginTop='6px';
     ab.addEventListener('click',()=>vscode.postMessage({type:'action',action:'attachImage',id:o.id}));
-    s.appendChild(ab); I.appendChild(s); }
+    s.appendChild(ab); main.appendChild(s); }
   // references
   const refs=[['Blocked by knowledge',o.blocked_by,true],['Cites',o.cites,false],['Children',o.children,false],['Depends on',o.depends_on,false],['Related',o.related,false]];
-  refs.forEach(([label,list,isBlock])=>{ if(!list||!list.length)return; const s=el('div','sec'); s.appendChild(el('h4',null,label+' ('+list.length+')')); const rl=el('div','reflist'); list.forEach(r=>{ const bad=isBlock?(r.status!=='resolved'):(r.exists===false||r.missing); const open = r.id&&!r.missing? ()=>openDetail(r.id) : (r.path? ()=>vscode.postMessage({type:'open',kbPath:r.path}) : null); rl.appendChild(refRow(r,bad,open)); }); s.appendChild(rl); I.appendChild(s); });
-  if(o.parent){ const s=el('div','sec'); s.appendChild(el('h4',null,'Parent')); const rl=el('div','reflist'); rl.appendChild(refRow(o.parent,false,()=>openDetail(o.parent.id))); s.appendChild(rl); I.appendChild(s); }
-  if(o.linked_sessions&&o.linked_sessions.length){ const s=el('div','sec'); s.appendChild(el('h4',null,'Linked sessions ('+o.linked_sessions.length+')')); const rl=el('div','reflist'); o.linked_sessions.forEach(u=>rl.appendChild(refRow({id:u,title:'▸ open chat — '+u.slice(0,18)+'…'},false,()=>vscode.postMessage({type:'action',action:'openSession',uuid:u})))); s.appendChild(rl); I.appendChild(s); }
+  refs.forEach(([label,list,isBlock])=>{ if(!list||!list.length)return; const s=el('div','sec'); s.appendChild(el('h4',null,label+' ('+list.length+')')); const rl=el('div','reflist'); list.forEach(r=>{ const bad=isBlock?(r.status!=='resolved'):(r.exists===false||r.missing); const open = r.id&&!r.missing? ()=>openDetail(r.id) : (r.path? ()=>vscode.postMessage({type:'open',kbPath:r.path}) : null); rl.appendChild(refRow(r,bad,open)); }); s.appendChild(rl); main.appendChild(s); });
+  if(o.parent){ const s=el('div','sec'); s.appendChild(el('h4',null,'Parent')); const rl=el('div','reflist'); rl.appendChild(refRow(o.parent,false,()=>openDetail(o.parent.id))); s.appendChild(rl); main.appendChild(s); }
+  if(o.linked_sessions&&o.linked_sessions.length){ const s=el('div','sec'); s.appendChild(el('h4',null,'Linked sessions ('+o.linked_sessions.length+')')); const rl=el('div','reflist');
+    o.linked_sessions.forEach(u=>{
+      const m=(SESS||[]).find(x=>x.uuid===u);
+      const t=m?('▸ '+(m.title||u.slice(0,18)+'…')+' — '+[m.host,m.agent,sessStateLabel(m)].filter(Boolean).join(' · '))
+             :('▸ open chat — '+u.slice(0,18)+'…');
+      rl.appendChild(refRow({id:u,title:t},false,()=>vscode.postMessage({type:'action',action:'openSession',uuid:u})));
+    });
+    s.appendChild(rl); main.appendChild(s); }
 }
 
 // ---- embedded planning chat (host: src/planningChat.ts) --------------------

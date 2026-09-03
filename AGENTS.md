@@ -34,7 +34,42 @@ The bumping rules — `MAJOR.MINOR.PATCH` (SemVer):
    Compile + vsce package + `code --install-extension code-sessions-$version.vsix --force`.
    **Do not reload the working Code Build chat.** Verify in a **second window**. Host-trace: Output → **Code Sessions**; file `~/.sessions/.daemon/host-trace.ndjson` (`../architecture/tools/observability.md`).
 
+6. **Browser-validate any webview UI change** (below). Vitest mini-DOM is not that pass.
+
 **Do not publish to the Marketplace from an agent session.** Publishing is a user-initiated step; the agent's job is to bump the version, update the changelog, and produce a clean .vsix.
+
+## Validate webviews in a browser — REQUIRED
+
+Suite strategy: [`../architecture/tools/testing.md`](../architecture/tools/testing.md). Webviews only depend on `acquireVsCodeApi()` + `window.postMessage`. **Do not declare a Planning / conversation / insights / graph / canvas UI change done** after vitest alone (`test/unit/planningPipeline.test.ts` and friends prove parse + paint, not click/drag/layout).
+
+A screenshot of first paint is **not** validation. Exercise the changed flow the way a user would (click, type, Shift/Ctrl-click, drag). If layout or CSS changed, check ~900px and ~560px. Hunt regressions on sibling views that share the same board renderer.
+
+Playwright MCP or chrome-devtools MCP against a **local harness** — not `vscode-webview:` (those tools cannot drive the VS Code panel). Isolated Chrome is fine for the harness (no personal login). After ship, still confirm the real host in a **second VS Code window**.
+
+### Planning Dashboard
+
+Harness: [`test/webview/planning-harness.html`](test/webview/planning-harness.html) stubs `acquireVsCodeApi`, records `window.__sent`, injects a fixture snapshot, and loads [`media/planning-dashboard.js`](media/planning-dashboard.js) + [`media/planning-dashboard.css`](media/planning-dashboard.css) (same CSS the panel reads). Dashboard style edits go in that CSS file, not a TypeScript template.
+
+```bash
+cd ~/projects/unpolarize/code-sessions-vscode
+python3 -m http.server 8765 --directory "$PWD"
+# Playwright / chrome-devtools: open
+#   http://127.0.0.1:8765/test/webview/planning-harness.html
+```
+
+Then:
+
+1. Confirm lanes paint (no overlay stuck on “Loading planning store”). Console must be clean of script errors.
+2. Click **🚀 Pipeline**. Confirm inbox / approved / implementation / done, the **route** selects, and **☑** on a lane header.
+3. Drive the flow you changed. Examples: Ctrl-click two cards → drag to another lane → `window.__sent` has `pipelineMove` with `ids` and `route`. Change provider/model/effort → `setImplPrefs`.
+4. Inspect `window.__sent` in the console (host messages). Inspect `window.__host.post({type:'setView', view:'board'})` to jump views without the top bar.
+5. Narrow the viewport if CSS/layout changed.
+
+Do not skip this because “the unit tests passed.”
+
+### Other CSV webviews
+
+Same pattern if you touch them: stub `acquireVsCodeApi`, serve the HTML+JS, Playwright-click the new control, assert `__sent`. Surfaces: conversation viewer, insights, trajectory, agent graph, canvas (`src/conversationView.ts`, `insightsView.ts`, `trajectoryView.ts`, `agentGraph.ts`, `planningCanvas.ts`).
 
 ## Repo conventions
 
