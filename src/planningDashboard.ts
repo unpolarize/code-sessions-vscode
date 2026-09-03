@@ -690,6 +690,17 @@ body:not([data-view="calendar"]) #calModeSeg{display:none!important}
 #backdrop{position:absolute;inset:0;background:rgba(0,0,0,.35);z-index:5}
 #drawer{position:absolute;top:0;right:0;bottom:0;width:440px;max-width:90vw;background:var(--vscode-sideBar-background,var(--vscode-editorWidget-background));border-left:1px solid var(--vscode-widget-border);z-index:6;overflow-y:auto;box-shadow:-8px 0 24px rgba(0,0,0,.25)}
 #drawerInner{padding:16px 18px}
+/* item view opens centered and near full-size; the skinny right drawer remains
+   only for the create form (no .center class) */
+#drawer.center{left:50%;right:auto;top:3vh;bottom:3vh;transform:translateX(-50%);width:min(1100px,94vw);max-width:94vw;border:1px solid var(--vscode-widget-border);border-radius:10px;box-shadow:0 12px 48px rgba(0,0,0,.45)}
+#drawer.center #drawerInner{padding:18px 22px}
+.dgrid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start;margin-top:10px}
+#drawer:not(.center) .dgrid{display:block}
+@media (max-width:820px){#drawer.center .dgrid{grid-template-columns:1fr}}
+#drawer.center .bodyEdit{min-height:42vh}
+#drawer.center .body{max-height:none}
+.morebox{margin-top:7px}
+.morebox .actions{margin-top:7px}
 .dh{display:flex;align-items:flex-start;gap:8px}
 .dh h2{font-size:16px;margin:0;flex:1;line-height:1.3}
 .dclose{background:transparent;border:0;color:var(--vscode-foreground);cursor:pointer;font-size:18px;opacity:.7}

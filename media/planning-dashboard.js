@@ -1082,8 +1082,8 @@ function renderCanvas(){ $('#canvas').innerHTML='<div style="font-size:40px">✎
 
 // detail drawer
 let flushAutosave=null;
-function openDetail(id){ vscode.postMessage({type:'show',id:id}); $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden'); $('#drawerInner').innerHTML='<div style="opacity:.6">Loading '+esc(id)+'…</div>'; }
-function closeDrawer(){ if(flushAutosave){try{flushAutosave();}catch(e){}} flushAutosave=null; $('#drawer').classList.add('hidden'); $('#backdrop').classList.add('hidden'); }
+function openDetail(id){ vscode.postMessage({type:'show',id:id}); const d=$('#drawer'); d.classList.remove('hidden'); d.classList.add('center'); $('#backdrop').classList.remove('hidden'); $('#drawerInner').innerHTML='<div style="opacity:.6">Loading '+esc(id)+'…</div>'; }
+function closeDrawer(){ if(flushAutosave){try{flushAutosave();}catch(e){}} flushAutosave=null; const d=$('#drawer'); d.classList.add('hidden'); d.classList.remove('center'); $('#backdrop').classList.add('hidden'); }
 function domainOptions(){ const s=new Set(); ((S&&S.objects)||[]).forEach(x=>{ if(x.type==='domain')s.add(String(x.title||x.id.split('/').pop())); else if(x.domain)s.add(String(x.domain)); }); return [...s].sort(); }
 function projectOptions(){ return ((S&&S.objects)||[]).filter(x=>x.type==='project').map(x=>({id:x.id,title:x.title||x.id.split('/').pop()})).sort((a,b)=>a.title.localeCompare(b.title)); }
 // New-item editor rendered in the side drawer — all fields editable before it's
@@ -1091,7 +1091,7 @@ function projectOptions(){ return ((S&&S.objects)||[]).filter(x=>x.type==='proje
 function openCreateDrawer(prefill){
   flushAutosave=null;
   prefill=prefill||{};
-  $('#drawer').classList.remove('hidden'); $('#backdrop').classList.remove('hidden');
+  $('#drawer').classList.remove('hidden'); $('#drawer').classList.remove('center'); $('#backdrop').classList.remove('hidden');
   const I=$('#drawerInner'); I.innerHTML='';
   const head=el('div','dh'); head.appendChild(el('h2',null,'New item')); const ask=el('button','dclose','💬'); ask.title='Ask the planning chat about this item'; ask.addEventListener('click',function(){ closeDrawer(); if(window.__openPlanningChatWith)window.__openPlanningChatWith('About '+o.id+' — '); }); head.appendChild(ask); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
   const STAT={task:['inbox','today','in_progress','done','deferred','outdated'],idea:['capture','refine','accepted','parked','done'],plan:['plan','prototype','implement','validate','done','parked'],thought:['new','kept','converted','archived']};
@@ -1148,24 +1148,27 @@ function renderDrawer(o){
   const I=$('#drawerInner'); I.innerHTML='';
   const head=el('div','dh'); const ti=el('input','titleEdit'); ti.value=o.title||''; ti.title='Edit name — Enter or click away to save'; ti.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:'title',value:ti.value})); head.appendChild(ti); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
   const fm=o.frontmatter||{};
-  const meta=el('div','drow'); meta.innerHTML='<span class="badge">'+o.type+'</span>'+(o.status?'<span class="badge">'+esc(o.status)+'</span>':'')+(o.domain?'<span class="badge">'+esc(o.domain)+'</span>':'')+(fm.context?'<span class="badge" title="captured under">◔ '+esc(fm.context)+'</span>':'')+(fm.surfaced_on?'<span class="badge" title="surfaced on">'+esc(fm.surfaced_on)+'</span>':''); I.appendChild(meta);
+  const meta=el('div','drow'); meta.innerHTML='<span class="badge">'+o.type+'</span>'+(o.status?'<span class="badge">'+esc(o.status)+'</span>':'')+(o.domain?'<span class="badge">'+esc(o.domain)+'</span>':'')+(fm.priority?'<span class="badge">'+esc(fm.priority)+'</span>':'')+(fm.target_repo?'<span class="badge">'+esc(fm.target_repo)+'</span>':'')+(fm.context?'<span class="badge" title="captured under">◔ '+esc(fm.context)+'</span>':'')+(fm.surfaced_on?'<span class="badge" title="surfaced on">'+esc(fm.surfaced_on)+'</span>':''); I.appendChild(meta);
   if(fm.source_url){ const sr=el('div','drow'); const a=el('span','badge','↗ '+esc(fm.source||'source')); a.style.cursor='pointer'; a.title=fm.source_url; a.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openUrl',url:fm.source_url})); sr.appendChild(a); I.appendChild(sr); }
+  // Two-column layout: description/screenshots/references are the primary
+  // surface (left); fields + actions live in a compact side rail (right).
+  const lay=el('div','dgrid'); const main=el('div'); const side=el('div'); lay.appendChild(main); lay.appendChild(side); I.appendChild(lay);
   // status changer
-  const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>postStatus(o.id,sel.value)); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); I.appendChild(sr); }
+  const lanes=LANES[o.type]; if(lanes){ const sr=el('div','statusrow'); const sel=el('select'); lanes.forEach(l=>{const op=el('option',null,l);op.value=l;if(l===o.status)op.selected=true;sel.appendChild(op);}); sel.addEventListener('change',()=>postStatus(o.id,sel.value)); sr.appendChild(el('span',null,'Status:')); sr.appendChild(sel); side.appendChild(sr); }
   { const fr=el('div','statusrow'); const mkf=(field,val)=>{ const inp=el('input','fldEdit'); inp.value=val||''; inp.placeholder=field; inp.title='Edit '+field; inp.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:field,value:inp.value})); return inp; };
     const dl=el('datalist'); dl.id='domList';
     const doms=new Set(); ((S&&S.objects)||[]).forEach(x=>{ if(x.type==='domain')doms.add(String(x.title||x.id.split('/').pop())); else if(x.domain)doms.add(String(x.domain)); });
     [...doms].sort().forEach(d=>{const op=el('option');op.value=d;dl.appendChild(op);});
     fr.appendChild(dl);
     fr.appendChild(el('span',null,'Category:')); const di2=mkf('domain',o.domain); di2.setAttribute('list','domList'); di2.title='Category / domain — pick an existing one or type a new one'; fr.appendChild(di2);
-    fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); I.appendChild(fr); }
+    fr.appendChild(el('span',null,'Lane:')); fr.appendChild(mkf('lane',o.lane)); side.appendChild(fr); }
   { const pr=el('div','statusrow'); pr.appendChild(el('span',null,'Project:'));
     const sel=el('select'); const none=el('option',null,'(none)'); none.value='-'; sel.appendChild(none);
     const cur=o.project||(o.frontmatter&&o.frontmatter.project)||'';
     ((S&&S.objects)||[]).filter(x=>x.type==='project').forEach(p=>{const op=el('option',null,p.title||p.id);op.value=p.id;if(p.id===cur)op.selected=true;sel.appendChild(op);});
     if(!cur)none.selected=true;
     sel.addEventListener('change',()=>vscode.postMessage({type:'setProject',id:o.id,project:sel.value}));
-    pr.appendChild(sel); I.appendChild(pr); }
+    pr.appendChild(sel); side.appendChild(pr); }
   { const dr=el('div','statusrow'); dr.appendChild(el('span',null,'Due:')); const di=el('input','fldEdit'); di.type='date'; di.style.width='150px';
     let lastDue=String(o.due||(o.frontmatter&&o.frontmatter.due)||'').slice(0,10); di.value=lastDue; di.title='Assign a due date — clear to unset';
     // chromium fires 'change' per keystroke in the year segment (year "2" => valid 0002-07-25),
@@ -1181,7 +1184,7 @@ function renderDrawer(o){
     const pi=el('select'); ['-','p0','p1','p2','p3'].forEach(p=>{const op=el('option',null,p);op.value=p;if(p===((o.frontmatter&&o.frontmatter.priority)||'-'))op.selected=true;pi.appendChild(op);});
     pi.addEventListener('change',()=>vscode.postMessage({type:'setPriority',id:o.id,priority:pi.value}));
     dr.appendChild(pi);
-    I.appendChild(dr); }
+    side.appendChild(dr); }
   { const kr=el('div','statusrow'); kr.appendChild(el('span',null,'Kind:'));
     const ks=el('select'); [['','(none)'],['bug','bug'],['feature','feature']].forEach(([v,l])=>{const op=el('option',null,l);op.value=v;if(v===String((o.frontmatter&&o.frontmatter.issue_kind)||o.issue_kind||''))op.selected=true;ks.appendChild(op);});
     ks.addEventListener('change',()=>vscode.postMessage({type:'action',action:'setKind',id:o.id,kind:ks.value||'-'}));
@@ -1189,7 +1192,7 @@ function renderDrawer(o){
     kr.appendChild(el('span',null,'Repo:'));
     const ri=el('input','fldEdit'); ri.placeholder='target repo'; ri.value=String((o.frontmatter&&o.frontmatter.target_repo)||o.target_repo||'');
     ri.addEventListener('change',()=>vscode.postMessage({type:'action',action:'setTargetRepo',id:o.id,repo:ri.value.trim()||'-'}));
-    kr.appendChild(ri); I.appendChild(kr); }
+    kr.appendChild(ri); side.appendChild(kr); }
   { const tr=el('div','statusrow'); tr.appendChild(el('span',null,'Tags:'));
     const box=el('div'); box.style.display='flex'; box.style.flexWrap='wrap'; box.style.gap='6px';
     const cur=new Set(objTags(Object.assign({},o,o.frontmatter||{})));
@@ -1199,22 +1202,26 @@ function renderDrawer(o){
       b.addEventListener('click',()=>vscode.postMessage({type:'action',action:on?'untagItem':'tagItem',id:o.id,tag:t}));
       box.appendChild(b);
     });
-    tr.appendChild(box); I.appendChild(tr); }
-  // agent actions
+    tr.appendChild(box); side.appendChild(tr); }
+  // agent actions — primary Run/Open up front, the rest behind "More actions"
   const act=el('div','sec'); act.appendChild(el('h4',null,'Agent actions'));
   const grid=el('div','actions');
   const mk=(k,d,action,primary)=>{const b=el('button','act'+(primary?' primary':''),'<span class="k">'+k+'</span><span class="d">'+d+'</span>');b.addEventListener('click',()=>vscode.postMessage({type:'action',action:action,id:o.id}));return b;};
-  grid.appendChild(mk('Ideate','expand into sub-ideas','ideate'));
-  grid.appendChild(mk('Draft spec','speckit FRs + criteria','spec'));
-  grid.appendChild(mk('Decompose','break into tasks','decompose'));
-  grid.appendChild(mk('Research KB','find + connect knowledge','research'));
+  grid.appendChild(mk('Run in Code Build ▸','review prompt, then run','execute',true));
+  grid.appendChild(mk('Open in Code Build','whole-item context + @refs','openCB'));
   act.appendChild(grid);
-  const grid2=el('div','actions'); grid2.style.marginTop='7px';
-  grid2.appendChild(mk('Run in Code Build ▸','review prompt, then run','execute',true));
-  grid2.appendChild(mk('Open in Code Build','whole-item context + @refs','openCB'));
+  const moreBtn=el('button','ghost mini','⋯ More actions'); moreBtn.style.marginTop='7px';
+  const more=el('div','morebox hidden');
+  moreBtn.addEventListener('click',()=>{ const h=more.classList.toggle('hidden'); moreBtn.textContent=h?'⋯ More actions':'× Fewer actions'; });
+  act.appendChild(moreBtn); act.appendChild(more);
+  const grid2=el('div','actions');
+  grid2.appendChild(mk('Ideate','expand into sub-ideas','ideate'));
+  grid2.appendChild(mk('Draft spec','speckit FRs + criteria','spec'));
+  grid2.appendChild(mk('Decompose','break into tasks','decompose'));
+  grid2.appendChild(mk('Research KB','find + connect knowledge','research'));
   grid2.appendChild(mk('Open file','edit markdown','openFile'));
   grid2.appendChild(mk('Link session','search + attach','link'));
-  act.appendChild(grid2);
+  more.appendChild(grid2);
   const grid3=el('div','actions'); grid3.style.marginTop='7px';
   grid3.appendChild(mk('Edit','title / fields','editItem'));
   grid3.appendChild(mk('Clone','duplicate this item','cloneItem'));
@@ -1229,27 +1236,27 @@ function renderDrawer(o){
     grid3.appendChild(mk('Polish → social post','draft in Code Build','polishSocial'));
   }
   grid3.appendChild(mk('Delete','remove item','deleteItem'));
-  act.appendChild(grid3); I.appendChild(act);
+  more.appendChild(grid3); side.appendChild(act);
   // body
-  { const s=el('div','sec'); const h=el('div','bodyhead'); h.appendChild(el('h4',null,'Notes / details')); const st=el('span','savenote',''); h.appendChild(st); s.appendChild(h);
+  { const s=el('div','sec'); s.style.marginTop='0'; const h=el('div','bodyhead'); h.appendChild(el('h4',null,'Notes / details')); const st=el('span','savenote',''); h.appendChild(st); s.appendChild(h);
     const ta=el('textarea','bodyEdit'); ta.value=o.body||''; ta.placeholder='Markdown details… (autosaves)'; s.appendChild(ta);
     let t=null, saved=ta.value;
     const save=()=>{ if(ta.value===saved)return; saved=ta.value; vscode.postMessage({type:'action',action:'autosaveField',id:o.id,field:'body',value:ta.value}); st.textContent='saved ✓'; setTimeout(()=>{if(st.textContent==='saved ✓')st.textContent='';},1500); };
     ta.addEventListener('input',()=>{clearTimeout(t);st.textContent='…';t=setTimeout(save,800);});
     ta.addEventListener('blur',()=>{clearTimeout(t);save();});
     flushAutosave=save;
-    I.appendChild(s); }
+    main.appendChild(s); }
   { const shots=extractImgs(o.body||'');
     const s=el('div','sec'); const h=el('div','bodyhead'); h.appendChild(el('h4',null,'Screenshots'+(shots.length?' ('+shots.length+')':''))); s.appendChild(h);
     if(shots.length){ const wrap=el('div','shotwrap'); shots.forEach(im=>{ const img=document.createElement('img'); img.alt=im.alt||''; img.src=im.src; wrap.appendChild(img); }); s.appendChild(wrap); }
     const ab=el('button','ghost mini','＋ Attach screenshot'); ab.style.marginTop='6px';
     ab.addEventListener('click',()=>vscode.postMessage({type:'action',action:'attachImage',id:o.id}));
-    s.appendChild(ab); I.appendChild(s); }
+    s.appendChild(ab); main.appendChild(s); }
   // references
   const refs=[['Blocked by knowledge',o.blocked_by,true],['Cites',o.cites,false],['Children',o.children,false],['Depends on',o.depends_on,false],['Related',o.related,false]];
-  refs.forEach(([label,list,isBlock])=>{ if(!list||!list.length)return; const s=el('div','sec'); s.appendChild(el('h4',null,label+' ('+list.length+')')); const rl=el('div','reflist'); list.forEach(r=>{ const bad=isBlock?(r.status!=='resolved'):(r.exists===false||r.missing); const open = r.id&&!r.missing? ()=>openDetail(r.id) : (r.path? ()=>vscode.postMessage({type:'open',kbPath:r.path}) : null); rl.appendChild(refRow(r,bad,open)); }); s.appendChild(rl); I.appendChild(s); });
-  if(o.parent){ const s=el('div','sec'); s.appendChild(el('h4',null,'Parent')); const rl=el('div','reflist'); rl.appendChild(refRow(o.parent,false,()=>openDetail(o.parent.id))); s.appendChild(rl); I.appendChild(s); }
-  if(o.linked_sessions&&o.linked_sessions.length){ const s=el('div','sec'); s.appendChild(el('h4',null,'Linked sessions ('+o.linked_sessions.length+')')); const rl=el('div','reflist'); o.linked_sessions.forEach(u=>rl.appendChild(refRow({id:u,title:'▸ open chat — '+u.slice(0,18)+'…'},false,()=>vscode.postMessage({type:'action',action:'openSession',uuid:u})))); s.appendChild(rl); I.appendChild(s); }
+  refs.forEach(([label,list,isBlock])=>{ if(!list||!list.length)return; const s=el('div','sec'); s.appendChild(el('h4',null,label+' ('+list.length+')')); const rl=el('div','reflist'); list.forEach(r=>{ const bad=isBlock?(r.status!=='resolved'):(r.exists===false||r.missing); const open = r.id&&!r.missing? ()=>openDetail(r.id) : (r.path? ()=>vscode.postMessage({type:'open',kbPath:r.path}) : null); rl.appendChild(refRow(r,bad,open)); }); s.appendChild(rl); main.appendChild(s); });
+  if(o.parent){ const s=el('div','sec'); s.appendChild(el('h4',null,'Parent')); const rl=el('div','reflist'); rl.appendChild(refRow(o.parent,false,()=>openDetail(o.parent.id))); s.appendChild(rl); main.appendChild(s); }
+  if(o.linked_sessions&&o.linked_sessions.length){ const s=el('div','sec'); s.appendChild(el('h4',null,'Linked sessions ('+o.linked_sessions.length+')')); const rl=el('div','reflist'); o.linked_sessions.forEach(u=>rl.appendChild(refRow({id:u,title:'▸ open chat — '+u.slice(0,18)+'…'},false,()=>vscode.postMessage({type:'action',action:'openSession',uuid:u})))); s.appendChild(rl); main.appendChild(s); }
 }
 
 // ---- embedded planning chat (host: src/planningChat.ts) --------------------
