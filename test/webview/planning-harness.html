@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Planning Dashboard harness</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<style>
+  /* VS Code token fallbacks so the dashboard is readable outside a webview. */
+  :root {
+    --vscode-font-family: ui-sans-serif, system-ui, sans-serif;
+    --vscode-foreground: #cccccc;
+    --vscode-editor-background: #1e1e1e;
+    --vscode-editorWidget-background: #252526;
+    --vscode-sideBar-background: #252526;
+    --vscode-widget-border: #3c3c3c;
+    --vscode-panel-border: #3c3c3c;
+    --vscode-focusBorder: #007fd4;
+    --vscode-button-background: #0e639c;
+    --vscode-button-foreground: #fff;
+    --vscode-button-secondaryBackground: #3a3d41;
+    --vscode-button-secondaryForeground: #ddd;
+    --vscode-button-hoverBackground: #1177bb;
+    --vscode-input-background: #3c3c3c;
+    --vscode-input-foreground: #cccccc;
+    --vscode-input-border: #3c3c3c;
+    --vscode-dropdown-background: #3c3c3c;
+    --vscode-dropdown-foreground: #cccccc;
+    --vscode-dropdown-border: #3c3c3c;
+    --vscode-badge-background: #4d4d4d;
+    --vscode-badge-foreground: #fff;
+    --vscode-list-hoverBackground: #2a2d2e;
+    --vscode-list-activeSelectionBackground: #094771;
+    --vscode-list-activeSelectionForeground: #fff;
+    --vscode-toolbar-hoverBackground: #2a2d2e;
+    --vscode-textLink-foreground: #4fc1ff;
+    --vscode-progressBar-background: #0e639c;
+    --vscode-descriptionForeground: #9d9d9d;
+    --vscode-editor-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --gap: 10px;
+  }
+  #harnessBanner {
+    flex: none;
+    font-size: 11px;
+    padding: 4px 10px;
+    background: #3b2f00;
+    color: #f3e6c4;
+    letter-spacing: .2px;
+  }
+  #harnessBanner code { font-size: 10px; }
+</style>
+<link rel="stylesheet" href="../../media/planning-dashboard.css">
+<script>
+  window.__sent = [];
+  window.__state = {};
+  window.acquireVsCodeApi = function () {
+    return {
+      postMessage: function (m) { window.__sent.push(m); },
+      getState: function () { return window.__state; },
+      setState: function (s) { window.__state = s; }
+    };
+  };
+  window.__host = {
+    post: function (m) { window.dispatchEvent(new MessageEvent("message", { data: m })); }
+  };
+</script>
+</head>
+<body>
+<div id="harnessBanner">Planning harness (not VS Code) — fixture snapshot · <code>window.__sent</code> · <code>window.__host.post({type:'setView', view:'pipeline'})</code></div>
+<div id="topbar">
+  <span class="brand">◧ Planning</span>
+  <div class="seg" id="viewSeg">
+    <button data-view="board" class="on">Board</button>
+    <button data-view="pipeline" title="Coding pipeline">🚀 Pipeline</button>
+    <button data-view="issues">Bugs / Features</button>
+    <button data-view="inbox">Inbox</button>
+    <button data-view="autonomous">🤖 Auto</button>
+    <button data-view="projects">Projects</button>
+    <button data-view="sessions">Fleet</button>
+    <button data-view="social">✨ Social</button>
+    <button data-view="calendar">Calendar</button>
+    <button data-view="graph">Graph</button>
+    <button data-view="canvas">Canvas</button>
+  </div>
+  <div class="seg" id="laneSeg">
+    <button data-lane="task" class="on">Tasks</button>
+    <button data-lane="idea">Ideas</button>
+    <button data-lane="plan">Plans</button>
+    <button data-lane="thought">Thoughts</button>
+  </div>
+  <div class="seg" id="calModeSeg" style="display:none">
+    <button data-cm="month" class="on">Month</button>
+    <button data-cm="week">Week</button>
+    <button data-cm="workweek">Work week</button>
+    <button data-cm="list">List</button>
+  </div>
+  <select id="groupBy" title="Group lanes by">
+    <option value="status">▦ status</option>
+    <option value="domain">▦ domain</option>
+    <option value="type">▦ type</option>
+    <option value="lane">▦ lane</option>
+    <option value="project">▦ project</option>
+  </select>
+  <select id="sortBy" title="Sort cards within lanes">
+    <option value="priority">↕ priority</option>
+    <option value="due">↕ due</option>
+    <option value="updated">↕ updated</option>
+    <option value="title">↕ title</option>
+    <option value="project">↕ project</option>
+    <option value="domain">↕ domain</option>
+    <option value="type">↕ type</option>
+  </select>
+  <button id="addLaneBtn" class="ghost" title="Add a custom lane">＋ lane</button>
+  <span class="spacer"></span>
+  <span id="inboxPill" class="ipill" style="display:none"></span>
+  <span id="overduePill" class="opill" style="display:none"></span>
+  <span id="syncPill" class="syncpill">◌ sync</span>
+  <span id="counts" class="counts"></span>
+  <input id="search" placeholder="Search… (⌘F)" style="display:none;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:6px;padding:3px 8px;width:180px">
+  <button id="chatBtn" class="ghost">💬 Chat</button>
+  <button id="captureBtn" class="ghost">＋ New</button>
+  <button id="syncBtn" class="ghost">⟳ Sync</button>
+  <button id="refreshBtn" class="ghost">⟳</button>
+</div>
+<div id="tagBar"></div>
+<div id="chatDrawer" class="hidden">
+  <div class="chat-head"><b>Planning chat</b><span id="chatCost" class="chat-cost"></span><span class="spacer"></span>
+    <button id="chatStop" class="ghost" style="display:none">■ Stop</button>
+    <button id="chatClose" class="ghost">✕</button>
+  </div>
+  <div id="chatMsgs" class="chat-msgs"></div>
+  <div class="chat-ctlrow">
+    <select id="chatProvider"></select><select id="chatModel"></select>
+    <select id="chatEffort"></select><select id="chatAccess"><option value="kp">kp-only</option></select>
+  </div>
+  <div class="chat-inputrow"><textarea id="chatInput" rows="2"></textarea><button id="chatSend">Send</button></div>
+</div>
+<div id="main">
+  <div id="board" class="view"></div>
+  <div id="pipeline" class="view hidden"></div>
+  <div id="issues" class="view hidden"></div>
+  <div id="inbox" class="view hidden"></div>
+  <div id="autonomous" class="view hidden"></div>
+  <div id="projects" class="view hidden"></div>
+  <div id="sessions" class="view hidden"></div>
+  <div id="social" class="view hidden"></div>
+  <div id="calendar" class="view hidden"></div>
+  <svg id="graph" class="view hidden"></svg>
+  <div id="canvas" class="view hidden"></div>
+  <div id="gfilters" class="hidden"></div>
+  <div id="loadOverlay">
+    <div class="loadcard">
+      <div class="loadspin" id="loadSpin"></div>
+      <div id="loadTitle">Loading planning store</div>
+      <div id="loadDetail">waiting for kp export…</div>
+      <div id="loadTime"></div>
+      <button id="loadRetry" class="ghost" style="display:none">Retry export</button>
+    </div>
+  </div>
+</div>
+<div id="drawer" class="hidden"><div id="drawerInner"></div></div>
+<div id="backdrop" class="hidden"></div>
+<div id="resmodal" class="hidden">
+  <div class="resbox">
+    <div class="reshead"><span id="resTitle"></span><button id="resX" class="dclose">✕</button></div>
+    <div id="resSub" class="ressub"></div>
+    <div id="resWarn" class="reswarn hidden"></div>
+    <textarea id="resNote" placeholder="resolution note"></textarea>
+    <div class="resactions">
+      <button id="resCancel" class="ghost">Cancel move</button>
+      <button id="resSkip" class="ghost">Move, no note</button>
+      <button id="resSave" class="ghost primary">Save note &amp; move</button>
+    </div>
+  </div>
+</div>
+<script src="../../media/planning-dashboard.js"></script>
+<script src="planning-harness.js"></script>
+</body>
+</html>

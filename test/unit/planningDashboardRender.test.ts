@@ -157,7 +157,7 @@ function miniDom() {
 
   const body = create("body");
   const ids = [
-    "board", "issues", "counts", "overduePill", "inboxPill", "loadOverlay", "loadTitle", "loadDetail",
+    "board", "pipeline", "issues", "counts", "overduePill", "inboxPill", "loadOverlay", "loadTitle", "loadDetail",
     "loadTime", "loadRetry", "loadSpin", "viewSeg", "laneSeg", "calModeSeg", "groupBy",
     "sortBy", "addLaneBtn", "inbox", "autonomous", "projects", "sessions", "social",
     "calendar", "graph", "gfilters", "canvas", "backdrop", "drawer", "drawerInner",
