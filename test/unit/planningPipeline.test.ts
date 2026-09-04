@@ -687,3 +687,110 @@ describe("done-lane screenshot evidence", () => {
     expect(byId.get("resWarn")!.classList.contains("hidden")).toBe(true);
   });
 });
+
+// ── Implementation lane: every active implement, not just the night item ──────
+// activeImplements() sources night (plan.json), grok (grok-plan.json) and
+// tonight's slate picks; done keeps precedence and stale running records
+// (window end + 1h, or a grok record with no timestamp) are ignored.
+const implDate = new Date().toISOString().slice(0, 10);
+const multiSnapshot = {
+  objects: [
+    { id: "tasks/nightbuild", type: "task", status: "inbox", title: "Night building", issue_kind: "feature" },
+    { id: "tasks/grokbuild", type: "task", status: "inbox", title: "Grok building", issue_kind: "feature" },
+    { id: "tasks/slatepick", type: "task", status: "inbox", title: "Queued tonight", auto_implement: "ready", target_repo: "code-sessions-vscode" },
+    { id: "tasks/slateover", type: "task", status: "inbox", title: "Past take budget", auto_implement: "ready", target_repo: "code-sessions-vscode" },
+    { id: "tasks/donealready", type: "task", status: "done", title: "Already done", target_repo: "code-sessions-vscode", updated: implDate, has_screenshot: true },
+  ],
+  counts: { task: 5 },
+  blocked: [],
+  board: { date: implDate },
+  autonomous: {
+    enabled: true,
+    current_window: {
+      start: new Date().toISOString(),
+      end: new Date(Date.now() + 3600_000).toISOString(),
+      implement: { status: "running", item: "tasks/nightbuild", session: "sess-night" },
+    },
+    grok_plan: {
+      lane: "grok",
+      current: { implement: { status: "running", item: "tasks/grokbuild", session: "sess-grok", started: new Date().toISOString() } },
+    },
+    slate: { date: implDate, take_budget: 1, items: [{ id: "tasks/slatepick" }, { id: "tasks/slateover" }] },
+  },
+};
+
+describe("implementation lane: all active implements", () => {
+  it("shows the night-running item with a running chip + night lane badge", () => {
+    const { sandbox, byId } = miniDom(multiSnapshot, {}, "pipeline");
+    runInNewContext(src, sandbox, { filename: "planning-dashboard.js" });
+    const lanes = lanesOf(byId);
+    const night = lanes.implementation.querySelectorAll(".card").find((c) => c.dataset.id === "tasks/nightbuild")!;
+    expect(night.innerHTML).toContain("▶ implementing");
+    expect(night.innerHTML).toContain(">night</span>");
+    expect(night.innerHTML).toContain('data-sess="sess-night"');
+  });
+
+  it("also shows the grok-lane running item with a grok lane badge", () => {
+    const { sandbox, byId } = miniDom(multiSnapshot, {}, "pipeline");
+    runInNewContext(src, sandbox, { filename: "planning-dashboard.js" });
+    const lanes = lanesOf(byId);
+    const grok = lanes.implementation.querySelectorAll(".card").find((c) => c.dataset.id === "tasks/grokbuild")!;
+    expect(grok.innerHTML).toContain("▶ implementing");
+    expect(grok.innerHTML).toContain(">grok</span>");
+    expect(grok.innerHTML).toContain('data-sess="sess-grok"');
+  });
+
+  it("renders today's slate picks as queued-tonight intent, capped at take_budget", () => {
+    const { sandbox, byId } = miniDom(multiSnapshot, {}, "pipeline");
+    runInNewContext(src, sandbox, { filename: "planning-dashboard.js" });
+    const lanes = lanesOf(byId);
+    const pick = lanes.implementation.querySelectorAll(".card").find((c) => c.dataset.id === "tasks/slatepick")!;
+    expect(pick.innerHTML).toContain("queued tonight");
+    expect(pick.innerHTML).toContain("queuechip");
+    expect(pick.innerHTML).not.toContain("▶ implementing"); // intent, not activity
+    // beyond take_budget → not queued; auto_implement:ready keeps it in approved
+    expect(cardIds(lanes.approved)).toContain("tasks/slateover");
+    expect(cardIds(lanes.implementation)).not.toContain("tasks/slateover");
+  });
+
+  it("ignores stale running records (window over, or grok record without a timestamp)", () => {
+    const stale = JSON.parse(JSON.stringify(multiSnapshot));
+    stale.autonomous.current_window.end = new Date(Date.now() - 7200_000).toISOString();
+    stale.autonomous.grok_plan.current.implement.started = new Date(Date.now() - 7200_000).toISOString();
+    stale.autonomous.slate = null;
+    const { sandbox, byId } = miniDom(stale, {}, "pipeline");
+    runInNewContext(src, sandbox, { filename: "planning-dashboard.js" });
+    let lanes = lanesOf(byId);
+    expect(cardIds(lanes.implementation)).toEqual([]);
+    // a grok "running" record with no timestamp at all is untrusted → ignored
+    const noHeartbeat = JSON.parse(JSON.stringify(multiSnapshot));
+    delete noHeartbeat.autonomous.current_window;
+    noHeartbeat.autonomous.slate = null;
+    delete noHeartbeat.autonomous.grok_plan.current.implement.started;
+    const dom2 = miniDom(noHeartbeat, {}, "pipeline");
+    runInNewContext(src, dom2.sandbox, { filename: "planning-dashboard.js" });
+    lanes = lanesOf(dom2.byId);
+    expect(cardIds(lanes.implementation)).toEqual([]);
+  });
+
+  it("keeps done precedence: a running/queued record never pulls a done item back", () => {
+    const doneWins = JSON.parse(JSON.stringify(multiSnapshot));
+    doneWins.autonomous.current_window.implement.item = "tasks/donealready";
+    doneWins.autonomous.slate.items = [{ id: "tasks/donealready" }];
+    const { sandbox, byId } = miniDom(doneWins, {}, "pipeline");
+    runInNewContext(src, sandbox, { filename: "planning-dashboard.js" });
+    const lanes = lanesOf(byId);
+    expect(cardIds(lanes.done)).toContain("tasks/donealready");
+    expect(cardIds(lanes.implementation)).not.toContain("tasks/donealready");
+  });
+
+  it("degrades silently when grok-plan is unparseable junk", () => {
+    const junk = JSON.parse(JSON.stringify(multiSnapshot));
+    junk.autonomous.grok_plan = { current: "not-an-object", history: 42 };
+    junk.autonomous.slate = "garbage";
+    const { sandbox, byId } = miniDom(junk, {}, "pipeline");
+    runInNewContext(src, sandbox, { filename: "planning-dashboard.js" });
+    const lanes = lanesOf(byId);
+    expect(cardIds(lanes.implementation)).toEqual(["tasks/nightbuild"]); // night unaffected
+  });
+});

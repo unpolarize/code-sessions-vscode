@@ -442,6 +442,29 @@ function annotateScreenshots(snap: Snapshot): void {
   }
 }
 
+/** Additively attach the non-night machine lanes' artifacts to the kp-export
+ * snapshot so the webview's Implementation lane sees every implement path:
+ * `autonomous/grok-plan.json` (grok lane) and today's slate picks
+ * (`autonomous/slate/<YYYY-MM-DD>.json`, intent — "queued tonight"). Read-only
+ * over the autonomous artifacts; every failure is silent — the board then
+ * shows exactly what it shows today. */
+function annotateAutonomous(snap: Snapshot): void {
+  if (!snap?.root) return;
+  const autoDir = path.join(snap.root, "autonomous");
+  const readJson = (p: string): unknown => {
+    try { return JSON.parse(readFileSync(p, "utf8")); } catch { return undefined; }
+  };
+  const grok = readJson(path.join(autoDir, "grok-plan.json"));
+  const d = new Date();
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const slate = readJson(path.join(autoDir, "slate", `${today}.json`));
+  if (!grok && !slate) return;
+  const s = snap as unknown as { autonomous?: Record<string, unknown> };
+  const a = (s.autonomous ??= {});
+  if (grok) a.grok_plan = grok;
+  if (slate) a.slate = slate;
+}
+
 /** Shared snapshot, reloaded on refresh and consumed by every provider/view.
  *
  * reload() coalesces: while an export is in flight, further requests set a
@@ -534,6 +557,7 @@ class PlanningModel {
             try {
               this.snap = JSON.parse(res.stdout) as Snapshot;
               annotateScreenshots(this.snap);
+              annotateAutonomous(this.snap);
               this.lastOk = true;
               this.failStreak = 0;
               const n = this.snap.objects?.length ?? 0;
