@@ -17,6 +17,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
 import { KpClient, type KpResult } from "./kpClient";
+import { DEFAULT_UI_REPOS, screenshotApplies } from "./screenshotPolicy";
 import { ReloadGate } from "./reloadGate";
 import { startSpan } from "./hostTrace";
 import { syncBridge } from "./storeSync";
@@ -291,6 +292,7 @@ interface ObjRow {
   domain: string | null;
   project: string | null;
   path: string;
+  target_repo?: string | null;
   /** host-computed: `kp attach` media exists under <store>/media/<id>/ (tasks/ideas only) */
   has_screenshot?: boolean;
 }
@@ -422,8 +424,15 @@ export interface PlanningLoadStatus {
  * dir is the signal. The board uses it to flag done items missing evidence. */
 function annotateScreenshots(snap: Snapshot): void {
   if (!snap?.root || !Array.isArray(snap.objects)) return;
+  const cfg = planningConfig().get<string[]>("uiRepos");
+  const uiRepos = Array.isArray(cfg) && cfg.length ? cfg : DEFAULT_UI_REPOS;
   for (const o of snap.objects) {
     if (o.type !== "task" && o.type !== "idea") continue;
+    // CLI-only target repos (e.g. knowledge-planning) have no UI to screenshot:
+    // leave has_screenshot undefined so the red missing chip, the inline
+    // done-move warn and the host nudge (all keyed on `=== false`) never fire.
+    // Attaching stays available — chip absent ≠ attach forbidden.
+    if (!screenshotApplies(o.target_repo, uiRepos)) continue;
     try {
       const dir = path.join(snap.root, "media", ...String(o.id).split("/"));
       o.has_screenshot = existsSync(dir) && readdirSync(dir).length > 0;
@@ -431,6 +440,29 @@ function annotateScreenshots(snap: Snapshot): void {
       o.has_screenshot = false;
     }
   }
+}
+
+/** Additively attach the non-night machine lanes' artifacts to the kp-export
+ * snapshot so the webview's Implementation lane sees every implement path:
+ * `autonomous/grok-plan.json` (grok lane) and today's slate picks
+ * (`autonomous/slate/<YYYY-MM-DD>.json`, intent — "queued tonight"). Read-only
+ * over the autonomous artifacts; every failure is silent — the board then
+ * shows exactly what it shows today. */
+function annotateAutonomous(snap: Snapshot): void {
+  if (!snap?.root) return;
+  const autoDir = path.join(snap.root, "autonomous");
+  const readJson = (p: string): unknown => {
+    try { return JSON.parse(readFileSync(p, "utf8")); } catch { return undefined; }
+  };
+  const grok = readJson(path.join(autoDir, "grok-plan.json"));
+  const d = new Date();
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const slate = readJson(path.join(autoDir, "slate", `${today}.json`));
+  if (!grok && !slate) return;
+  const s = snap as unknown as { autonomous?: Record<string, unknown> };
+  const a = (s.autonomous ??= {});
+  if (grok) a.grok_plan = grok;
+  if (slate) a.slate = slate;
 }
 
 /** Shared snapshot, reloaded on refresh and consumed by every provider/view.
@@ -525,6 +557,7 @@ class PlanningModel {
             try {
               this.snap = JSON.parse(res.stdout) as Snapshot;
               annotateScreenshots(this.snap);
+              annotateAutonomous(this.snap);
               this.lastOk = true;
               this.failStreak = 0;
               const n = this.snap.objects?.length ?? 0;
