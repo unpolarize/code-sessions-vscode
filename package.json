@@ -789,6 +789,17 @@
           "default": "",
           "description": "Planning store root (KP_ROOT). Empty → the CLI default (~/docs/planning)."
         },
+        "codeSessions.planning.uiRepos": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "code-sessions-vscode",
+            "code-build-vscode"
+          ],
+          "description": "Target repos whose deliverable is a UI. The red missing-screenshot chip and the done-without-screenshot nudge only fire for items targeting these repos; CLI-only repos (e.g. knowledge-planning) are exempt. Items with no target_repo keep the default behavior; attaching screenshots stays available everywhere."
+        },
         "codeSessions.planning.reloadDebounceMs": {
           "type": "number",
           "default": 800,
