@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import { preferredEditorColumn } from "./editorColumn";
 import { SessionStore, SessionRow } from "./db";
 import { nowStatusFromTail, type NowStatus } from "./nowStatus";
+import { switchTaxRecorder } from "./switchTax";
 
 const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 const POLL_INTERVAL_MS = 2000;
@@ -64,6 +65,11 @@ export interface UpdatePayload {
    * activity. Null when under 30 minutes have elapsed (too noisy) or when
    * there is no spend/activity today. */
   burnRateUsdPerHour: number | null;
+  /** Today's cross-session focus switches (debounced) from the switch-tax
+   * recorder, and the estimated minutes lost to refocusing. Zero when
+   * codeSessions.switchTax.enabled is off (nothing gets recorded). */
+  switchesToday: number;
+  switchTaxMinutes: number;
 }
 
 export type LiveCardForExport = LiveCard;
@@ -216,6 +222,7 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
   } catch {
     /* memory module / vscode not available in this context — leave zeros */
   }
+  const switchTax = switchTaxRecorder.summarizeToday(now);
   return {
     cards,
     activeCount: cards.length,
@@ -226,6 +233,8 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
     memoryEntries,
     memoryFiles,
     burnRateUsdPerHour,
+    switchesToday: switchTax.switchCount,
+    switchTaxMinutes: switchTax.taxMinutes,
   };
 }
 
@@ -335,6 +344,7 @@ function liveHtml(webview: vscode.Webview): string {
   <div class="stat"><span class="label">Cost today</span><span class="value" id="vCost">$0</span></div>
   <div class="stat" title="Cost today divided by hours elapsed since today's first session activity (shown after 30 min of activity)."><span class="label">Burn rate</span><span class="value" id="vBurn">—</span></div>
   <div class="stat" title="Total memory entries discovered across CLAUDE.md / AGENTS.md / MEMORY.md / ~/.claude / ~/.codex sources. Open the Memory tab in the sidebar for per-source breakdown."><span class="label">Memory</span><span class="value" id="vMem">0</span></div>
+  <div class="stat" title="Focus switches between session views today (300ms flickers debounced), with estimated minutes lost to refocusing (23s per switch). Disable via codeSessions.switchTax.enabled."><span class="label">Switch tax</span><span class="value" id="vSwitch">—</span></div>
   <div class="stat"><span class="label">Last update</span><span class="value" id="vClock">—</span></div>
 </div>
 <div id="alert" class="alert-banner"></div>
@@ -353,6 +363,7 @@ function liveHtml(webview: vscode.Webview): string {
   const vCost = document.getElementById('vCost');
   const vBurn = document.getElementById('vBurn');
   const vMem = document.getElementById('vMem');
+  const vSwitch = document.getElementById('vSwitch');
   const vClock = document.getElementById('vClock');
 
   function fmtTok(n) {
@@ -397,6 +408,10 @@ function liveHtml(webview: vscode.Webview): string {
       const files = payload.memoryFiles || 0;
       vMem.textContent = String(entries);
       vMem.title = entries + ' entries across ' + files + ' file(s)';
+    }
+    if (vSwitch) {
+      const n = payload.switchesToday || 0;
+      vSwitch.textContent = n === 0 ? '—' : n + ' · ' + Math.round(payload.switchTaxMinutes) + 'm lost';
     }
     vClock.textContent = new Date().toLocaleTimeString();
 

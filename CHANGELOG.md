@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.61.0 — 2026-09-05
+
+### Context-switch tax meter (slice 1)
+
+- **Switch-tax recorder + chip:** conversation views now log a focus event (session id + backend only, never content) when they gain focus; a pure aggregator debounces <300 ms flickers, collapses same-session refocuses, and prices each remaining cross-session switch at 23 s. The Live monitor header shows a **Switch tax** chip: today's switch count + estimated minutes lost. Opt out with `codeSessions.switchTax.enabled`. (kp: ideas/csv-toxic-flow-context-switch-tax-meter-count-hu)
+
 ## 1.60.0 — 2026-09-03
 
 ### Pipeline: session visibility + done-without-screenshot evidence
