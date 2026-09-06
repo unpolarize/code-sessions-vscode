@@ -66,8 +66,9 @@ export interface UpdatePayload {
    * there is no spend/activity today. */
   burnRateUsdPerHour: number | null;
   /** Today's cross-session focus switches (debounced) from the switch-tax
-   * recorder, and the estimated minutes lost to refocusing. Zero when
-   * codeSessions.switchTax.enabled is off (nothing gets recorded). */
+   * recorder, and the estimated minutes lost to refocusing. Reported as
+   * zero while codeSessions.switchTax.enabled is off (recording also
+   * stops, but buffered events are suppressed too). */
   switchesToday: number;
   switchTaxMinutes: number;
 }
@@ -222,7 +223,19 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
   } catch {
     /* memory module / vscode not available in this context — leave zeros */
   }
-  const switchTax = switchTaxRecorder.summarizeToday(now);
+  // Chip honours the opt-out immediately: when disabled mid-day, report
+  // zeros rather than the still-buffered morning counts. Lazy-require so
+  // buildUpdate stays callable from test harnesses without vscode.
+  let switchTaxEnabled = true;
+  try {
+    const vscodeMod = require("vscode") as typeof import("vscode");
+    switchTaxEnabled = vscodeMod.workspace.getConfiguration("codeSessions").get<boolean>("switchTax.enabled", true);
+  } catch {
+    /* vscode unavailable (tests) — leave enabled */
+  }
+  const switchTax = switchTaxEnabled
+    ? switchTaxRecorder.summarizeToday(now)
+    : { switchCount: 0, medianDwellS: null, taxMinutes: 0 };
   return {
     cards,
     activeCount: cards.length,
@@ -411,7 +424,9 @@ function liveHtml(webview: vscode.Webview): string {
     }
     if (vSwitch) {
       const n = payload.switchesToday || 0;
-      vSwitch.textContent = n === 0 ? '—' : n + ' · ' + Math.round(payload.switchTaxMinutes) + 'm lost';
+      const mins = payload.switchTaxMinutes || 0;
+      const lost = mins >= 10 ? Math.round(mins) + 'm' : mins.toFixed(1) + 'm';
+      vSwitch.textContent = n === 0 ? '—' : n + ' · ' + lost + ' lost';
     }
     vClock.textContent = new Date().toLocaleTimeString();
 

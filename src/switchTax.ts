@@ -33,6 +33,10 @@ export interface AggregateOptions {
   until?: number;
   debounceMs?: number;
   taxSecondsPerSwitch?: number;
+  /** Treat the final in-window segment as still open (skip its flicker
+   * check). Live "today so far" summaries set this so a switch made moments
+   * before `until`=now isn't dropped as a sub-debounce flicker. */
+  finalDwellOpen?: boolean;
 }
 
 /**
@@ -58,8 +62,9 @@ export function aggregateSwitchTax(events: FocusEvent[], opts: AggregateOptions 
   // the next event (or `until` for the last one; open-ended = kept).
   const kept: FocusEvent[] = [];
   for (let i = 0; i < inWindow.length; i++) {
-    const end = i + 1 < inWindow.length ? inWindow[i + 1].ts : until;
-    if (Number.isFinite(end) && end - inWindow[i].ts < debounceMs) continue;
+    const isLast = i + 1 >= inWindow.length;
+    const end = isLast ? until : inWindow[i + 1].ts;
+    if (!(isLast && opts.finalDwellOpen) && Number.isFinite(end) && end - inWindow[i].ts < debounceMs) continue;
     kept.push(inWindow[i]);
   }
 
@@ -102,9 +107,11 @@ const MAX_EVENTS = 5000;
 const RETAIN_MS = 48 * 3600_000;
 
 /**
- * In-memory recorder the host feeds from view-focus hooks. Consecutive
- * same-session records dedupe at write time; the buffer self-prunes to the
- * last 48 h / 5000 events so a long-lived extension host never grows.
+ * In-memory recorder the host feeds from view-focus hooks. Rapid same-session
+ * re-records (< debounce) dedupe at write time — slower same-session
+ * refocuses still append and the aggregator collapses them. The buffer
+ * self-prunes to the last 48 h / 5000 events; state does not survive an
+ * extension-host restart (v1 limitation — "today" restarts with the host).
  */
 export class SwitchTaxRecorder {
   private events: FocusEvent[] = [];
@@ -129,7 +136,7 @@ export class SwitchTaxRecorder {
   }
 
   summarizeToday(now: number = Date.now(), opts: Omit<AggregateOptions, "since" | "until"> = {}): SwitchTaxSummary {
-    return aggregateSwitchTax(this.events, { ...opts, since: startOfDayMs(now), until: now });
+    return aggregateSwitchTax(this.events, { ...opts, since: startOfDayMs(now), until: now, finalDwellOpen: true });
   }
 
   clear(): void {

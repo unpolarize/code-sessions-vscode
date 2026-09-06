@@ -101,6 +101,16 @@ describe("SwitchTaxRecorder", () => {
     expect(s.switchCount).toBe(2);
   });
 
+  it("summarizeToday counts a switch made moments ago (open final dwell, not a flicker)", () => {
+    const r = new SwitchTaxRecorder();
+    r.record("a", "claude", T0);
+    r.record("b", "codex", T0 + 60_000);
+    // Summarize 100ms after the switch: the open b segment must not be
+    // debounce-dropped against until=now.
+    const s = r.summarizeToday(T0 + 60_100);
+    expect(s.switchCount).toBe(1);
+  });
+
   it("summarizeToday only counts events since local midnight", () => {
     const r = new SwitchTaxRecorder();
     const yesterday = T0 - 20 * 3600_000;
