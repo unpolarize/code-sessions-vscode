@@ -15,6 +15,7 @@ import * as os from "os";
 import { execFile } from "child_process";
 import { parseConversation, ParsedConversation } from "./conversationParser";
 import { renderDoctorCardHtml, runRulesDoctor, type DoctorRunResult } from "./rulesDoctor";
+import { renderMessagingDoctorCardHtml, runMessagingDoctor } from "./messagingDoctor";
 import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
@@ -568,8 +569,10 @@ function renderDashboard(opts: {
   focusSession?: SessionRow;
   /** Never-referenced rules doctor card HTML (workspace-scoped). */
   rulesDoctorHtml?: string;
+  /** Privacy-env messaging-disable doctor card HTML ("" when env is clean). */
+  messagingDoctorHtml?: string;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -816,6 +819,8 @@ ${focusSession
   </p>
 </div>
 
+${messagingDoctorHtml ? `<h2 style="margin-top: 28px;">Messaging doctor</h2>${messagingDoctorHtml}` : ""}
+
 ${rulesDoctorHtml ? `<h2 style="margin-top: 28px;">Rules doctor</h2>${rulesDoctorHtml}` : ""}
 
 </body></html>`;
@@ -921,6 +926,15 @@ export async function openInsightsView(
   // Workspace-scoped rules doctor (independent of the lookback/focus filters —
   // it joins the active folder's rule files against last-N project sessions).
   let rulesDoctorHtml = "";
+  // Privacy-env messaging doctor: read-only probe of this VS Code process's
+  // env for the four vars that silently disable Claude cross-session
+  // messaging. Renders "" (no card) when the env is clean.
+  let messagingDoctorHtml = "";
+  try {
+    messagingDoctorHtml = renderMessagingDoctorCardHtml(runMessagingDoctor(process.env));
+  } catch {
+    /* never block Insights on the probe */
+  }
   try {
     rulesDoctorHtml = renderDoctorCardHtml(computeWorkspaceRulesDoctor(store));
   } catch (e: any) {
@@ -943,6 +957,7 @@ export async function openInsightsView(
       parsedCount: deep.parsedSessions,
       focusSession: winRows[0],
       rulesDoctorHtml,
+      messagingDoctorHtml,
     });
     return;
   }
@@ -971,5 +986,6 @@ export async function openInsightsView(
     showAutomated,
     parsedCount: deep.parsedSessions,
     rulesDoctorHtml,
+    messagingDoctorHtml,
   });
 }

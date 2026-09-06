@@ -21,6 +21,7 @@ import { EMIT_HANDOFF_COMMAND } from "./compactionCliff";
 import { locateStoreTurns, buildResumeSeed } from "./storeTranscript";
 import { computeWorkspaceRulesDoctor, openInsightsView } from "./insightsView";
 import { exportChecklist } from "./rulesDoctor";
+import { runMessagingDoctor } from "./messagingDoctor";
 import { openUsageView } from "./usageView";
 import { openSessionGraphView } from "./sessionGraphView";
 import { registerPlanning, setSessionProvider } from "./planning";
@@ -3244,6 +3245,22 @@ export function activate(ctx: vscode.ExtensionContext) {
       } catch (e: any) {
         vscode.window.showErrorMessage(`Rules doctor checklist failed: ${e?.message || e}`);
       }
+    }),
+    // Messaging doctor "Copy fix": puts the unset-snippet for the privacy env
+    // vars that disable Claude cross-session messaging on the clipboard.
+    // Read-only otherwise — never edits shell profiles.
+    vscode.commands.registerCommand("codeSessions.copyMessagingDoctorFix", async () => {
+      const result = runMessagingDoctor(process.env);
+      if (result.severity === "ok") {
+        vscode.window.showInformationMessage(
+          "Messaging doctor: no disabling env vars set — nothing to fix.",
+        );
+        return;
+      }
+      await vscode.env.clipboard.writeText(result.remediation);
+      vscode.window.showInformationMessage(
+        `Copied unset snippet for ${result.reasons.map((r) => r.envVar).join(", ")}. Restart Claude Code from a shell where they are unset.`,
+      );
     }),
     // Drilldown variant: called from a session row's metrics line. Opens the
     // Insights panel but pre-filters every chart and KPI to just that session
