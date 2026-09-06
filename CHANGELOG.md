@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.62.0 — 2026-09-06
+
+### Messaging doctor (privacy-env silent disable)
+
+- **Insights · Messaging doctor card:** detects the four privacy/telemetry env vars that silently disable Claude Code's cross-session messaging feature-flag fetch (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY` — presence-based, any non-empty value counts; `DO_NOT_TRACK`, `DISABLE_GROWTHBOOK` — boolean). The card appears only when at least one is set, lists each var with its value and purpose, and offers **Copy fix** (`codeSessions.copyMessagingDoctorFix`) — an unset snippet plus profile/`~/.claude/settings.json` hints on the clipboard. Read-only probe of the VS Code process env; never edits shell profiles; Claude backend only. (kp: ideas/csv-privacy-env-silent-messaging-disable-doctor)
+
 ## 1.61.0 — 2026-09-05
 
 ### Context-switch tax meter (slice 1)

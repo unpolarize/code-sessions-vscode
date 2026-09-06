@@ -21,25 +21,40 @@ export interface KnownEnvVar {
   /** Why a privacy-minded user would have set this — shown so the card
    * explains the collateral damage instead of just naming the var. */
   purpose: string;
+  /** How Claude Code reads the var: `presence` vars disable on ANY non-empty
+   * value (even `0`/`false`); `boolean` vars disable only on truthy-style
+   * spellings. Getting this wrong produces false all-clears. */
+  semantics: "presence" | "boolean";
 }
 
 export const MESSAGING_DISABLE_ENV_VARS: readonly KnownEnvVar[] = [
   {
     name: "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     purpose: "umbrella opt-out of non-essential network traffic",
+    semantics: "presence",
   },
-  { name: "DISABLE_TELEMETRY", purpose: "opt out of Statsig telemetry" },
-  { name: "DO_NOT_TRACK", purpose: "ecosystem-wide tracking opt-out" },
-  { name: "DISABLE_GROWTHBOOK", purpose: "opt out of GrowthBook feature flags" },
+  { name: "DISABLE_TELEMETRY", purpose: "opt out of Statsig telemetry", semantics: "presence" },
+  { name: "DO_NOT_TRACK", purpose: "ecosystem-wide tracking opt-out", semantics: "boolean" },
+  {
+    name: "DISABLE_GROWTHBOOK",
+    purpose: "opt out of GrowthBook feature flags",
+    semantics: "boolean",
+  },
 ];
 
-/** Values that do NOT count as "set": empty, and explicit-off spellings.
- * Anything else (`1`, `true`, `yes`, even `2`) disables — matching how
- * Claude Code itself interprets these truthy-style flags. */
-export function isDisablingValue(value: string | undefined): boolean {
+/** Per-var disable check. `presence` vars (Claude's umbrella/telemetry
+ * opt-outs) disable on any non-empty value — `DISABLE_TELEMETRY=0` still
+ * disables. `boolean` vars honor explicit-off spellings (`0`/`false`/
+ * `no`/`off`). */
+export function isDisablingValue(
+  value: string | undefined,
+  semantics: "presence" | "boolean" = "boolean"
+): boolean {
   if (value === undefined) return false;
   const v = value.trim().toLowerCase();
-  return v !== "" && v !== "0" && v !== "false" && v !== "no" && v !== "off";
+  if (v === "") return false;
+  if (semantics === "presence") return true;
+  return v !== "0" && v !== "false" && v !== "no" && v !== "off";
 }
 
 export interface DisableReason {
@@ -57,7 +72,7 @@ export function resolveDisableReasons(
   const out: DisableReason[] = [];
   for (const known of MESSAGING_DISABLE_ENV_VARS) {
     const value = env[known.name];
-    if (isDisablingValue(value)) {
+    if (isDisablingValue(value, known.semantics)) {
       out.push({ envVar: known.name, value: value as string, purpose: known.purpose });
     }
   }
@@ -82,7 +97,10 @@ export function buildRemediationSnippet(reasons: DisableReason[]): string {
   }
   lines.push(
     "# Permanent fix: remove the export line(s) from your shell profile",
-    `#   grep -n -E '${reasons.map((r) => r.envVar).join("|")}' ~/.zshrc ~/.zprofile ~/.bashrc ~/.bash_profile 2>/dev/null`
+    `#   grep -n -E '${reasons.map((r) => r.envVar).join("|")}' ~/.zshrc ~/.zprofile ~/.bashrc ~/.bash_profile 2>/dev/null`,
+    '# Also check the "env" block in ~/.claude/settings.json (and project',
+    "# .claude/settings.json) — settings env overrides the shell, so unset",
+    "# alone won't fix vars set there."
   );
   return lines.join("\n") + "\n";
 }
@@ -154,13 +172,15 @@ export function renderMessagingDoctorCardHtml(
     .join("");
   return `<div class="card">
   <div class="card-title">⚠ Cross-session messaging likely disabled ${copyBtn}</div>
-  <div class="subtitle">These privacy/telemetry env vars are set in this VS Code process, and each one silently
-    turns off Claude Code's <code>ListAgents</code> / <code>SendMessage</code> peer messaging:</div>
+  <div class="subtitle">These privacy/telemetry env vars are set in this VS Code process. Each one silently turns off
+    Claude Code's feature-flag fetch, which disables <code>ListAgents</code> / <code>SendMessage</code>
+    cross-machine messaging and Remote Control (same-machine peer messaging may still work):</div>
   ${rows}
   <div class="doctor-disclaimer">
-    Claude backend only — other backends are unaffected. This probe is read-only: it never edits your
-    shell profile. "Copy fix" puts an unset snippet on the clipboard; restart Claude Code from a shell
-    where the vars are unset to re-enable messaging.
+    Heuristic: this probes the VS Code process env, which can differ from the shell that launches
+    <code>claude</code> — treat as "likely", not proof. Claude backend only; other backends are
+    unaffected. Read-only: never edits your shell profile. "Copy fix" puts an unset snippet on the
+    clipboard; restart Claude Code from a shell where the vars are unset to re-enable messaging.
   </div>
 </div>`;
 }

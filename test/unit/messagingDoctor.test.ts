@@ -9,15 +9,24 @@ import {
 } from "../../src/messagingDoctor";
 
 describe("isDisablingValue", () => {
-  it("treats unset / empty / explicit-off spellings as not disabling", () => {
+  it("boolean semantics: unset / empty / explicit-off spellings do not disable", () => {
     for (const v of [undefined, "", "  ", "0", "false", "FALSE", "no", "off", " Off "]) {
-      expect(isDisablingValue(v)).toBe(false);
+      expect(isDisablingValue(v, "boolean")).toBe(false);
     }
   });
 
-  it("treats truthy-style values as disabling", () => {
+  it("boolean semantics: truthy-style values disable", () => {
     for (const v of ["1", "true", "TRUE", "yes", "2", "anything"]) {
-      expect(isDisablingValue(v)).toBe(true);
+      expect(isDisablingValue(v, "boolean")).toBe(true);
+    }
+  });
+
+  it("presence semantics: ANY non-empty value disables, even 0/false", () => {
+    for (const v of ["1", "0", "false", "no", "off", "anything"]) {
+      expect(isDisablingValue(v, "presence")).toBe(true);
+    }
+    for (const v of [undefined, "", "  "]) {
+      expect(isDisablingValue(v, "presence")).toBe(false);
     }
   });
 });
@@ -26,6 +35,17 @@ describe("resolveDisableReasons", () => {
   it("returns [] on a clean env", () => {
     expect(resolveDisableReasons({})).toEqual([]);
     expect(resolveDisableReasons({ PATH: "/usr/bin", DO_NOT_TRACK: "0" })).toEqual([]);
+  });
+
+  it("presence-based vars disable even when set to 0/false", () => {
+    expect(resolveDisableReasons({ DISABLE_TELEMETRY: "0" }).map((r) => r.envVar)).toEqual([
+      "DISABLE_TELEMETRY",
+    ]);
+    expect(
+      resolveDisableReasons({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "false" })
+    ).toHaveLength(1);
+    // …but boolean vars honor explicit-off.
+    expect(resolveDisableReasons({ DISABLE_GROWTHBOOK: "0" })).toEqual([]);
   });
 
   it("env fixture → expected disable reasons[], in canonical order", () => {
