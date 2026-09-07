@@ -181,12 +181,18 @@ function startOfTodayMs(): number {
 
 // Transcript-evidence probe is capped but still scans up to 3000 turns of
 // SQLite rows — far too heavy for the 2 s poll tick. Cache it host-wide for
-// 5 minutes; the env half of the doctor stays live every tick (it's a few
-// string reads). A fresh disable would surface within one TTL.
+// 5 minutes. Env disables surface on the very next tick regardless; only the
+// transcript-only ("⚠ evidence") warn is TTL-bound. buildUpdate also feeds
+// the status bar / cost tile / sessions tree, so the probe is opt-in: only
+// the live-monitor panel tick (which pauses while hidden) requests it —
+// other callers get the cheap env-only doctor.
 const EVIDENCE_TTL_MS = 5 * 60_000;
 let evidenceCache: { at: number; evidence: TranscriptEvidence | undefined } | null = null;
 
-export function buildUpdate(store: SessionStore): UpdatePayload {
+export function buildUpdate(
+  store: SessionStore,
+  opts?: { includeMessagingEvidence?: boolean },
+): UpdatePayload {
   const now = Date.now();
   // Pull a wider window so "today" sums catch sessions that haven't recently
   // ticked their mtime. 200 covers a heavy day; cheap.
@@ -260,15 +266,17 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
   let messaging: MessagingStripStat | null = null;
   try {
     let evidence: TranscriptEvidence | undefined;
-    if (evidenceCache && now - evidenceCache.at < EVIDENCE_TTL_MS) {
-      evidence = evidenceCache.evidence;
-    } else {
-      try {
-        evidence = collectTranscriptEvidence(store);
-      } catch {
-        evidence = undefined;
+    if (opts?.includeMessagingEvidence) {
+      if (evidenceCache && now - evidenceCache.at < EVIDENCE_TTL_MS) {
+        evidence = evidenceCache.evidence;
+      } else {
+        try {
+          evidence = collectTranscriptEvidence(store);
+        } catch {
+          evidence = undefined;
+        }
+        evidenceCache = { at: now, evidence };
       }
-      evidenceCache = { at: now, evidence };
     }
     messaging = summarizeForStrip(runMessagingDoctor(process.env, evidence));
   } catch {
@@ -315,7 +323,10 @@ export function openLiveMonitor(ctx: vscode.ExtensionContext, store: SessionStor
   const tick = () => {
     if (!panel.visible) return;
     try {
-      panel.webview.postMessage({ command: "update", payload: buildUpdate(store) });
+      panel.webview.postMessage({
+        command: "update",
+        payload: buildUpdate(store, { includeMessagingEvidence: true }),
+      });
     } catch {
       // panel disposed
     }
@@ -436,7 +447,7 @@ function liveHtml(webview: vscode.Webview): string {
   // Messaging-doctor stat: click copies the fix snippet (extension side runs
   // codeSessions.copyMessagingDoctorFix with the snippet the stat carries).
   let msgSnippet = '';
-  msgStat.addEventListener('click', () => {
+  if (msgStat) msgStat.addEventListener('click', () => {
     if (msgSnippet) vscode.postMessage({ command: 'copyMessagingFix', snippet: msgSnippet });
   });
 
