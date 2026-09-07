@@ -106,8 +106,16 @@ export interface TranscriptEvidence {
 
 export type TranscriptEvidenceVerdict = "seen" | "attempted-absent" | "no-signal";
 
-const ATTEMPT_RE = /\/list-agents\b/i;
+// Invocation form only (line-start): a bare mention of /list-agents in prose
+// ("why does /list-agents fail?") is not an attempt — counting it would warn
+// on sessions *about* this feature. Slash commands are typed on their own line.
+const ATTEMPT_RE = /^\s*\/list-agents\b/im;
 const MESSAGING_TOOL_NAMES = new Set(["ListAgents", "SendMessage"]);
+
+/** Cap on total turns scanned across all sessions (rulesDoctor uses the same
+ * order of magnitude) — Insights builds synchronously on the extension host,
+ * and long transcripts must not stall it. */
+const MAX_EVIDENCE_TURNS = 3000;
 
 /** Pure: recent Claude sessions' turns → evidence counters. */
 export function resolveTranscriptEvidence(sessions: EvidenceTurn[][]): TranscriptEvidence {
@@ -157,15 +165,21 @@ export function collectTranscriptEvidence(
   store: TranscriptEvidenceSource,
   maxSessions = 20
 ): TranscriptEvidence {
+  // Wide pool before the source filter: on a machine where grok/codex
+  // sessions dominate the recency window, a thin pool would under-sample
+  // Claude and manufacture false attempted-absent verdicts.
   const claude = store
-    .listRecent(maxSessions * 3, true)
+    .listRecent(maxSessions * 10, true)
     .filter((s) => (s.source ?? "claude") === "claude")
     .slice(0, maxSessions);
-  const sessions: EvidenceTurn[][] = claude.map((s) =>
-    store
-      .turnsForSession(s.session_id)
-      .map((t) => ({ userText: t.user_text, toolNamesCsv: t.tool_names_csv }))
-  );
+  const sessions: EvidenceTurn[][] = [];
+  let turnBudget = MAX_EVIDENCE_TURNS;
+  for (const s of claude) {
+    if (turnBudget <= 0) break;
+    const turns = store.turnsForSession(s.session_id).slice(0, turnBudget);
+    turnBudget -= turns.length;
+    sessions.push(turns.map((t) => ({ userText: t.user_text, toolNamesCsv: t.tool_names_csv })));
+  }
   return resolveTranscriptEvidence(sessions);
 }
 

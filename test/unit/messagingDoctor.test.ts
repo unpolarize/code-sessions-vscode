@@ -131,14 +131,23 @@ describe("resolveTranscriptEvidence / transcriptEvidenceVerdict", () => {
     expect(transcriptEvidenceVerdict(ev2)).toBe("seen");
   });
 
-  it("/list-agents attempted (case-insensitive) with no tool run → attempted-absent", () => {
+  it("/list-agents attempted (case-insensitive, line-start) with no tool run → attempted-absent", () => {
     const ev = resolveTranscriptEvidence([
-      [turn("why does /LIST-AGENTS say unknown command?", "Bash")],
-      [turn("/list-agents", null)],
+      [turn("/LIST-AGENTS", "Bash")],
+      [turn("some context\n  /list-agents\nmore", null)],
     ]);
     expect(ev.attemptTurns).toBe(2);
     expect(ev.toolSeen).toBe(false);
     expect(transcriptEvidenceVerdict(ev)).toBe("attempted-absent");
+  });
+
+  it("prose mentions of /list-agents are not attempts (invocation form only)", () => {
+    const ev = resolveTranscriptEvidence([
+      [turn("why does /list-agents say unknown command?", "Bash")],
+      [turn("docs mention /list-agents somewhere", null)],
+    ]);
+    expect(ev.attemptTurns).toBe(0);
+    expect(transcriptEvidenceVerdict(ev)).toBe("no-signal");
   });
 
   it("tool detection is exact-name: substring tool names do not count as seen", () => {
@@ -172,6 +181,28 @@ describe("collectTranscriptEvidence", () => {
     expect(ev.sessionsScanned).toBe(2);
     expect(ev.attemptTurns).toBe(1);
     expect(transcriptEvidenceVerdict(ev)).toBe("attempted-absent");
+  });
+
+  it("caps total turns scanned across sessions (extension-host budget)", () => {
+    const bigSession = Array.from({ length: 2999 }, () => ({
+      user_text: "work",
+      tool_names_csv: "Bash",
+    }));
+    const store = {
+      listRecent: () => [
+        { session_id: "c1", source: "claude" },
+        { session_id: "c2", source: "claude" },
+        { session_id: "c3", source: "claude" },
+      ],
+      turnsForSession: (id: string) =>
+        id === "c1"
+          ? bigSession
+          : [{ user_text: "/list-agents", tool_names_csv: null as string | null }],
+    };
+    const ev = collectTranscriptEvidence(store, 3);
+    // c1 eats 2999 of the 3000-turn budget; c2 gets the last slot; c3 is skipped.
+    expect(ev.sessionsScanned).toBe(2);
+    expect(ev.attemptTurns).toBe(1);
   });
 });
 
