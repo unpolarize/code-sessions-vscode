@@ -15,7 +15,11 @@ import * as os from "os";
 import { execFile } from "child_process";
 import { parseConversation, ParsedConversation } from "./conversationParser";
 import { renderDoctorCardHtml, runRulesDoctor, type DoctorRunResult } from "./rulesDoctor";
-import { renderMessagingDoctorCardHtml, runMessagingDoctor } from "./messagingDoctor";
+import {
+  collectTranscriptEvidence,
+  renderMessagingDoctorCardHtml,
+  runMessagingDoctor,
+} from "./messagingDoctor";
 import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
@@ -928,10 +932,19 @@ export async function openInsightsView(
   let rulesDoctorHtml = "";
   // Privacy-env messaging doctor: read-only probe of this VS Code process's
   // env for the four vars that silently disable Claude cross-session
-  // messaging. Renders "" (no card) when the env is clean.
+  // messaging, joined with transcript evidence (a `/list-agents` attempt in
+  // recent Claude sessions with the tool never running warns even when this
+  // process's env looks clean — extension-host env ≠ claude's shell).
+  // Renders "" (no card) when both signals are clean.
   let messagingDoctorHtml = "";
   try {
-    messagingDoctorHtml = renderMessagingDoctorCardHtml(runMessagingDoctor(process.env));
+    let evidence;
+    try {
+      evidence = collectTranscriptEvidence(store);
+    } catch {
+      /* transcript probe is best-effort — env-only card still renders */
+    }
+    messagingDoctorHtml = renderMessagingDoctorCardHtml(runMessagingDoctor(process.env, evidence));
   } catch {
     /* never block Insights on the probe */
   }

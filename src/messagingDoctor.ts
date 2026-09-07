@@ -80,6 +80,96 @@ export function resolveDisableReasons(
 }
 
 // ---------------------------------------------------------------------------
+// Transcript evidence (ListAgents-absence probe)
+// ---------------------------------------------------------------------------
+//
+// The extension-host env can be clean while the shell that launches `claude`
+// has one of the vars set (or `~/.claude/settings.json` sets it) — env alone
+// gives a false all-clear. The strongest transcript signal is a failed
+// attempt: the user typed `/list-agents` in a recent Claude session but the
+// `ListAgents` tool never ran anywhere in the lookback window. A user who
+// simply never uses messaging is "no-signal", not a warn — otherwise the
+// card would cry wolf for everyone.
+
+export interface EvidenceTurn {
+  userText: string | null;
+  toolNamesCsv: string | null;
+}
+
+export interface TranscriptEvidence {
+  sessionsScanned: number;
+  /** Turns where the user invoked `/list-agents`. */
+  attemptTurns: number;
+  /** True when ListAgents or SendMessage actually ran in any scanned turn. */
+  toolSeen: boolean;
+}
+
+export type TranscriptEvidenceVerdict = "seen" | "attempted-absent" | "no-signal";
+
+const ATTEMPT_RE = /\/list-agents\b/i;
+const MESSAGING_TOOL_NAMES = new Set(["ListAgents", "SendMessage"]);
+
+/** Pure: recent Claude sessions' turns → evidence counters. */
+export function resolveTranscriptEvidence(sessions: EvidenceTurn[][]): TranscriptEvidence {
+  let attemptTurns = 0;
+  let toolSeen = false;
+  for (const turns of sessions) {
+    for (const t of turns) {
+      if (t.userText && ATTEMPT_RE.test(t.userText)) attemptTurns++;
+      if (!toolSeen && t.toolNamesCsv) {
+        for (const name of t.toolNamesCsv.split(",")) {
+          if (MESSAGING_TOOL_NAMES.has(name.trim())) {
+            toolSeen = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  return { sessionsScanned: sessions.length, attemptTurns, toolSeen };
+}
+
+export function transcriptEvidenceVerdict(
+  evidence: TranscriptEvidence | undefined
+): TranscriptEvidenceVerdict {
+  if (!evidence || evidence.sessionsScanned === 0) return "no-signal";
+  if (evidence.toolSeen) return "seen";
+  if (evidence.attemptTurns > 0) return "attempted-absent";
+  return "no-signal";
+}
+
+/** Minimal store surface the probe needs — SessionStore satisfies this
+ * (same pattern as rulesDoctor's DoctorTurnSource; keeps this module free
+ * of vscode/db imports and unit-testable with a fake). */
+export interface TranscriptEvidenceSource {
+  listRecent(
+    limit: number,
+    includeAutomated: boolean
+  ): Array<{ session_id: string; source?: string }>;
+  turnsForSession(
+    sessionId: string
+  ): Array<{ user_text: string | null; tool_names_csv: string | null }>;
+}
+
+/** Scan the most recent Claude-backend sessions (other backends are out of
+ * scope — scanning them would manufacture false "absent" evidence). */
+export function collectTranscriptEvidence(
+  store: TranscriptEvidenceSource,
+  maxSessions = 20
+): TranscriptEvidence {
+  const claude = store
+    .listRecent(maxSessions * 3, true)
+    .filter((s) => (s.source ?? "claude") === "claude")
+    .slice(0, maxSessions);
+  const sessions: EvidenceTurn[][] = claude.map((s) =>
+    store
+      .turnsForSession(s.session_id)
+      .map((t) => ({ userText: t.user_text, toolNamesCsv: t.tool_names_csv }))
+  );
+  return resolveTranscriptEvidence(sessions);
+}
+
+// ---------------------------------------------------------------------------
 // Remediation
 // ---------------------------------------------------------------------------
 
@@ -105,6 +195,22 @@ export function buildRemediationSnippet(reasons: DisableReason[]): string {
   return lines.join("\n") + "\n";
 }
 
+/** Snippet for the evidence-only warn (env clean here, but `/list-agents`
+ * failed in recent transcripts): there is nothing to unset in THIS process,
+ * so hand the user the hunt commands for where the var actually lives. */
+export function buildInvestigationSnippet(): string {
+  const names = MESSAGING_DISABLE_ENV_VARS.map((k) => k.name).join("|");
+  return [
+    "# /list-agents was tried in recent Claude sessions but the ListAgents tool never ran.",
+    "# This VS Code process's env looks clean — check the shell that launches claude:",
+    `env | grep -E '${names}'`,
+    "# …and the \"env\" block in Claude settings (settings env overrides the shell):",
+    `grep -n -E '${names}' ~/.claude/settings.json .claude/settings.json .claude/settings.local.json 2>/dev/null`,
+    "# …and your shell profile:",
+    `grep -n -E '${names}' ~/.zshrc ~/.zprofile ~/.bashrc ~/.bash_profile 2>/dev/null`,
+  ].join("\n") + "\n";
+}
+
 // ---------------------------------------------------------------------------
 // Doctor result
 // ---------------------------------------------------------------------------
@@ -115,19 +221,34 @@ export interface MessagingDoctorResult {
   reasons: DisableReason[];
   severity: MessagingDoctorSeverity;
   remediation: string;
+  /** Transcript probe, when the caller had a session store to scan. */
+  evidence?: TranscriptEvidence;
+  evidenceVerdict: TranscriptEvidenceVerdict;
 }
 
-/** Env snapshot → doctor verdict. `warn` iff at least one known var is set
- * to a disabling value; the caller decides whether to render anything on
- * `ok` (the Insights card hides itself). */
+/** Env snapshot (+ optional transcript evidence) → doctor verdict. `warn`
+ * iff at least one known var is set to a disabling value OR the transcripts
+ * show a failed `/list-agents` attempt with no messaging tool ever running.
+ * The caller decides whether to render anything on `ok` (the Insights card
+ * hides itself). */
 export function runMessagingDoctor(
-  env: Record<string, string | undefined>
+  env: Record<string, string | undefined>,
+  evidence?: TranscriptEvidence
 ): MessagingDoctorResult {
   const reasons = resolveDisableReasons(env);
+  const evidenceVerdict = transcriptEvidenceVerdict(evidence);
+  const warn = reasons.length > 0 || evidenceVerdict === "attempted-absent";
   return {
     reasons,
-    severity: reasons.length > 0 ? "warn" : "ok",
-    remediation: buildRemediationSnippet(reasons),
+    severity: warn ? "warn" : "ok",
+    remediation:
+      reasons.length > 0
+        ? buildRemediationSnippet(reasons)
+        : evidenceVerdict === "attempted-absent"
+          ? buildInvestigationSnippet()
+          : "",
+    evidence,
+    evidenceVerdict,
   };
 }
 
@@ -159,7 +280,7 @@ export function renderMessagingDoctorCardHtml(
   const commandUris = opts?.commandUris !== false;
   const copyBtn = commandUris
     ? `<a class="doctor-action" href="command:codeSessions.copyMessagingDoctorFix?${encodeURIComponent(
-        JSON.stringify([])
+        JSON.stringify([result.remediation])
       )}">Copy fix</a>`
     : "";
   const rows = result.reasons
@@ -170,16 +291,41 @@ export function renderMessagingDoctorCardHtml(
         )}</code> <span class="muted">— ${escapeHtml(r.purpose)}</span></div>`
     )
     .join("");
+  const ev = result.evidence;
+  const attemptedAbsent = result.evidenceVerdict === "attempted-absent";
+  const subtitle =
+    result.reasons.length > 0
+      ? `These privacy/telemetry env vars are set in this VS Code process. Each one silently turns off
+    Claude Code's feature-flag fetch, which disables <code>ListAgents</code> / <code>SendMessage</code>
+    cross-machine messaging and Remote Control (same-machine peer messaging may still work):`
+      : `No disabling env vars are visible in this VS Code process, but <code>/list-agents</code> was
+    tried in ${ev?.attemptTurns ?? 0} turn(s) across the last ${ev?.sessionsScanned ?? 0} Claude
+    session(s) and the <code>ListAgents</code> tool never ran — messaging is likely disabled by an
+    env var set in the shell that launches <code>claude</code>, or by the <code>env</code> block in
+    <code>~/.claude/settings.json</code>. "Copy fix" puts the hunt commands on the clipboard.`;
+  let evidenceLine = "";
+  if (result.reasons.length > 0 && attemptedAbsent) {
+    evidenceLine = `<div class="doctor-row"><span class="muted">Corroborated by transcripts:
+      <code>/list-agents</code> tried in ${ev!.attemptTurns} turn(s) across the last
+      ${ev!.sessionsScanned} Claude session(s); the tool never ran.</span></div>`;
+  } else if (result.reasons.length > 0 && result.evidenceVerdict === "seen") {
+    evidenceLine = `<div class="doctor-row"><span class="muted">Note: <code>ListAgents</code> /
+      <code>SendMessage</code> did run in recent Claude sessions — messaging may still be working
+      despite these vars.</span></div>`;
+  }
   return `<div class="card">
   <div class="card-title">⚠ Cross-session messaging likely disabled ${copyBtn}</div>
-  <div class="subtitle">These privacy/telemetry env vars are set in this VS Code process. Each one silently turns off
-    Claude Code's feature-flag fetch, which disables <code>ListAgents</code> / <code>SendMessage</code>
-    cross-machine messaging and Remote Control (same-machine peer messaging may still work):</div>
+  <div class="subtitle">${subtitle}</div>
   ${rows}
+  ${evidenceLine}
   <div class="doctor-disclaimer">
-    Heuristic: this probes the VS Code process env, which can differ from the shell that launches
+    Heuristic: this probes the VS Code process env${
+      ev && ev.sessionsScanned > 0 ? " and recent Claude session transcripts" : ""
+    }, which can differ from the shell that launches
     <code>claude</code> — treat as "likely", not proof. Claude backend only; other backends are
-    unaffected. Read-only: never edits your shell profile. "Copy fix" puts an unset snippet on the
+    unaffected. Read-only: never edits your shell profile. "Copy fix" puts ${
+      result.reasons.length > 0 ? "an unset snippet" : "the hunt commands"
+    } on the
     clipboard; restart Claude Code from a shell where the vars are unset to re-enable messaging.
   </div>
 </div>`;

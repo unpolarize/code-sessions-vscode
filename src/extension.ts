@@ -3249,7 +3249,16 @@ export function activate(ctx: vscode.ExtensionContext) {
     // Messaging doctor "Copy fix": puts the unset-snippet for the privacy env
     // vars that disable Claude cross-session messaging on the clipboard.
     // Read-only otherwise — never edits shell profiles.
-    vscode.commands.registerCommand("codeSessions.copyMessagingDoctorFix", async () => {
+    vscode.commands.registerCommand("codeSessions.copyMessagingDoctorFix", async (snippet?: unknown) => {
+      // The card passes its own remediation text (env-unset or, for the
+      // evidence-only transcript warn, the hunt commands) so the copy matches
+      // what the card showed. Fallback re-probes env only — the command can
+      // also be run from the palette where no transcript context exists.
+      if (typeof snippet === "string" && snippet.trim().length > 0) {
+        await vscode.env.clipboard.writeText(snippet);
+        vscode.window.showInformationMessage("Copied messaging-doctor fix snippet.");
+        return;
+      }
       const result = runMessagingDoctor(process.env);
       if (result.severity === "ok") {
         vscode.window.showInformationMessage(

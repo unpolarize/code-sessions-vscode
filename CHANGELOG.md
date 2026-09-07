@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.63.0 — 2026-09-06
+
+### Messaging doctor: transcript evidence (ListAgents-absence probe)
+
+- **Insights · Messaging doctor** now joins recent Claude session transcripts into the verdict: if `/list-agents` was tried in a recent session but the `ListAgents`/`SendMessage` tools never ran, the card warns **even when this VS Code process's env looks clean** (extension-host env ≠ the shell that launches `claude`; `~/.claude/settings.json` env blocks are invisible here too). Users who never touch messaging stay "no-signal" — no false alarms. When env vars *are* set, transcripts either corroborate ("tried, never ran") or soften the card ("tools did run — may still be working"). Evidence-only warns get hunt commands (env grep + settings.json + shell profiles) on **Copy fix** instead of an unset snippet; the card now passes its exact snippet to the copy command. Claude-source sessions only (last 20); read-only. (kp: ideas/csv-privacy-env-silent-messaging-disable-doctor)
+
 ## 1.62.0 — 2026-09-06
 
 ### Messaging doctor (privacy-env silent disable)
