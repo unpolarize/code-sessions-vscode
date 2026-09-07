@@ -22,6 +22,12 @@ import { locateStoreTurns, buildResumeSeed } from "./storeTranscript";
 import { computeWorkspaceRulesDoctor, openInsightsView } from "./insightsView";
 import { exportChecklist } from "./rulesDoctor";
 import { runMessagingDoctor } from "./messagingDoctor";
+import {
+  PIN_SEMANTICS_COMMAND,
+  detectEffortDriftFromSessions,
+  formatPinnedSemanticsNote,
+} from "./effortDriftCanary";
+import { loadCodeBuildEffortLookup } from "./effortDriftHost";
 import { openUsageView } from "./usageView";
 import { openSessionGraphView } from "./sessionGraphView";
 import { registerPlanning, setSessionProvider } from "./planning";
@@ -3271,6 +3277,75 @@ export function activate(ctx: vscode.ExtensionContext) {
         `Copied unset snippet for ${result.reasons.map((r) => r.envVar).join(", ")}. Restart Claude Code from a shell where they are unset.`,
       );
     }),
+    // Effort-drift canary deep link: open the conversation viewer for a session id.
+    vscode.commands.registerCommand("codeSessions.openSession", async (sessionId?: unknown) => {
+      const id = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!id) {
+        vscode.window.showWarningMessage("Open session needs a session id.");
+        return;
+      }
+      if (!store) {
+        vscode.window.showWarningMessage("Session cache is unavailable.");
+        return;
+      }
+      const row = store.getById(id);
+      if (!row) {
+        vscode.window.showWarningMessage(`Session ${id.slice(0, 8)} not found in the index.`);
+        return;
+      }
+      const existing = openViewerPanels.get(id);
+      if (existing) {
+        existing.reveal(preferredEditorColumn());
+        return;
+      }
+      const jsonl = row.jsonl_path;
+      if (!jsonl || !fs.existsSync(jsonl)) {
+        // Fall back to Insights filtered to this session when the transcript is gone.
+        await openInsightsView(ctx, store, { focusSessionId: id });
+        return;
+      }
+      const panel = openConversationViewer(ctx, jsonl, id, row.title || id.slice(0, 8), store);
+      openViewerPanels.set(id, panel);
+      panel.onDidDispose(() => {
+        if (openViewerPanels.get(id) === panel) openViewerPanels.delete(id);
+      });
+    }),
+    // Effort-drift canary "Pin expected semantics": copy a markdown note for
+    // the (backend, model, effort) fingerprint so it can be pasted into KP/doctor.
+    vscode.commands.registerCommand(
+      PIN_SEMANTICS_COMMAND,
+      async (backend?: unknown, model?: unknown, effort?: unknown) => {
+        const b = typeof backend === "string" ? backend : "";
+        const m = typeof model === "string" ? model : "";
+        const e = typeof effort === "string" ? effort : "";
+        if (!b || !m || !e) {
+          vscode.window.showWarningMessage(
+            "Pin semantics needs backend, model, and effort (use the Insights card button).",
+          );
+          return;
+        }
+        let note = `# Effort semantics pin — ${b} / ${m} / ${e}\n\nPinned at ${new Date().toISOString()} via ${PIN_SEMANTICS_COMMAND}.\n`;
+        try {
+          if (store) {
+            const sinceSec = Math.floor(Date.now() / 1000) - 8 * 86400;
+            const rows = store.listSinceEpoch(sinceSec, true);
+            const cards = detectEffortDriftFromSessions(rows, {
+              effortBySessionId: loadCodeBuildEffortLookup(),
+            });
+            const card = cards.find(
+              (c) => c.backend === b && c.model === m && c.effort === e.toLowerCase(),
+            );
+            if (card) note = formatPinnedSemanticsNote(card);
+          }
+        } catch {
+          /* fall through with the stub note */
+        }
+        await vscode.env.clipboard.writeText(note);
+        vscode.window.showInformationMessage(
+          `Pinned effort semantics for ${b}/${m}/${e} — markdown note copied to clipboard.`,
+        );
+      },
+    ),
     // Drilldown variant: called from a session row's metrics line. Opens the
     // Insights panel but pre-filters every chart and KPI to just that session
     // so the user sees its cost/tokens/messages in context of the dashboards.

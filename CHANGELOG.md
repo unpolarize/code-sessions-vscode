@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.65.0 — 2026-09-07
+
+### Effort-semantics drift canary — Insights host wiring (slice 2)
+
+- **Insights · Effort drift canary:** maps indexed sessions → per-(backend, model, effort) fingerprints and renders the advisory card when today's tokens/turn · tool-calls/turn · wall-time/turn diverge from the rolling 7-day median (Fable high→low class). Effort labels come from `extras_json` when stamped, else Code Build's `~/.codebuild/index.json` (`backendSessionId` → effort). Cold-start / unlabeled / `default` effort stay silent. Deep-links open the conversation via `codeSessions.openSession`; **Pin expected semantics** copies a markdown note (`codeSessions.effortDrift.pinSemantics`) for KP/doctor paste. Advisory only — no auto model switch. (kp: ideas/csv-vendor-effort-semantics-drift-canary-detect)
+
 ## 1.64.0 — 2026-09-07
 
 ### Messaging doctor in the Live monitor strip (ops surface)

@@ -20,6 +20,8 @@ import {
   renderMessagingDoctorCardHtml,
   runMessagingDoctor,
 } from "./messagingDoctor";
+import { computeEffortDriftHtml } from "./effortDriftHost";
+import { EFFORT_DRIFT_CARD_CSS } from "./effortDriftCanary";
 import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
@@ -560,6 +562,7 @@ table.project-rollup code { font-family: var(--vscode-editor-font-family, monosp
 .doctor-row a:hover { text-decoration: underline; }
 .doctor-action { float: right; font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--accent); text-decoration: none; font-weight: 500; }
 .doctor-disclaimer { font-size: 11px; color: var(--muted); margin-top: 12px; line-height: 1.45; border-top: 1px solid var(--border); padding-top: 8px; }
+${EFFORT_DRIFT_CARD_CSS}
 `;
 
 function renderDashboard(opts: {
@@ -575,8 +578,10 @@ function renderDashboard(opts: {
   rulesDoctorHtml?: string;
   /** Privacy-env messaging-disable doctor card HTML ("" when env is clean). */
   messagingDoctorHtml?: string;
+  /** Effort-semantics drift canary HTML ("" when no watch/drift). */
+  effortDriftHtml?: string;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -823,6 +828,8 @@ ${focusSession
   </p>
 </div>
 
+${effortDriftHtml ? `<h2 style="margin-top: 28px;">Effort drift canary</h2>${effortDriftHtml}` : ""}
+
 ${messagingDoctorHtml ? `<h2 style="margin-top: 28px;">Messaging doctor</h2>${messagingDoctorHtml}` : ""}
 
 ${rulesDoctorHtml ? `<h2 style="margin-top: 28px;">Rules doctor</h2>${rulesDoctorHtml}` : ""}
@@ -955,6 +962,22 @@ export async function openInsightsView(
       <div class="subtitle">Failed to build report: ${escapeHtml(e?.message || String(e))}</div></div>`;
   }
 
+  // Effort-semantics drift canary: needs a full ~8-day window (7d baseline +
+  // today), not the Insights `limit` slice. Effort labels come from extras
+  // when stamped, else Code Build's index (backendSessionId → effort).
+  let effortDriftHtml = "";
+  try {
+    if (store) {
+      const sinceSec = Math.floor(Date.now() / 1000) - 8 * 86400;
+      const canaryRows = store.listSinceEpoch(sinceSec, true);
+      effortDriftHtml = computeEffortDriftHtml(canaryRows, {
+        openSessionCommand: "codeSessions.openSession",
+      });
+    }
+  } catch {
+    /* advisory card — never block Insights */
+  }
+
   if (opts.focusSessionId) {
     const winRows = allRows.filter((r) => r.session === opts.focusSessionId);
     if (winRows.length === 0) {
@@ -971,6 +994,7 @@ export async function openInsightsView(
       focusSession: winRows[0],
       rulesDoctorHtml,
       messagingDoctorHtml,
+      effortDriftHtml,
     });
     return;
   }
@@ -1000,5 +1024,6 @@ export async function openInsightsView(
     parsedCount: deep.parsedSessions,
     rulesDoctorHtml,
     messagingDoctorHtml,
+    effortDriftHtml,
   });
 }

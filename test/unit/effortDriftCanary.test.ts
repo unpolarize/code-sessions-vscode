@@ -12,9 +12,17 @@ import {
   PIN_SEMANTICS_COMMAND,
   buildBaselines,
   detectEffortDrift,
+  detectEffortDriftFromSessions,
+  effortFromExtras,
+  effortLookupFromCodeBuildIndex,
   evaluateEffortDrift,
   fingerprintOf,
+  formatPinnedSemanticsNote,
+  observationFromSession,
+  observationsFromSessions,
   renderEffortDriftCardHtml,
+  renderEffortDriftSectionHtml,
+  splitHistoryAndToday,
   type EffortObservation,
 } from "../../src/effortDriftCanary";
 
@@ -189,5 +197,157 @@ describe("renderEffortDriftCardHtml", () => {
     const [card] = detectEffortDrift(history, evil, { now: NOW });
     const html = renderEffortDriftCardHtml(card, { commandUris: false });
     expect(html).not.toContain('<img src=x onerror="1">');
+  });
+
+  it("section helper joins cards + disclaimer, empty when nothing drifted", () => {
+    expect(renderEffortDriftSectionHtml([])).toBe("");
+    const [card] = detectEffortDrift(BASELINE_WEEK, [collapsedSession()], { now: NOW });
+    const html = renderEffortDriftSectionHtml([card], { openSessionCommand: "codeSessions.openSession" });
+    expect(html).toContain("edc-card");
+    expect(html).toContain("edc-disclaimer");
+    expect(html).toContain("Advisory only");
+  });
+});
+
+describe("session → observation adapter (host wiring)", () => {
+  it("reads effort from extras_json and derives turns/wall from row fields", () => {
+    const obs = observationFromSession({
+      session_id: "sess-1",
+      source: "claude",
+      model: "claude-fable-5",
+      message_count: 20,
+      tool_count: 30,
+      output_tokens: 20000,
+      started_at: NOW - 400_000,
+      ended_at: NOW,
+      kind: "session",
+      extras_json: JSON.stringify({ effort: "high" }),
+    });
+    expect(obs).toMatchObject({
+      backend: "claude",
+      model: "claude-fable-5",
+      effort: "high",
+      turns: 10,
+      toolCalls: 30,
+      outputTokens: 20000,
+      wallMs: 400_000,
+      sessionId: "sess-1",
+    });
+  });
+
+  it("falls back to Code Build effort lookup by backendSessionId", () => {
+    const lookup = effortLookupFromCodeBuildIndex([
+      {
+        backendSessionId: "cb-linked",
+        effort: "High",
+        backendSessionHistory: [{ id: "older-id" }],
+      },
+    ]);
+    expect(lookup.get("cb-linked")).toBe("high");
+    expect(lookup.get("older-id")).toBe("high");
+    const obs = observationFromSession(
+      {
+        session_id: "cb-linked",
+        source: "claude",
+        model: "claude-fable-5",
+        message_count: 10,
+        tool_count: 5,
+        output_tokens: 5000,
+        ended_at: NOW,
+        kind: "session",
+      },
+      lookup,
+    );
+    expect(obs?.effort).toBe("high");
+  });
+
+  it("skips default/missing effort, synthetic models, and child kinds", () => {
+    expect(
+      observationFromSession({
+        session_id: "a",
+        source: "claude",
+        model: "claude-fable-5",
+        message_count: 10,
+        ended_at: NOW,
+        extras_json: JSON.stringify({ effort: "default" }),
+      }),
+    ).toBeNull();
+    expect(
+      observationFromSession({
+        session_id: "b",
+        source: "claude",
+        model: "<synthetic>",
+        message_count: 10,
+        ended_at: NOW,
+        effort: "high",
+      }),
+    ).toBeNull();
+    expect(
+      observationFromSession({
+        session_id: "c",
+        source: "claude",
+        model: "claude-fable-5",
+        message_count: 10,
+        ended_at: NOW,
+        effort: "high",
+        kind: "subagent",
+      }),
+    ).toBeNull();
+  });
+
+  it("effortFromExtras accepts reasoningEffort aliases", () => {
+    expect(effortFromExtras({ reasoning_effort: "xhigh" })).toBe("xhigh");
+    expect(effortFromExtras('{"effortLabel":"Medium"}')).toBe("medium");
+    expect(effortFromExtras("{")).toBeNull();
+  });
+
+  it("detectEffortDriftFromSessions end-to-end with session rows + CB lookup", () => {
+    const lookup = new Map([["today-0", "high"]]);
+    const historyRows = BASELINE_WEEK.map((o, i) => ({
+      session_id: o.sessionId,
+      source: o.backend,
+      model: o.model,
+      message_count: o.turns * 2,
+      tool_count: o.toolCalls,
+      output_tokens: o.outputTokens,
+      started_at: o.endedAt - (o.wallMs ?? 0),
+      ended_at: o.endedAt,
+      kind: "session",
+      effort: o.effort,
+    }));
+    const todayRow = {
+      session_id: "today-0",
+      source: "claude",
+      model: "claude-fable-5",
+      message_count: 20,
+      tool_count: 8,
+      output_tokens: 3000,
+      started_at: NOW - 90_000,
+      ended_at: NOW - 2 * 60 * 60 * 1000,
+      kind: "session",
+    };
+    const cards = detectEffortDriftFromSessions([...historyRows, todayRow], {
+      now: NOW,
+      effortBySessionId: lookup,
+    });
+    expect(cards[0]?.level).toBe("drift");
+    expect(formatPinnedSemanticsNote(cards[0]!)).toContain("Effort semantics pin");
+  });
+
+  it("splitHistoryAndToday cuts at 24h", () => {
+    const { history, today } = splitHistoryAndToday(
+      [...BASELINE_WEEK, collapsedSession()],
+      NOW,
+    );
+    expect(today).toHaveLength(1);
+    expect(history).toHaveLength(BASELINE_WEEK.length);
+  });
+
+  it("observationsFromSessions drops rows the adapter rejects", () => {
+    expect(
+      observationsFromSessions([
+        { session_id: "x", source: "claude", model: "m", message_count: 2, ended_at: NOW },
+      ]),
+    ).toHaveLength(0);
   });
 });
