@@ -9,6 +9,7 @@ import {
   resolveDisableReasons,
   resolveTranscriptEvidence,
   runMessagingDoctor,
+  summarizeForStrip,
   transcriptEvidenceVerdict,
 } from "../../src/messagingDoctor";
 
@@ -287,5 +288,67 @@ describe("renderMessagingDoctorCardHtml", () => {
     );
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
+  });
+});
+
+describe("summarizeForStrip", () => {
+  it("returns null on ok — the strip shows nothing when messaging is healthy", () => {
+    expect(summarizeForStrip(runMessagingDoctor({}))).toBeNull();
+    // "seen" evidence with clean env is also ok.
+    expect(
+      summarizeForStrip(
+        runMessagingDoctor({}, { sessionsScanned: 5, attemptTurns: 2, toolSeen: true })
+      )
+    ).toBeNull();
+  });
+
+  it("env warn: counts vars (singular/plural) and carries the unset snippet", () => {
+    const one = summarizeForStrip(runMessagingDoctor({ DO_NOT_TRACK: "1" }));
+    expect(one?.value).toBe("⚠ 1 var");
+    const two = runMessagingDoctor({ DO_NOT_TRACK: "1", DISABLE_TELEMETRY: "true" });
+    const stat = summarizeForStrip(two);
+    expect(stat?.value).toBe("⚠ 2 vars");
+    expect(stat?.tooltip).toContain("DO_NOT_TRACK=1");
+    expect(stat?.tooltip).toContain("DISABLE_TELEMETRY=true");
+    expect(stat?.snippet).toBe(two.remediation);
+    expect(stat?.snippet).toContain("unset DO_NOT_TRACK");
+  });
+
+  it("evidence-only warn: '⚠ evidence' with the hunt-commands snippet", () => {
+    const result = runMessagingDoctor(
+      {},
+      { sessionsScanned: 8, attemptTurns: 3, toolSeen: false }
+    );
+    const stat = summarizeForStrip(result);
+    expect(stat?.value).toBe("⚠ evidence");
+    expect(stat?.tooltip).toContain("3 recent turn(s)");
+    expect(stat?.snippet).toBe(result.remediation);
+    expect(stat?.snippet).toContain("env | grep -E");
+  });
+
+  it("tooltip carries the Claude-only / other-backends-n/a scope in every warn", () => {
+    for (const result of [
+      runMessagingDoctor({ DO_NOT_TRACK: "1" }),
+      runMessagingDoctor({}, { sessionsScanned: 1, attemptTurns: 1, toolSeen: false }),
+    ]) {
+      expect(summarizeForStrip(result)?.tooltip).toContain("other backends: n/a");
+    }
+  });
+
+  it("env warn tooltip reflects transcript corroboration vs softening", () => {
+    const corroborated = summarizeForStrip(
+      runMessagingDoctor(
+        { DO_NOT_TRACK: "1" },
+        { sessionsScanned: 5, attemptTurns: 1, toolSeen: false }
+      )
+    );
+    expect(corroborated?.tooltip).toContain("Corroborated by transcripts");
+    const softened = summarizeForStrip(
+      runMessagingDoctor(
+        { DO_NOT_TRACK: "1" },
+        { sessionsScanned: 5, attemptTurns: 0, toolSeen: true }
+      )
+    );
+    expect(softened?.tooltip).toContain("may still be working");
   });
 });

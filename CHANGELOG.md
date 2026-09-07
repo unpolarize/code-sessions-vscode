@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.64.0 — 2026-09-07
+
+### Messaging doctor in the Live monitor strip (ops surface)
+
+- **Live monitor · Messaging stat:** the privacy-env messaging doctor now surfaces in the Live monitor summary strip, not just Insights. When cross-session messaging looks disabled the strip shows a warn stat — `⚠ N var(s)` for env-var disables, `⚠ evidence` for the transcript-only warn (`/list-agents` tried, `ListAgents` never ran) — with the full verdict in the tooltip; clicking copies the same fix snippet the Insights card offers. Hidden entirely when healthy. Env is re-probed every 2 s tick; the transcript probe is cached for 5 minutes (too heavy for the poll loop). Claude backend only — the tooltip says so explicitly and other backends never trip it (n/a, not false alarms). (kp: ideas/csv-privacy-env-silent-messaging-disable-doctor)
+
 ## 1.63.0 — 2026-09-06
 
 ### Messaging doctor: transcript evidence (ListAgents-absence probe)

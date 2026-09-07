@@ -7,6 +7,13 @@ import { preferredEditorColumn } from "./editorColumn";
 import { SessionStore, SessionRow } from "./db";
 import { nowStatusFromTail, type NowStatus } from "./nowStatus";
 import { switchTaxRecorder } from "./switchTax";
+import {
+  collectTranscriptEvidence,
+  runMessagingDoctor,
+  summarizeForStrip,
+  type MessagingStripStat,
+  type TranscriptEvidence,
+} from "./messagingDoctor";
 
 const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 const POLL_INTERVAL_MS = 2000;
@@ -71,6 +78,11 @@ export interface UpdatePayload {
    * stops, but buffered events are suppressed too). */
   switchesToday: number;
   switchTaxMinutes: number;
+  /** Messaging-doctor strip stat: non-null only when cross-session messaging
+   * looks disabled (privacy env vars set, or a failed /list-agents attempt in
+   * recent Claude transcripts). Claude backend only — other backends never
+   * trip it. */
+  messaging: MessagingStripStat | null;
 }
 
 export type LiveCardForExport = LiveCard;
@@ -167,6 +179,13 @@ function startOfTodayMs(): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 
+// Transcript-evidence probe is capped but still scans up to 3000 turns of
+// SQLite rows — far too heavy for the 2 s poll tick. Cache it host-wide for
+// 5 minutes; the env half of the doctor stays live every tick (it's a few
+// string reads). A fresh disable would surface within one TTL.
+const EVIDENCE_TTL_MS = 5 * 60_000;
+let evidenceCache: { at: number; evidence: TranscriptEvidence | undefined } | null = null;
+
 export function buildUpdate(store: SessionStore): UpdatePayload {
   const now = Date.now();
   // Pull a wider window so "today" sums catch sessions that haven't recently
@@ -236,6 +255,25 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
   const switchTax = switchTaxEnabled
     ? switchTaxRecorder.summarizeToday(now)
     : { switchCount: 0, medianDwellS: null, taxMinutes: 0 };
+  // Messaging doctor (same verdict logic as the Insights card, compacted for
+  // the strip). Best-effort: a probe failure must never take down the monitor.
+  let messaging: MessagingStripStat | null = null;
+  try {
+    let evidence: TranscriptEvidence | undefined;
+    if (evidenceCache && now - evidenceCache.at < EVIDENCE_TTL_MS) {
+      evidence = evidenceCache.evidence;
+    } else {
+      try {
+        evidence = collectTranscriptEvidence(store);
+      } catch {
+        evidence = undefined;
+      }
+      evidenceCache = { at: now, evidence };
+    }
+    messaging = summarizeForStrip(runMessagingDoctor(process.env, evidence));
+  } catch {
+    /* leave null — strip simply shows nothing */
+  }
   return {
     cards,
     activeCount: cards.length,
@@ -248,6 +286,7 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
     burnRateUsdPerHour,
     switchesToday: switchTax.switchCount,
     switchTaxMinutes: switchTax.taxMinutes,
+    messaging,
   };
 }
 
@@ -260,6 +299,17 @@ export function openLiveMonitor(ctx: vscode.ExtensionContext, store: SessionStor
   );
 
   panel.webview.html = liveHtml(panel.webview);
+
+  // Bridge for the messaging-doctor stat's click-to-copy. The command falls
+  // back to re-probing env when the snippet is missing/typed wrong.
+  panel.webview.onDidReceiveMessage((msg) => {
+    if (msg?.command === "copyMessagingFix") {
+      void vscode.commands.executeCommand(
+        "codeSessions.copyMessagingDoctorFix",
+        typeof msg.snippet === "string" ? msg.snippet : undefined,
+      );
+    }
+  });
 
   let timer: NodeJS.Timeout | undefined;
   const tick = () => {
@@ -319,6 +369,7 @@ function liveHtml(webview: vscode.Webview): string {
   .summary .stat { display: flex; flex-direction: column; gap: 2px; }
   .summary .label { font-size: 10px; text-transform: uppercase; color: var(--vscode-descriptionForeground); letter-spacing: 0.5px; }
   .summary .value { font-size: 16px; font-weight: 600; }
+  .summary .value.warnval { color: #f0a050; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
   .card { background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 12px 14px; }
   .card .title { font-weight: 600; font-size: 13px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -358,6 +409,7 @@ function liveHtml(webview: vscode.Webview): string {
   <div class="stat" title="Cost today divided by hours elapsed since today's first session activity (shown after 30 min of activity)."><span class="label">Burn rate</span><span class="value" id="vBurn">—</span></div>
   <div class="stat" title="Total memory entries discovered across CLAUDE.md / AGENTS.md / MEMORY.md / ~/.claude / ~/.codex sources. Open the Memory tab in the sidebar for per-source breakdown."><span class="label">Memory</span><span class="value" id="vMem">0</span></div>
   <div class="stat" title="Focus switches between session views today (300ms flickers debounced), with estimated minutes lost to refocusing (23s per switch). Disable via codeSessions.switchTax.enabled."><span class="label">Switch tax</span><span class="value" id="vSwitch">—</span></div>
+  <div class="stat" id="msgStat" style="display:none; cursor:pointer;"><span class="label">Messaging</span><span class="value warnval" id="vMsg">—</span></div>
   <div class="stat"><span class="label">Last update</span><span class="value" id="vClock">—</span></div>
 </div>
 <div id="alert" class="alert-banner"></div>
@@ -377,7 +429,16 @@ function liveHtml(webview: vscode.Webview): string {
   const vBurn = document.getElementById('vBurn');
   const vMem = document.getElementById('vMem');
   const vSwitch = document.getElementById('vSwitch');
+  const msgStat = document.getElementById('msgStat');
+  const vMsg = document.getElementById('vMsg');
   const vClock = document.getElementById('vClock');
+
+  // Messaging-doctor stat: click copies the fix snippet (extension side runs
+  // codeSessions.copyMessagingDoctorFix with the snippet the stat carries).
+  let msgSnippet = '';
+  msgStat.addEventListener('click', () => {
+    if (msgSnippet) vscode.postMessage({ command: 'copyMessagingFix', snippet: msgSnippet });
+  });
 
   function fmtTok(n) {
     if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -427,6 +488,17 @@ function liveHtml(webview: vscode.Webview): string {
       const mins = payload.switchTaxMinutes || 0;
       const lost = mins >= 10 ? Math.round(mins) + 'm' : mins.toFixed(1) + 'm';
       vSwitch.textContent = n === 0 ? '—' : n + ' · ' + lost + ' lost';
+    }
+    if (msgStat) {
+      if (payload.messaging) {
+        msgStat.style.display = '';
+        vMsg.textContent = payload.messaging.value;
+        msgStat.title = payload.messaging.tooltip;
+        msgSnippet = payload.messaging.snippet || '';
+      } else {
+        msgStat.style.display = 'none';
+        msgSnippet = '';
+      }
     }
     vClock.textContent = new Date().toLocaleTimeString();
 

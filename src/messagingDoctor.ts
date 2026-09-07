@@ -267,6 +267,52 @@ export function runMessagingDoctor(
 }
 
 // ---------------------------------------------------------------------------
+// Live-monitor strip stat (ops surface)
+// ---------------------------------------------------------------------------
+
+export interface MessagingStripStat {
+  /** Short value for the summary strip, e.g. "⚠ 2 vars" or "⚠ evidence". */
+  value: string;
+  /** Hover text: what tripped, Claude-only scope ("n/a" for other backends),
+   * and the click action. Plain text — goes into a title attribute. */
+  tooltip: string;
+  /** Exact snippet a click-to-copy should put on the clipboard (matches what
+   * the Insights card would offer for the same verdict). */
+  snippet: string;
+}
+
+/** Doctor verdict → compact stat for the live-monitor summary strip, or null
+ * on ok (the strip shows nothing rather than a green tick — messaging being
+ * healthy is the default, not news). Pure and render-agnostic so the strip
+ * logic is unit-testable without a webview. */
+export function summarizeForStrip(result: MessagingDoctorResult): MessagingStripStat | null {
+  if (result.severity === "ok") return null;
+  const n = result.reasons.length;
+  const value = n > 0 ? `⚠ ${n} var${n === 1 ? "" : "s"}` : "⚠ evidence";
+  const lines: string[] = [];
+  if (n > 0) {
+    lines.push(
+      `Cross-session messaging (ListAgents/SendMessage) is likely disabled by: ${result.reasons
+        .map((r) => `${r.envVar}=${r.value}`)
+        .join(", ")}.`
+    );
+    if (result.evidenceVerdict === "attempted-absent") {
+      lines.push("Corroborated by transcripts: /list-agents was tried but the tool never ran.");
+    } else if (result.evidenceVerdict === "seen") {
+      lines.push("Note: the messaging tools did run recently — may still be working.");
+    }
+  } else {
+    const ev = result.evidence;
+    lines.push(
+      `/list-agents was tried in ${ev?.attemptTurns ?? 0} recent turn(s) but the ListAgents tool never ran — messaging is likely disabled by env outside this process.`
+    );
+  }
+  lines.push("Claude backend only; other backends: n/a.");
+  lines.push("Click to copy the fix snippet. Details: Insights → Messaging doctor.");
+  return { value, tooltip: lines.join(" "), snippet: result.remediation };
+}
+
+// ---------------------------------------------------------------------------
 // Insights card HTML (script-free; command URI for the copy action)
 // ---------------------------------------------------------------------------
 
