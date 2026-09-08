@@ -28,6 +28,11 @@ import {
   LOOP_ECON_CARD_CSS,
 } from "./loopEconomics";
 import {
+  computeSubagentBootstrap,
+  renderSubagentBootstrapSectionHtml,
+  SUBAGENT_BOOTSTRAP_CARD_CSS,
+} from "./subagentBootstrap";
+import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
   DEFAULT_EXTRA_ENTRYPOINTS,
@@ -569,6 +574,7 @@ table.project-rollup code { font-family: var(--vscode-editor-font-family, monosp
 .doctor-disclaimer { font-size: 11px; color: var(--muted); margin-top: 12px; line-height: 1.45; border-top: 1px solid var(--border); padding-top: 8px; }
 ${EFFORT_DRIFT_CARD_CSS}
 ${LOOP_ECON_CARD_CSS}
+${SUBAGENT_BOOTSTRAP_CARD_CSS}
 `;
 
 function renderDashboard(opts: {
@@ -588,8 +594,10 @@ function renderDashboard(opts: {
   effortDriftHtml?: string;
   /** Multi-backend loop runaway economics HTML ("" when no loop-shaped jobs). */
   loopEconomicsHtml?: string;
+  /** Subagent bootstrap-vs-useful waterfall HTML ("" when no fan-out families). */
+  subagentBootstrapHtml?: string;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml, subagentBootstrapHtml } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -837,6 +845,7 @@ ${focusSession
 </div>
 
 ${loopEconomicsHtml ? `<h2 style="margin-top: 28px;">Loop runaway economics</h2>${loopEconomicsHtml}` : ""}
+${subagentBootstrapHtml ? `<h2 style="margin-top: 28px;">Subagent bootstrap economics</h2>${subagentBootstrapHtml}` : ""}
 
 ${effortDriftHtml ? `<h2 style="margin-top: 28px;">Effort drift canary</h2>${effortDriftHtml}` : ""}
 
@@ -979,6 +988,9 @@ export async function openInsightsView(
   // Multi-backend loop runaway economics: same 8-day window, automated
   // sessions grouped into recurring jobs ranked by tokens/run.
   let loopEconomicsHtml = "";
+  // Subagent bootstrap-vs-useful waterfall: same 8-day window, child
+  // transcripts grouped per parent, first-turn usage as measured bootstrap.
+  let subagentBootstrapHtml = "";
   try {
     if (store) {
       const sinceSec = Math.floor(Date.now() / 1000) - 8 * 86400;
@@ -988,6 +1000,20 @@ export async function openInsightsView(
       });
       try {
         loopEconomicsHtml = renderLoopEconomicsSectionHtml(computeLoopEconomics(canaryRows));
+      } catch {
+        /* advisory card — never block Insights */
+      }
+      try {
+        const childIds = canaryRows
+          .filter((r) => r.kind === "subagent" || r.kind === "workflow")
+          .map((r) => r.session_id);
+        if (childIds.length > 0) {
+          subagentBootstrapHtml = renderSubagentBootstrapSectionHtml(
+            computeSubagentBootstrap(canaryRows, {
+              firstTurnUsage: store.firstTurnUsageBySession(childIds),
+            }),
+          );
+        }
       } catch {
         /* advisory card — never block Insights */
       }
@@ -1014,6 +1040,7 @@ export async function openInsightsView(
       messagingDoctorHtml,
       effortDriftHtml,
       loopEconomicsHtml,
+      subagentBootstrapHtml,
     });
     return;
   }
@@ -1045,5 +1072,6 @@ export async function openInsightsView(
     messagingDoctorHtml,
     effortDriftHtml,
     loopEconomicsHtml,
+    subagentBootstrapHtml,
   });
 }

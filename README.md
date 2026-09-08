@@ -88,6 +88,7 @@ Click the **📊 graph icon** in the Sessions title bar to open a per-account da
 - **Tool usage** horizontal bar chart — top 12 tools by call count, computed by deep-parsing the most-recent N sessions (default 20). Bash usually wins.
 - **Top 10 expensive sessions** clickable table.
 - **Loop runaway economics** — joins loop/schedule-shaped sessions across every indexed backend (Claude `/loop`/night jobs, Codex automations, Grok/CB interval work), groups repeated runs of the same job, and ranks groups by **tokens/run** (messages/run proxy for token-silent backends) so a forgotten overnight loop surfaces before the invoice does. Per-loop **Kill** (host-confirmed), **Rebind to KP**, and **Soft-stop** actions. Read-only over the local session index — no vendor APIs. Hidden when no loop-shaped work exists.
+- **Subagent bootstrap vs useful work** — decomposes each fan-out family's per-child spend into a **bootstrap | useful | total** waterfall (bootstrap measured from the child's first-turn usage, else estimated via cheapest-sibling / per-message fallbacks, marked `~`), warning when the median child spends over half its tokens just booting (Codex #39808 class). Read-only; hidden when the window has no multi-child fan-outs.
 
 All charts are inline SVG. No external libraries, no scripts, no fetches. Colors come from VS Code theme variables so dark and light themes both render correctly.
 
