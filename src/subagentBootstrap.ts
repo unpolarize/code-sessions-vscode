@@ -69,7 +69,10 @@ export interface FanoutFamily {
   parentId: string;
   parentLabel: string;
   backends: string[];
+  /** Listed children (capped at maxChildren; totals cover all of them). */
   children: ChildBreakdown[];
+  /** True family size before the maxChildren display cap. */
+  childCount: number;
   childTotalTokens: number;
   bootstrapTotalTokens: number;
   medianBootstrapShare: number;
@@ -205,6 +208,7 @@ export function computeSubagentBootstrap(
       parentLabel: parentTitleById.get(parentId) || parentId,
       backends: [...new Set(children.map((c) => c.source))].sort(),
       children: children.slice(0, maxChildren),
+      childCount: children.length,
       childTotalTokens,
       bootstrapTotalTokens,
       medianBootstrapShare: medianShare,
@@ -264,7 +268,7 @@ export function renderSubagentBootstrapSectionHtml(card: SubagentBootstrapCard):
         ? `<span class="sbw-chip" title="Median child spent over ${Math.round(card.warnShare * 100)}% of its tokens on bootstrap — fewer, bigger children would buy the fixed cost fewer times">bootstrap-heavy fan-out ${(f.medianBootstrapShare * 100).toFixed(0)}%</span>`
         : "";
       return `<div class="sbw-family">
-    <div class="sbw-parent">${esc(f.parentLabel.slice(0, 80))} <span class="sbw-meta">${f.children.length} children · ${esc(f.backends.join(" + "))} · ${esc(fmtTokShort(f.childTotalTokens))} child tokens (${esc(fmtTokShort(f.bootstrapTotalTokens))} bootstrap)</span> ${warn}</div>
+    <div class="sbw-parent">${esc(f.parentLabel.slice(0, 80))} <span class="sbw-meta">${f.childCount} children · ${esc(f.backends.join(" + "))} · ${esc(fmtTokShort(f.childTotalTokens))} child tokens (${esc(fmtTokShort(f.bootstrapTotalTokens))} bootstrap)</span> ${warn}</div>
     <table class="sbw-table"><tr><th>child</th><th>backend</th><th>waterfall</th><th>bootstrap</th><th>useful</th><th>total</th><th>share</th></tr>${rows}</table>
   </div>`;
     })
@@ -272,7 +276,7 @@ export function renderSubagentBootstrapSectionHtml(card: SubagentBootstrapCard):
 
   return `<section class="sbw-card" data-schema="${esc(SUBAGENT_BOOTSTRAP_SCHEMA)}">
   <div class="sbw-head"><span class="sbw-title">Subagent bootstrap vs useful work</span></div>
-  <div class="sbw-sub">Every spawned child pays a fixed bootstrap (rules, tool schemas, skills, env discovery) before unique work — ${card.childSessions} child transcript${card.childSessions === 1 ? "" : "s"} decomposed per fan-out. "~" figures are estimated, not measured.</div>
+  <div class="sbw-sub">Every spawned child pays a fixed bootstrap (rules, tool schemas, skills, env discovery) before unique work — ${card.childSessions} child transcript${card.childSessions === 1 ? "" : "s"} in the window, multi-child fan-outs decomposed below. "~" figures are estimated, not measured.</div>
   ${blocks}
   <div class="sbw-disclaimer">Read-only over the local session index — no vendor APIs, no child control. Fan-out budget enforcement belongs to the host (Code Build), not this card.</div>
 </section>`;

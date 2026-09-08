@@ -1004,9 +1004,17 @@ export async function openInsightsView(
         /* advisory card — never block Insights */
       }
       try {
-        const childIds = canaryRows
-          .filter((r) => r.kind === "subagent" || r.kind === "workflow")
-          .map((r) => r.session_id);
+        // Only fetch first-turn usage for children of multi-child parents —
+        // solo spawns never form a family, and the batch SQL should stay
+        // proportional to what the card can actually render.
+        const children = canaryRows.filter(
+          (r) => (r.kind === "subagent" || r.kind === "workflow") && r.parent_session_id && r.session_id,
+        );
+        const perParent = new Map<string, number>();
+        for (const c of children) perParent.set(c.parent_session_id!, (perParent.get(c.parent_session_id!) ?? 0) + 1);
+        const childIds = children
+          .filter((c) => (perParent.get(c.parent_session_id!) ?? 0) >= 2)
+          .map((c) => c.session_id);
         if (childIds.length > 0) {
           subagentBootstrapHtml = renderSubagentBootstrapSectionHtml(
             computeSubagentBootstrap(canaryRows, {

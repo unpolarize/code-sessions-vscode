@@ -940,10 +940,11 @@ export class SessionStore {
     return (this.db.prepare(sql).all(...parentIds) as any[]).map((r) => String(r.session_id));
   }
 
-  /** First turn's token usage per session (bootstrap measurement for the
-   * subagent bootstrap-vs-useful card). Sessions indexed before migration
-   * v11 have all-zero turn tokens; those rows are omitted so callers fall
-   * back to estimation. */
+  /** Earliest token-bearing turn's usage per session (bootstrap measurement
+   * for the subagent bootstrap-vs-useful card). Zero-usage lead turns are
+   * skipped (some transcripts open with a token-silent meta turn); sessions
+   * indexed before migration v11 have all-zero turn tokens and are omitted
+   * entirely so callers fall back to estimation. */
   firstTurnUsageBySession(sessionIds: string[]): Map<string, {
     input_tokens: number;
     output_tokens: number;
@@ -960,18 +961,17 @@ export class SessionStore {
         SELECT session_id, MIN(turn_index) AS min_idx
         FROM turn
         WHERE session_id IN (${placeholders})
+          AND (input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) > 0
         GROUP BY session_id
       ) m ON m.session_id = t.session_id AND m.min_idx = t.turn_index
     `;
     for (const r of this.db.prepare(sql).all(...sessionIds) as any[]) {
-      const usage = {
+      out.set(String(r.session_id), {
         input_tokens: Number(r.input_tokens ?? 0),
         output_tokens: Number(r.output_tokens ?? 0),
         cache_read_tokens: Number(r.cache_read_tokens ?? 0),
         cache_write_tokens: Number(r.cache_write_tokens ?? 0),
-      };
-      if (usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens === 0) continue;
-      out.set(String(r.session_id), usage);
+      });
     }
     return out;
   }
