@@ -23,6 +23,11 @@ import {
 import { computeEffortDriftHtml } from "./effortDriftHost";
 import { EFFORT_DRIFT_CARD_CSS } from "./effortDriftCanary";
 import {
+  computeLoopEconomics,
+  renderLoopEconomicsSectionHtml,
+  LOOP_ECON_CARD_CSS,
+} from "./loopEconomics";
+import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
   DEFAULT_EXTRA_ENTRYPOINTS,
@@ -563,6 +568,7 @@ table.project-rollup code { font-family: var(--vscode-editor-font-family, monosp
 .doctor-action { float: right; font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--accent); text-decoration: none; font-weight: 500; }
 .doctor-disclaimer { font-size: 11px; color: var(--muted); margin-top: 12px; line-height: 1.45; border-top: 1px solid var(--border); padding-top: 8px; }
 ${EFFORT_DRIFT_CARD_CSS}
+${LOOP_ECON_CARD_CSS}
 `;
 
 function renderDashboard(opts: {
@@ -580,8 +586,10 @@ function renderDashboard(opts: {
   messagingDoctorHtml?: string;
   /** Effort-semantics drift canary HTML ("" when no watch/drift). */
   effortDriftHtml?: string;
+  /** Multi-backend loop runaway economics HTML ("" when no loop-shaped jobs). */
+  loopEconomicsHtml?: string;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -828,6 +836,8 @@ ${focusSession
   </p>
 </div>
 
+${loopEconomicsHtml ? `<h2 style="margin-top: 28px;">Loop runaway economics</h2>${loopEconomicsHtml}` : ""}
+
 ${effortDriftHtml ? `<h2 style="margin-top: 28px;">Effort drift canary</h2>${effortDriftHtml}` : ""}
 
 ${messagingDoctorHtml ? `<h2 style="margin-top: 28px;">Messaging doctor</h2>${messagingDoctorHtml}` : ""}
@@ -966,6 +976,9 @@ export async function openInsightsView(
   // today), not the Insights `limit` slice. Effort labels come from extras
   // when stamped, else Code Build's index (backendSessionId → effort).
   let effortDriftHtml = "";
+  // Multi-backend loop runaway economics: same 8-day window, automated
+  // sessions grouped into recurring jobs ranked by tokens/run.
+  let loopEconomicsHtml = "";
   try {
     if (store) {
       const sinceSec = Math.floor(Date.now() / 1000) - 8 * 86400;
@@ -973,6 +986,11 @@ export async function openInsightsView(
       effortDriftHtml = computeEffortDriftHtml(canaryRows, {
         openSessionCommand: "codeSessions.openSession",
       });
+      try {
+        loopEconomicsHtml = renderLoopEconomicsSectionHtml(computeLoopEconomics(canaryRows));
+      } catch {
+        /* advisory card — never block Insights */
+      }
     }
   } catch {
     /* advisory card — never block Insights */
@@ -995,6 +1013,7 @@ export async function openInsightsView(
       rulesDoctorHtml,
       messagingDoctorHtml,
       effortDriftHtml,
+      loopEconomicsHtml,
     });
     return;
   }
@@ -1025,5 +1044,6 @@ export async function openInsightsView(
     rulesDoctorHtml,
     messagingDoctorHtml,
     effortDriftHtml,
+    loopEconomicsHtml,
   });
 }

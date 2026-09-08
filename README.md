@@ -87,6 +87,7 @@ Click the **📊 graph icon** in the Sessions title bar to open a per-account da
 - **Top projects by cost** horizontal bar chart (uses `projects_touched`, not just session cwd).
 - **Tool usage** horizontal bar chart — top 12 tools by call count, computed by deep-parsing the most-recent N sessions (default 20). Bash usually wins.
 - **Top 10 expensive sessions** clickable table.
+- **Loop runaway economics** — joins loop/schedule-shaped sessions across every indexed backend (Claude `/loop`/night jobs, Codex automations, Grok/CB interval work), groups repeated runs of the same job, and ranks groups by **tokens/run** (messages/run proxy for token-silent backends) so a forgotten overnight loop surfaces before the invoice does. Per-loop **Kill** (host-confirmed), **Rebind to KP**, and **Soft-stop** actions. Read-only over the local session index — no vendor APIs. Hidden when no loop-shaped work exists.
 
 All charts are inline SVG. No external libraries, no scripts, no fetches. Colors come from VS Code theme variables so dark and light themes both render correctly.
 

@@ -28,6 +28,11 @@ import {
   formatPinnedSemanticsNote,
 } from "./effortDriftCanary";
 import { loadCodeBuildEffortLookup } from "./effortDriftHost";
+import {
+  LOOP_KILL_COMMAND,
+  LOOP_REBIND_COMMAND,
+  LOOP_SOFT_STOP_COMMAND,
+} from "./loopEconomics";
 import { openUsageView } from "./usageView";
 import { openSessionGraphView } from "./sessionGraphView";
 import { registerPlanning, setSessionProvider } from "./planning";
@@ -3309,6 +3314,40 @@ export function activate(ctx: vscode.ExtensionContext) {
       panel.onDidDispose(() => {
         if (openViewerPanels.get(id) === panel) openViewerPanels.delete(id);
       });
+    }),
+    // Loop economics actions (v1 stubs): the card must never touch a process
+    // without the host confirming, so Kill is confirm-gated and all three
+    // report what a full implementation would do. Read-only otherwise.
+    vscode.commands.registerCommand(LOOP_KILL_COMMAND, async (label?: unknown, sessionIds?: unknown) => {
+      const name = typeof label === "string" && label ? label : "this loop";
+      const ids = Array.isArray(sessionIds) ? sessionIds.filter((x) => typeof x === "string") : [];
+      const pick = await vscode.window.showWarningMessage(
+        `Kill "${name}"? This signals the loop's host to stop it.`,
+        { modal: true },
+        "Kill loop",
+      );
+      if (pick !== "Kill loop") return;
+      vscode.window.showInformationMessage(
+        `Kill signal for "${name}" recorded (${ids.length} session${ids.length === 1 ? "" : "s"}). Host kill wiring lands in a follow-up — no process was touched.`,
+      );
+    }),
+    vscode.commands.registerCommand(LOOP_REBIND_COMMAND, async (label?: unknown, sessionIds?: unknown) => {
+      const name = typeof label === "string" && label ? label : "this loop";
+      const ids = Array.isArray(sessionIds) ? sessionIds.filter((x) => typeof x === "string") : [];
+      const kpId = await vscode.window.showInputBox({
+        prompt: `Rebind "${name}" to a KP item (its spend rolls up under that id)`,
+        placeHolder: "ideas/… or tasks/…",
+      });
+      if (!kpId) return;
+      vscode.window.showInformationMessage(
+        `Rebind of "${name}" → ${kpId} recorded (${ids.length} session${ids.length === 1 ? "" : "s"}). KP link wiring lands in a follow-up.`,
+      );
+    }),
+    vscode.commands.registerCommand(LOOP_SOFT_STOP_COMMAND, async (label?: unknown) => {
+      const name = typeof label === "string" && label ? label : "this loop";
+      vscode.window.showInformationMessage(
+        `Soft-stop requested for "${name}" — a full implementation injects a wrap-up prompt at the loop's next tick. Stub for now; nothing was sent.`,
+      );
     }),
     // Effort-drift canary "Pin expected semantics": copy a markdown note for
     // the (backend, model, effort) fingerprint so it can be pasted into KP/doctor.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.66.0 — 2026-09-07
+
+### Loop runaway economics card (multi-backend)
+
+- **Insights · Loop runaway economics:** joins loop/schedule-shaped sessions across every indexed backend (Claude `/loop`/night jobs via the automation predicate, Codex/cron automations, Grok interval work), collapses per-run title variance (dates/times/uuids/counters) to group repeated runs of the same job, and ranks groups by **tokens/run** — the runaway signature where each tick re-buys growing context. Token-silent backends (Grok) rank by a messages/run proxy, marked `~`, always below token-measured loops. Per-loop actions: **Kill** (modal host confirm — never auto-kill; v1 stub records the signal), **Rebind to KP** (input box for a KP id), **Soft-stop** (wrap-up-at-next-tick stub). Read-only over the local session index; no vendor API calls; hidden when no loop-shaped work exists. Fixture unit tests cover Claude-Loops-shaped usage + a non-Claude automation stub. (kp: ideas/csv-loop-runaway-economics-card-multi-backend-lo)
+
 ## 1.65.0 — 2026-09-07
 
 ### Effort-semantics drift canary — Insights host wiring (slice 2)

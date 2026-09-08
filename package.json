@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.65.0",
+  "version": "1.66.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -272,6 +272,21 @@
         "command": "codeSessions.effortDrift.pinSemantics",
         "title": "Effort drift: Pin expected semantics note",
         "icon": "$(pin)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.loopEconomics.kill",
+        "title": "Loop economics: Kill loop (host-confirmed)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.loopEconomics.rebindKp",
+        "title": "Loop economics: Rebind loop to KP item",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.loopEconomics.softStop",
+        "title": "Loop economics: Soft-stop loop at next tick",
         "category": "Code Sessions"
       },
       {
