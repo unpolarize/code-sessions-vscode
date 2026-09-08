@@ -122,6 +122,24 @@ describe("SessionStore round-trip", () => {
     expect(turns[0].assistant_excerpt).toBe("updated excerpt");
   });
 
+  it("extrasByPath returns only rows with a blob, scoped by prefix", () => {
+    store.upsertSession(
+      sessionRow({
+        session_id: "88888888-8888-4888-8888-888888888888",
+        jsonl_path: "/Users/tester/.claude/projects/demo/stamped.jsonl",
+        extras_json: JSON.stringify({ effort: "high" }),
+      }),
+    );
+    const all = store.extrasByPath({ prefix: "/Users/tester/.claude/projects/" });
+    expect(all.get("/Users/tester/.claude/projects/demo/stamped.jsonl")).toBe(
+      JSON.stringify({ effort: "high" }),
+    );
+    // The null-extras fixture session is absent, and a non-matching prefix is empty.
+    expect(all.has("/Users/tester/.claude/projects/demo/session.jsonl")).toBe(false);
+    expect(store.extrasByPath({ prefix: "/elsewhere/" }).size).toBe(0);
+    store.deleteByPaths(["/Users/tester/.claude/projects/demo/stamped.jsonl"]);
+  });
+
   it("deleteByPaths removes the session row", () => {
     const removed = store.deleteByPaths(["/Users/tester/.claude/projects/demo/session.jsonl"]);
     expect(removed).toBe(1);

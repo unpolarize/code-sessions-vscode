@@ -1043,6 +1043,25 @@ export class SessionStore {
     return m;
   }
 
+  /** Map of jsonl_path → extras_json for rows that have a blob. Lets the
+   * claude indexer preserve a previously stamped effort label when the
+   * Code Build index has rotated the entry away (a lookup miss on reparse
+   * must not wipe the stamp). Prefix-scoped like knownPaths. */
+  extrasByPath(opts: { prefix?: string } = {}): Map<string, string> {
+    const m = new Map<string, string>();
+    const rows = opts.prefix
+      ? (this.db
+          .prepare(
+            "SELECT jsonl_path, extras_json FROM session WHERE extras_json IS NOT NULL AND substr(jsonl_path, 1, ?) = ?",
+          )
+          .all(opts.prefix.length, opts.prefix) as any[])
+      : (this.db
+          .prepare("SELECT jsonl_path, extras_json FROM session WHERE extras_json IS NOT NULL")
+          .all() as any[]);
+    for (const r of rows) m.set(r.jsonl_path, String(r.extras_json));
+    return m;
+  }
+
   // ---- turn queries ----------------------------------------------------- //
 
   upsertTurns(turns: TurnRow[]): void {

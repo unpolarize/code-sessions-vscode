@@ -147,10 +147,9 @@ describe("syncToStore", () => {
 
     const main = sessions.get(S_MAIN)!;
     expect(main.extras_json).toBe(JSON.stringify({ effort: "high" }));
-    // Lookup keys on the logical session uuid, so no-hit rows stay null…
+    // Lookup keys on the logical session uuid, so no-hit rows stay null —
+    // including children, whose inner id (sub-inner-1) is not in the lookup.
     expect(sessions.get(S_AUTO)!.extras_json).toBeNull();
-    // …while children inherit the parent's declared label via their own
-    // logical inner id only (sub-inner-1 is not in the lookup here).
     expect(sessions.get("sub-inner-1__subagent__agent-abc")!.extras_json).toBeNull();
 
     // The stamped row resolves effort without any CB lookup at read time —
@@ -169,6 +168,31 @@ describe("syncToStore", () => {
       kind: main.kind,
     });
     expect(obs?.effort).toBe("high");
+  });
+
+  it("preserves a previously stamped effort when the lookup no longer has the id (CB index rotation)", () => {
+    const { store, sessions } = fakeStore();
+    // Priors come from the store's extrasByPath (real SessionStore reads sqlite;
+    // the fake mirrors what the previous sync upserted).
+    (store as any).extrasByPath = ({ prefix }: { prefix?: string } = {}) => {
+      const m = new Map<string, string>();
+      for (const s of sessions.values()) {
+        if (s.extras_json && (!prefix || s.jsonl_path.startsWith(prefix))) m.set(s.jsonl_path, s.extras_json);
+      }
+      return m;
+    };
+
+    syncToStore(store, { projectsRoot: ROOT, effortBySessionId: new Map([[S_MAIN, "high"]]) });
+    expect(sessions.get(S_MAIN)!.extras_json).toBe(JSON.stringify({ effort: "high" }));
+
+    // Reparse everything with the CB entry rotated away — the stamp survives.
+    syncToStore(store, { projectsRoot: ROOT, effortBySessionId: new Map(), force: true });
+    expect(sessions.get(S_MAIN)!.extras_json).toBe(JSON.stringify({ effort: "high" }));
+    expect(sessions.get(S_AUTO)!.extras_json).toBeNull();
+
+    // A fresh lookup hit still wins over the preserved prior.
+    syncToStore(store, { projectsRoot: ROOT, effortBySessionId: new Map([[S_MAIN, "low"]]), force: true });
+    expect(sessions.get(S_MAIN)!.extras_json).toBe(JSON.stringify({ effort: "low" }));
   });
 
   it("skips effort stamping when the lookup is explicitly null", () => {
