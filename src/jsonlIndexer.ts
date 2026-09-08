@@ -14,6 +14,7 @@ import * as path from "path";
 import { SessionStore, SessionRow, TurnRow } from "./db";
 import { parseConversation, ParsedConversation } from "./conversationParser";
 import { extractReasoningTokens } from "./reasoningTokens";
+import { loadCodeBuildEffortLookup } from "./effortDriftHost";
 
 export const DEFAULT_PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
 
@@ -273,6 +274,7 @@ function aggregateFromParsed(
   info: JsonlInfo,
   projectPath: string,
   txInfo?: TranscriptInfo,
+  effortBySessionId?: ReadonlyMap<string, string> | null,
 ): { session: SessionRow; turns: TurnRow[] } {
   // Token + cost aggregation: walk the JSONL once more so we can attribute
   // each assistant.message.usage block to its enclosing turn. Per-turn
@@ -406,6 +408,13 @@ function aggregateFromParsed(
 
   const kind: 'session' | 'subagent' | 'workflow' = txInfo?.kind || 'session';
 
+  // Stamp the declared reasoning-effort label into extras_json at index time
+  // (kp: ideas/csv-vendor-effort-semantics-drift-canary-detect). The Code Build
+  // index keys on the *logical* claude session uuid, so children inherit their
+  // parent's label. Persisting it here means the effort-drift canary keeps
+  // working after CB index entries rotate away.
+  const stampedEffort = effortBySessionId?.get(parsed.sessionId || "") || null;
+
   const session: SessionRow = {
     session_id: sid,
     source: "claude",
@@ -434,8 +443,9 @@ function aggregateFromParsed(
     is_automated: isAutomated || kind !== 'session',
     indexed_at: Date.now(),
     last_assistant_text_at: parsed.lastAssistantTextMs,
-    // Claude-side extras are still tabular fields; no JSON blob needed yet.
-    extras_json: null,
+    // Claude-side extras are mostly tabular fields; the JSON blob only carries
+    // the declared effort label (when the CB index knows it) today.
+    extras_json: stampedEffort ? JSON.stringify({ effort: stampedEffort }) : null,
     kind,
     parent_session_id: txInfo?.parentSessionId || null,
     workflow_id: txInfo?.workflowId || null,
@@ -519,10 +529,16 @@ export function syncToStore(
     forceRecentN?: number;
     /** Override ~/.claude/projects — fixture trees in tests. */
     projectsRoot?: string;
+    /** sessionId → declared effort label, stamped into extras_json
+     * (kp: ideas/csv-vendor-effort-semantics-drift-canary-detect).
+     * undefined → load ~/.codebuild/index.json once; null → skip stamping. */
+    effortBySessionId?: ReadonlyMap<string, string> | null;
   } = {},
 ): SyncStats {
   const t0 = Date.now();
   const projectsRoot = opts.projectsRoot ?? DEFAULT_PROJECTS_ROOT;
+  const effortBySessionId =
+    opts.effortBySessionId === undefined ? loadCodeBuildEffortLookup() : opts.effortBySessionId;
   const disk = listAllTranscripts(projectsRoot);
   // This indexer's universe is ~/.claude/projects only. Scope the cached
   // set in SQL AND re-check the prefix here (duck-typed stores in tests,
@@ -573,7 +589,7 @@ export function syncToStore(
     const projectPath = (path.dirname(p) === projectsRoot) ? p : path.dirname(info.jsonl_path);
     try {
       const conv = parseConversation(info.jsonl_path);
-      const { session, turns } = aggregateFromParsed(conv, info, projectPath, info);
+      const { session, turns } = aggregateFromParsed(conv, info, projectPath, info, effortBySessionId);
       store.upsertSession(session);
       store.deleteTurnsForSession(session.session_id);
       store.upsertTurns(turns);

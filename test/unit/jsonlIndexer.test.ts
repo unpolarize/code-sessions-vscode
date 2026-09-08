@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import * as path from "path";
 import { listAllTranscripts, listAllJsonls, syncToStore, cleanCommandText } from "../../src/jsonlIndexer";
 import { SessionStore, SessionRow, TurnRow } from "../../src/db";
+import { observationFromSession } from "../../src/effortDriftCanary";
 
 const ROOT = path.resolve(__dirname, "../fixtures/claudeprojects");
 
@@ -135,6 +136,46 @@ describe("syncToStore", () => {
     expect(auto.entrypoint).toBe("night-cron");
     expect(auto.is_automated).toBe(true);
     expect(auto.model).toBe("claude-haiku-4-5");
+  });
+
+  it("stamps declared effort into extras_json from the effort lookup (kp: ideas/csv-vendor-effort-semantics-drift-canary-detect)", () => {
+    const { store, sessions } = fakeStore();
+    syncToStore(store, {
+      projectsRoot: ROOT,
+      effortBySessionId: new Map([[S_MAIN, "high"]]),
+    });
+
+    const main = sessions.get(S_MAIN)!;
+    expect(main.extras_json).toBe(JSON.stringify({ effort: "high" }));
+    // Lookup keys on the logical session uuid, so no-hit rows stay null…
+    expect(sessions.get(S_AUTO)!.extras_json).toBeNull();
+    // …while children inherit the parent's declared label via their own
+    // logical inner id only (sub-inner-1 is not in the lookup here).
+    expect(sessions.get("sub-inner-1__subagent__agent-abc")!.extras_json).toBeNull();
+
+    // The stamped row resolves effort without any CB lookup at read time —
+    // the whole point of index-time stamping.
+    const obs = observationFromSession({
+      session_id: main.session_id,
+      source: main.source,
+      model: main.model,
+      effort: null,
+      extras_json: main.extras_json,
+      started_at: main.started_at,
+      ended_at: main.ended_at,
+      message_count: main.message_count,
+      tool_count: main.tool_count,
+      output_tokens: main.output_tokens,
+      kind: main.kind,
+    });
+    expect(obs?.effort).toBe("high");
+  });
+
+  it("skips effort stamping when the lookup is explicitly null", () => {
+    const { store, sessions } = fakeStore();
+    syncToStore(store, { projectsRoot: ROOT, effortBySessionId: null });
+    expect(sessions.get(S_MAIN)!.extras_json).toBeNull();
+    expect(sessions.get(S_AUTO)!.extras_json).toBeNull();
   });
 
   it("gives children synthetic distinct ids with parent/workflow linkage", () => {

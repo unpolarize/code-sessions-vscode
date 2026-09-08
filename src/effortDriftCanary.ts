@@ -481,8 +481,10 @@ export function effortFromExtras(extras: unknown): string | null {
 
 /**
  * Build backendSessionId → effort from a Code Build `index.json` array.
- * CB meta is the most reliable declared-effort source today; CSV does not
- * yet stamp effort onto session rows at index time.
+ * CB meta is the source of truth for declared effort; the claude indexer
+ * stamps it into extras_json at index time (so freshly indexed rows resolve
+ * via extras), and this lookup remains the fallback for rows indexed before
+ * stamping existed.
  */
 export function effortLookupFromCodeBuildIndex(entries: unknown): Map<string, string> {
   const out = new Map<string, string>();
