@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.67.0 — 2026-09-08
+
+### Cross-vendor quota-reset wall-clock chip (live monitor)
+
+- **Live monitor · Quota resets stat:** joins per-backend quota-reset signals into one wall-clock answer to "when can I work next across all subscriptions?" — Codex rolling windows (`rate_limits.{primary,secondary}` from rollout `token_count` events, incl. banked credits when present) and Claude 5h-cap markers (`usage limit reached|<epoch>` transcript lines). Headline shows the earliest reset among currently-exhausted backends (`⏳ 14:05`), or `open` when nothing is exhausted; the tooltip lists each backend window with reset time and used %. Backends with no visible reset signal are omitted — never invented (Cursor joins when telemetry exists). Read-only over the newest transcript tail per backend (one 64 KB read per backend per tick); stale rows whose reset already passed are dropped. New pure module `src/quotaReset.ts` + 15 fixture unit tests. (kp: ideas/csv-cross-vendor-quota-reset-wall-clock-chip-cla)
+
 ## 1.66.0 — 2026-09-07
 
 ### Loop runaway economics card (multi-backend)

@@ -6,6 +6,13 @@ import * as vscode from "vscode";
 import { preferredEditorColumn } from "./editorColumn";
 import { SessionStore, SessionRow } from "./db";
 import { nowStatusFromTail, type NowStatus } from "./nowStatus";
+import {
+  extractClaudeQuotaSignals,
+  extractCodexQuotaSignals,
+  buildQuotaResetCard,
+  formatQuotaResetChip,
+  type QuotaResetSignal,
+} from "./quotaReset";
 import { switchTaxRecorder } from "./switchTax";
 import {
   collectTranscriptEvidence,
@@ -83,6 +90,11 @@ export interface UpdatePayload {
    * recent Claude transcripts). Claude backend only — other backends never
    * trip it. */
   messaging: MessagingStripStat | null;
+  /** Cross-vendor quota-reset wall-clock chip (Claude 5h cap, Codex rolling
+   * windows / banked credits). Null when no backend has a visible reset
+   * signal in its latest transcript tail — the stat shows "—" rather than
+   * inventing times. */
+  quotaChip: { value: string; title: string } | null;
 }
 
 export type LiveCardForExport = LiveCard;
@@ -282,6 +294,26 @@ export function buildUpdate(
   } catch {
     /* leave null — strip simply shows nothing */
   }
+  // Cross-vendor quota-reset chip: read the newest transcript tail per
+  // backend (one file per backend per tick — cheap) and join whatever reset
+  // signals are visible. Backends with no signal are omitted, never guessed.
+  let quotaChip: { value: string; title: string } | null = null;
+  try {
+    const signals: QuotaResetSignal[] = [];
+    for (const source of ["claude", "codex"] as const) {
+      const newest = recent
+        .filter((r) => r.source === source && r.jsonl_path)
+        .sort((a, b) => b.mtime_ns - a.mtime_ns)[0];
+      if (!newest) continue;
+      const tail = tailFile(newest.jsonl_path, CTX_TAIL_BYTES);
+      if (!tail) continue;
+      if (source === "codex") signals.push(...extractCodexQuotaSignals(tail));
+      else signals.push(...extractClaudeQuotaSignals(tail, Math.floor(newest.mtime_ns / 1e6)));
+    }
+    quotaChip = formatQuotaResetChip(buildQuotaResetCard(signals, now), now);
+  } catch {
+    /* best-effort — never take down the monitor over a quota probe */
+  }
   return {
     cards,
     activeCount: cards.length,
@@ -295,6 +327,7 @@ export function buildUpdate(
     switchesToday: switchTax.switchCount,
     switchTaxMinutes: switchTax.taxMinutes,
     messaging,
+    quotaChip,
   };
 }
 
@@ -360,7 +393,7 @@ function nonceStr(): string {
   return s;
 }
 
-function liveHtml(webview: vscode.Webview): string {
+export function liveHtml(webview: Pick<vscode.Webview, "cspSource">): string {
   const nonce = nonceStr();
   const csp = [
     `default-src 'none'`,
@@ -421,6 +454,7 @@ function liveHtml(webview: vscode.Webview): string {
   <div class="stat" title="Total memory entries discovered across CLAUDE.md / AGENTS.md / MEMORY.md / ~/.claude / ~/.codex sources. Open the Memory tab in the sidebar for per-source breakdown."><span class="label">Memory</span><span class="value" id="vMem">0</span></div>
   <div class="stat" title="Focus switches between session views today (300ms flickers debounced), with estimated minutes lost to refocusing (23s per switch). Disable via codeSessions.switchTax.enabled."><span class="label">Switch tax</span><span class="value" id="vSwitch">—</span></div>
   <div class="stat" id="msgStat" style="display:none; cursor:pointer;"><span class="label">Messaging</span><span class="value warnval" id="vMsg">—</span></div>
+  <div class="stat" id="quotaStat" title="Next quota reset across backends."><span class="label">Quota resets</span><span class="value" id="vQuota">—</span></div>
   <div class="stat"><span class="label">Last update</span><span class="value" id="vClock">—</span></div>
 </div>
 <div id="alert" class="alert-banner"></div>
@@ -509,6 +543,17 @@ function liveHtml(webview: vscode.Webview): string {
       } else {
         msgStat.style.display = 'none';
         msgSnippet = '';
+      }
+    }
+    const vQuota = document.getElementById('vQuota');
+    const quotaStat = document.getElementById('quotaStat');
+    if (vQuota && quotaStat) {
+      if (payload.quotaChip) {
+        quotaStat.style.display = '';
+        vQuota.textContent = payload.quotaChip.value;
+        quotaStat.title = payload.quotaChip.title;
+      } else {
+        quotaStat.style.display = 'none';
       }
     }
     vClock.textContent = new Date().toLocaleTimeString();
