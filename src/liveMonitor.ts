@@ -201,9 +201,14 @@ function startOfTodayMs(): number {
 const EVIDENCE_TTL_MS = 5 * 60_000;
 let evidenceCache: { at: number; evidence: TranscriptEvidence | undefined } | null = null;
 
+// Quota-reset tail reads are cheap but not free; 60 s staleness is fine for
+// a wall-clock chip whose times move on 5h/weekly scales.
+const QUOTA_TTL_MS = 60_000;
+let quotaCache: { at: number; signals: QuotaResetSignal[] } | null = null;
+
 export function buildUpdate(
   store: SessionStore,
-  opts?: { includeMessagingEvidence?: boolean },
+  opts?: { includeMessagingEvidence?: boolean; includeQuotaChip?: boolean },
 ): UpdatePayload {
   const now = Date.now();
   // Pull a wider window so "today" sums catch sessions that haven't recently
@@ -294,25 +299,38 @@ export function buildUpdate(
   } catch {
     /* leave null — strip simply shows nothing */
   }
-  // Cross-vendor quota-reset chip: read the newest transcript tail per
-  // backend (one file per backend per tick — cheap) and join whatever reset
-  // signals are visible. Backends with no signal are omitted, never guessed.
+  // Cross-vendor quota-reset chip. buildUpdate also feeds the status bar /
+  // cost tile / sessions tree, so the tail reads are opt-in (live-monitor
+  // panel tick only) and cached for 60 s — at most a few 64 KB reads per
+  // minute. Claude limits are account-wide but the marker is per-transcript,
+  // so scan the 3 newest Claude tails (a fresh session without the marker
+  // must not hide an older still-active cap). Backends with no visible
+  // signal are omitted, never guessed.
   let quotaChip: { value: string; title: string } | null = null;
-  try {
-    const signals: QuotaResetSignal[] = [];
-    for (const source of ["claude", "codex"] as const) {
-      const newest = recent
-        .filter((r) => r.source === source && r.jsonl_path)
-        .sort((a, b) => b.mtime_ns - a.mtime_ns)[0];
-      if (!newest) continue;
-      const tail = tailFile(newest.jsonl_path, CTX_TAIL_BYTES);
-      if (!tail) continue;
-      if (source === "codex") signals.push(...extractCodexQuotaSignals(tail));
-      else signals.push(...extractClaudeQuotaSignals(tail, Math.floor(newest.mtime_ns / 1e6)));
+  if (opts?.includeQuotaChip) {
+    try {
+      if (quotaCache && now - quotaCache.at < QUOTA_TTL_MS) {
+        quotaChip = formatQuotaResetChip(buildQuotaResetCard(quotaCache.signals, now), now);
+      } else {
+        const signals: QuotaResetSignal[] = [];
+        for (const source of ["claude", "codex"] as const) {
+          const newest = recent
+            .filter((r) => r.source === source && r.jsonl_path)
+            .sort((a, b) => b.mtime_ns - a.mtime_ns)
+            .slice(0, source === "claude" ? 3 : 1);
+          for (const row of newest) {
+            const tail = tailFile(row.jsonl_path, CTX_TAIL_BYTES);
+            if (!tail) continue;
+            if (source === "codex") signals.push(...extractCodexQuotaSignals(tail));
+            else signals.push(...extractClaudeQuotaSignals(tail, Math.floor(row.mtime_ns / 1e6)));
+          }
+        }
+        quotaCache = { at: now, signals };
+        quotaChip = formatQuotaResetChip(buildQuotaResetCard(signals, now), now);
+      }
+    } catch {
+      /* best-effort — never take down the monitor over a quota probe */
     }
-    quotaChip = formatQuotaResetChip(buildQuotaResetCard(signals, now), now);
-  } catch {
-    /* best-effort — never take down the monitor over a quota probe */
   }
   return {
     cards,
@@ -358,7 +376,7 @@ export function openLiveMonitor(ctx: vscode.ExtensionContext, store: SessionStor
     try {
       panel.webview.postMessage({
         command: "update",
-        payload: buildUpdate(store, { includeMessagingEvidence: true }),
+        payload: buildUpdate(store, { includeMessagingEvidence: true, includeQuotaChip: true }),
       });
     } catch {
       // panel disposed
