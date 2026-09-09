@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.68.0 — 2026-09-09
+
+### Fork-cache inheritance bleed detector (Insights)
+
+- **Insights · Fork-cache inheritance bleed:** warns when a forked Claude child reads `cache_read ≫ Agent brief` (default **20×**) or echoes plan-mode refuse text while the parent was in plan — the #57751 / fork-default poison class. Prefers first-turn `cache_read_input_tokens` + non-cache `input_tokens` as brief; falls back to session rollup + ~chars/4 from `first_user_msg`. Deep-links via `codeSessions.openSession`. Claude-first; advisory only (no auto-kill). Pure module `src/forkCacheBleed.ts` + fixture unit tests. (kp: ideas/csv-fork-cache-inheritance-bleed-detector-card-w)
+
 ## 1.67.0 — 2026-09-08
 
 ### Cross-vendor quota-reset wall-clock chip (live monitor)
