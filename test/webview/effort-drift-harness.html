@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Effort drift canary · harness</title>
+  <style>
+    :root {
+      --fg: #e0e0e0;
+      --muted: #9a9a9a;
+      --border: #3a3a3a;
+      --card-bg: #252526;
+      --accent: #6cb6ff;
+      --vscode-font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      --vscode-editor-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      --vscode-inputValidation-errorForeground: #f48771;
+      --vscode-inputValidation-errorBorder: #f48771;
+      --vscode-inputValidation-warningForeground: #dcdcaa;
+      --vscode-inputValidation-warningBorder: #dcdcaa;
+      --vscode-textLink-foreground: #6cb6ff;
+      --vscode-descriptionForeground: #9a9a9a;
+      --vscode-panel-border: #3a3a3a;
+      --vscode-editorWidget-background: #252526;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: var(--vscode-font-family);
+      background: #1e1e1e;
+      color: var(--fg);
+    }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    .hint { font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+    #log {
+      margin-top: 16px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 11px;
+      white-space: pre-wrap;
+      min-height: 3em;
+    }
+    /* Inlined from EFFORT_DRIFT_CARD_CSS so the harness does not need a build step. */
+    .edc-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; margin-top: 8px; }
+    .edc-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+    .edc-title { font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.5px; font-weight: 600; }
+    .edc-level { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 3px; }
+    .edc-warn { color: var(--vscode-inputValidation-errorForeground); background: rgba(244,135,113,0.18); }
+    .edc-watch { color: var(--vscode-inputValidation-warningForeground); background: rgba(220,220,170,0.18); }
+    .edc-sub { font-size: 13px; font-weight: 600; margin: 4px 0 2px; }
+    .edc-detail { font-size: 12px; color: var(--muted); line-height: 1.45; margin-bottom: 8px; }
+    .edc-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+    .edc-table th, .edc-table td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border); }
+    .edc-table th { color: var(--muted); font-weight: 500; font-size: 10px; text-transform: uppercase; }
+    .edc-table td { font-variant-numeric: tabular-nums; }
+    .edc-table tr.edc-drifted td { color: var(--vscode-inputValidation-errorForeground); font-weight: 600; }
+    .edc-sessions { font-size: 11px; margin-top: 8px; color: var(--muted); }
+    .edc-session { color: var(--accent); text-decoration: none; margin-right: 8px; font-family: var(--vscode-editor-font-family); }
+    .edc-session:hover { text-decoration: underline; }
+    .edc-actions { margin-top: 8px; }
+    .edc-btn { font-size: 11px; color: var(--accent); text-decoration: none; font-weight: 500; }
+    .edc-btn:hover { text-decoration: underline; }
+    .edc-disclaimer { font-size: 11px; color: var(--muted); margin-top: 10px; line-height: 1.45; border-top: 1px solid var(--border); padding-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Effort drift canary · harness</h1>
+  <p class="hint">
+    Fixture: Fable <code>high</code> collapsed to old-low fingerprint.
+    Clicks on <code>command:</code> links are recorded in <code>window.__clicks</code> (VS Code would dispatch them).
+  </p>
+  <div id="root"></div>
+  <div id="log">clicks: []</div>
+  <script src="./effort-drift-harness.js"></script>
+</body>
+</html>

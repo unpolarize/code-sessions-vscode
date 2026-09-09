@@ -33,6 +33,7 @@ import {
 } from "./compactionCliff";
 import * as fs from "fs";
 import { startSpan } from "./hostTrace";
+import { switchTaxRecorder } from "./switchTax";
 
 /** Read per-session checklist UI state from workspaceState. */
 export function loadAssumptionState(
@@ -472,6 +473,22 @@ export function openConversationViewer(
       retainContextWhenHidden: true,
     },
   );
+  // Switch-tax meter: log a focus event whenever this session view gains
+  // focus (session id + backend only — no content). Opt-out via
+  // codeSessions.switchTax.enabled.
+  const recordFocus = () => {
+    try {
+      if (!vscode.workspace.getConfiguration("codeSessions").get<boolean>("switchTax.enabled", true)) return;
+      const backend = store?.getById(sessionId)?.source ?? "unknown";
+      switchTaxRecorder.record(sessionId, backend);
+    } catch {
+      // Telemetry-adjacent; never let it break the viewer.
+    }
+  };
+  recordFocus(); // panel opens focused
+  panel.onDidChangeViewState((e) => {
+    if (e.webviewPanel.active) recordFocus();
+  });
   // Untested-write surface: re-parses the transcript for per-call paths, so
   // it runs AFTER first paint (never adds load latency). A generation token
   // drops stale results when the panel re-rendered or was disposed meanwhile.

@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.60.0",
+  "version": "1.67.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -255,6 +255,38 @@
         "command": "codeSessions.openInsights",
         "title": "Open insights dashboard",
         "icon": "$(graph)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.copyMessagingDoctorFix",
+        "title": "Messaging doctor: Copy env fix snippet",
+        "icon": "$(copy)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.openSession",
+        "title": "Open session by id",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.effortDrift.pinSemantics",
+        "title": "Effort drift: Pin expected semantics note",
+        "icon": "$(pin)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.loopEconomics.kill",
+        "title": "Loop economics: Kill loop (host-confirmed)",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.loopEconomics.rebindKp",
+        "title": "Loop economics: Rebind loop to KP item",
+        "category": "Code Sessions"
+      },
+      {
+        "command": "codeSessions.loopEconomics.softStop",
+        "title": "Loop economics: Soft-stop loop at next tick",
         "category": "Code Sessions"
       },
       {
@@ -1013,6 +1045,11 @@
           ],
           "default": "ollama",
           "description": "Where topic classification runs. `ollama` calls a local Ollama daemon (free, offline). `claude-p` invokes the Claude CLI in headless mode, using your subscription."
+        },
+        "codeSessions.switchTax.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Record focus switches between session conversation views (session id + backend only — never content) and show today's switch count + estimated minutes lost (23 s per switch) in the Live monitor header."
         },
         "codeSessions.liveStatusBar.enabled": {
           "type": "boolean",

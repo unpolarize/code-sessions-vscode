@@ -940,6 +940,42 @@ export class SessionStore {
     return (this.db.prepare(sql).all(...parentIds) as any[]).map((r) => String(r.session_id));
   }
 
+  /** Earliest token-bearing turn's usage per session (bootstrap measurement
+   * for the subagent bootstrap-vs-useful card). Zero-usage lead turns are
+   * skipped (some transcripts open with a token-silent meta turn); sessions
+   * indexed before migration v11 have all-zero turn tokens and are omitted
+   * entirely so callers fall back to estimation. */
+  firstTurnUsageBySession(sessionIds: string[]): Map<string, {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+  }> {
+    const out = new Map<string, { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number }>();
+    if (sessionIds.length === 0) return out;
+    const placeholders = sessionIds.map(() => "?").join(",");
+    const sql = `
+      SELECT t.session_id, t.input_tokens, t.output_tokens, t.cache_read_tokens, t.cache_write_tokens
+      FROM turn t
+      JOIN (
+        SELECT session_id, MIN(turn_index) AS min_idx
+        FROM turn
+        WHERE session_id IN (${placeholders})
+          AND (input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) > 0
+        GROUP BY session_id
+      ) m ON m.session_id = t.session_id AND m.min_idx = t.turn_index
+    `;
+    for (const r of this.db.prepare(sql).all(...sessionIds) as any[]) {
+      out.set(String(r.session_id), {
+        input_tokens: Number(r.input_tokens ?? 0),
+        output_tokens: Number(r.output_tokens ?? 0),
+        cache_read_tokens: Number(r.cache_read_tokens ?? 0),
+        cache_write_tokens: Number(r.cache_write_tokens ?? 0),
+      });
+    }
+    return out;
+  }
+
   upsertSession(s: SessionRow): void {
     this.db.prepare(`
       INSERT INTO session (
@@ -1040,6 +1076,25 @@ export class SessionStore {
     for (const r of rows) {
       m.set(r.jsonl_path, { mtime_ns: Number(r.mtime_ns), size_bytes: Number(r.size_bytes) });
     }
+    return m;
+  }
+
+  /** Map of jsonl_path → extras_json for rows that have a blob. Lets the
+   * claude indexer preserve a previously stamped effort label when the
+   * Code Build index has rotated the entry away (a lookup miss on reparse
+   * must not wipe the stamp). Prefix-scoped like knownPaths. */
+  extrasByPath(opts: { prefix?: string } = {}): Map<string, string> {
+    const m = new Map<string, string>();
+    const rows = opts.prefix
+      ? (this.db
+          .prepare(
+            "SELECT jsonl_path, extras_json FROM session WHERE extras_json IS NOT NULL AND substr(jsonl_path, 1, ?) = ?",
+          )
+          .all(opts.prefix.length, opts.prefix) as any[])
+      : (this.db
+          .prepare("SELECT jsonl_path, extras_json FROM session WHERE extras_json IS NOT NULL")
+          .all() as any[]);
+    for (const r of rows) m.set(r.jsonl_path, String(r.extras_json));
     return m;
   }
 

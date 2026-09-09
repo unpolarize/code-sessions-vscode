@@ -6,6 +6,21 @@ import * as vscode from "vscode";
 import { preferredEditorColumn } from "./editorColumn";
 import { SessionStore, SessionRow } from "./db";
 import { nowStatusFromTail, type NowStatus } from "./nowStatus";
+import {
+  extractClaudeQuotaSignals,
+  extractCodexQuotaSignals,
+  buildQuotaResetCard,
+  formatQuotaResetChip,
+  type QuotaResetSignal,
+} from "./quotaReset";
+import { switchTaxRecorder } from "./switchTax";
+import {
+  collectTranscriptEvidence,
+  runMessagingDoctor,
+  summarizeForStrip,
+  type MessagingStripStat,
+  type TranscriptEvidence,
+} from "./messagingDoctor";
 
 const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 const POLL_INTERVAL_MS = 2000;
@@ -64,6 +79,22 @@ export interface UpdatePayload {
    * activity. Null when under 30 minutes have elapsed (too noisy) or when
    * there is no spend/activity today. */
   burnRateUsdPerHour: number | null;
+  /** Today's cross-session focus switches (debounced) from the switch-tax
+   * recorder, and the estimated minutes lost to refocusing. Reported as
+   * zero while codeSessions.switchTax.enabled is off (recording also
+   * stops, but buffered events are suppressed too). */
+  switchesToday: number;
+  switchTaxMinutes: number;
+  /** Messaging-doctor strip stat: non-null only when cross-session messaging
+   * looks disabled (privacy env vars set, or a failed /list-agents attempt in
+   * recent Claude transcripts). Claude backend only — other backends never
+   * trip it. */
+  messaging: MessagingStripStat | null;
+  /** Cross-vendor quota-reset wall-clock chip (Claude 5h cap, Codex rolling
+   * windows / banked credits). Null when no backend has a visible reset
+   * signal in its latest transcript tail — the stat shows "—" rather than
+   * inventing times. */
+  quotaChip: { value: string; title: string } | null;
 }
 
 export type LiveCardForExport = LiveCard;
@@ -160,7 +191,25 @@ function startOfTodayMs(): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 
-export function buildUpdate(store: SessionStore): UpdatePayload {
+// Transcript-evidence probe is capped but still scans up to 3000 turns of
+// SQLite rows — far too heavy for the 2 s poll tick. Cache it host-wide for
+// 5 minutes. Env disables surface on the very next tick regardless; only the
+// transcript-only ("⚠ evidence") warn is TTL-bound. buildUpdate also feeds
+// the status bar / cost tile / sessions tree, so the probe is opt-in: only
+// the live-monitor panel tick (which pauses while hidden) requests it —
+// other callers get the cheap env-only doctor.
+const EVIDENCE_TTL_MS = 5 * 60_000;
+let evidenceCache: { at: number; evidence: TranscriptEvidence | undefined } | null = null;
+
+// Quota-reset tail reads are cheap but not free; 60 s staleness is fine for
+// a wall-clock chip whose times move on 5h/weekly scales.
+const QUOTA_TTL_MS = 60_000;
+let quotaCache: { at: number; signals: QuotaResetSignal[] } | null = null;
+
+export function buildUpdate(
+  store: SessionStore,
+  opts?: { includeMessagingEvidence?: boolean; includeQuotaChip?: boolean },
+): UpdatePayload {
   const now = Date.now();
   // Pull a wider window so "today" sums catch sessions that haven't recently
   // ticked their mtime. 200 covers a heavy day; cheap.
@@ -216,6 +265,73 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
   } catch {
     /* memory module / vscode not available in this context — leave zeros */
   }
+  // Chip honours the opt-out immediately: when disabled mid-day, report
+  // zeros rather than the still-buffered morning counts. Lazy-require so
+  // buildUpdate stays callable from test harnesses without vscode.
+  let switchTaxEnabled = true;
+  try {
+    const vscodeMod = require("vscode") as typeof import("vscode");
+    switchTaxEnabled = vscodeMod.workspace.getConfiguration("codeSessions").get<boolean>("switchTax.enabled", true);
+  } catch {
+    /* vscode unavailable (tests) — leave enabled */
+  }
+  const switchTax = switchTaxEnabled
+    ? switchTaxRecorder.summarizeToday(now)
+    : { switchCount: 0, medianDwellS: null, taxMinutes: 0 };
+  // Messaging doctor (same verdict logic as the Insights card, compacted for
+  // the strip). Best-effort: a probe failure must never take down the monitor.
+  let messaging: MessagingStripStat | null = null;
+  try {
+    let evidence: TranscriptEvidence | undefined;
+    if (opts?.includeMessagingEvidence) {
+      if (evidenceCache && now - evidenceCache.at < EVIDENCE_TTL_MS) {
+        evidence = evidenceCache.evidence;
+      } else {
+        try {
+          evidence = collectTranscriptEvidence(store);
+        } catch {
+          evidence = undefined;
+        }
+        evidenceCache = { at: now, evidence };
+      }
+    }
+    messaging = summarizeForStrip(runMessagingDoctor(process.env, evidence));
+  } catch {
+    /* leave null — strip simply shows nothing */
+  }
+  // Cross-vendor quota-reset chip. buildUpdate also feeds the status bar /
+  // cost tile / sessions tree, so the tail reads are opt-in (live-monitor
+  // panel tick only) and cached for 60 s — at most a few 64 KB reads per
+  // minute. Claude limits are account-wide but the marker is per-transcript,
+  // so scan the 3 newest Claude tails (a fresh session without the marker
+  // must not hide an older still-active cap). Backends with no visible
+  // signal are omitted, never guessed.
+  let quotaChip: { value: string; title: string } | null = null;
+  if (opts?.includeQuotaChip) {
+    try {
+      if (quotaCache && now - quotaCache.at < QUOTA_TTL_MS) {
+        quotaChip = formatQuotaResetChip(buildQuotaResetCard(quotaCache.signals, now), now);
+      } else {
+        const signals: QuotaResetSignal[] = [];
+        for (const source of ["claude", "codex"] as const) {
+          const newest = recent
+            .filter((r) => r.source === source && r.jsonl_path)
+            .sort((a, b) => b.mtime_ns - a.mtime_ns)
+            .slice(0, source === "claude" ? 3 : 1);
+          for (const row of newest) {
+            const tail = tailFile(row.jsonl_path, CTX_TAIL_BYTES);
+            if (!tail) continue;
+            if (source === "codex") signals.push(...extractCodexQuotaSignals(tail));
+            else signals.push(...extractClaudeQuotaSignals(tail, Math.floor(row.mtime_ns / 1e6)));
+          }
+        }
+        quotaCache = { at: now, signals };
+        quotaChip = formatQuotaResetChip(buildQuotaResetCard(signals, now), now);
+      }
+    } catch {
+      /* best-effort — never take down the monitor over a quota probe */
+    }
+  }
   return {
     cards,
     activeCount: cards.length,
@@ -226,6 +342,10 @@ export function buildUpdate(store: SessionStore): UpdatePayload {
     memoryEntries,
     memoryFiles,
     burnRateUsdPerHour,
+    switchesToday: switchTax.switchCount,
+    switchTaxMinutes: switchTax.taxMinutes,
+    messaging,
+    quotaChip,
   };
 }
 
@@ -239,11 +359,25 @@ export function openLiveMonitor(ctx: vscode.ExtensionContext, store: SessionStor
 
   panel.webview.html = liveHtml(panel.webview);
 
+  // Bridge for the messaging-doctor stat's click-to-copy. The command falls
+  // back to re-probing env when the snippet is missing/typed wrong.
+  panel.webview.onDidReceiveMessage((msg) => {
+    if (msg?.command === "copyMessagingFix") {
+      void vscode.commands.executeCommand(
+        "codeSessions.copyMessagingDoctorFix",
+        typeof msg.snippet === "string" ? msg.snippet : undefined,
+      );
+    }
+  });
+
   let timer: NodeJS.Timeout | undefined;
   const tick = () => {
     if (!panel.visible) return;
     try {
-      panel.webview.postMessage({ command: "update", payload: buildUpdate(store) });
+      panel.webview.postMessage({
+        command: "update",
+        payload: buildUpdate(store, { includeMessagingEvidence: true, includeQuotaChip: true }),
+      });
     } catch {
       // panel disposed
     }
@@ -277,7 +411,7 @@ function nonceStr(): string {
   return s;
 }
 
-function liveHtml(webview: vscode.Webview): string {
+export function liveHtml(webview: Pick<vscode.Webview, "cspSource">): string {
   const nonce = nonceStr();
   const csp = [
     `default-src 'none'`,
@@ -297,6 +431,7 @@ function liveHtml(webview: vscode.Webview): string {
   .summary .stat { display: flex; flex-direction: column; gap: 2px; }
   .summary .label { font-size: 10px; text-transform: uppercase; color: var(--vscode-descriptionForeground); letter-spacing: 0.5px; }
   .summary .value { font-size: 16px; font-weight: 600; }
+  .summary .value.warnval { color: #f0a050; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
   .card { background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 12px 14px; }
   .card .title { font-weight: 600; font-size: 13px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -335,6 +470,9 @@ function liveHtml(webview: vscode.Webview): string {
   <div class="stat"><span class="label">Cost today</span><span class="value" id="vCost">$0</span></div>
   <div class="stat" title="Cost today divided by hours elapsed since today's first session activity (shown after 30 min of activity)."><span class="label">Burn rate</span><span class="value" id="vBurn">—</span></div>
   <div class="stat" title="Total memory entries discovered across CLAUDE.md / AGENTS.md / MEMORY.md / ~/.claude / ~/.codex sources. Open the Memory tab in the sidebar for per-source breakdown."><span class="label">Memory</span><span class="value" id="vMem">0</span></div>
+  <div class="stat" title="Focus switches between session views today (300ms flickers debounced), with estimated minutes lost to refocusing (23s per switch). Disable via codeSessions.switchTax.enabled."><span class="label">Switch tax</span><span class="value" id="vSwitch">—</span></div>
+  <div class="stat" id="msgStat" style="display:none; cursor:pointer;"><span class="label">Messaging</span><span class="value warnval" id="vMsg">—</span></div>
+  <div class="stat" id="quotaStat" title="Next quota reset across backends."><span class="label">Quota resets</span><span class="value" id="vQuota">—</span></div>
   <div class="stat"><span class="label">Last update</span><span class="value" id="vClock">—</span></div>
 </div>
 <div id="alert" class="alert-banner"></div>
@@ -353,7 +491,17 @@ function liveHtml(webview: vscode.Webview): string {
   const vCost = document.getElementById('vCost');
   const vBurn = document.getElementById('vBurn');
   const vMem = document.getElementById('vMem');
+  const vSwitch = document.getElementById('vSwitch');
+  const msgStat = document.getElementById('msgStat');
+  const vMsg = document.getElementById('vMsg');
   const vClock = document.getElementById('vClock');
+
+  // Messaging-doctor stat: click copies the fix snippet (extension side runs
+  // codeSessions.copyMessagingDoctorFix with the snippet the stat carries).
+  let msgSnippet = '';
+  if (msgStat) msgStat.addEventListener('click', () => {
+    if (msgSnippet) vscode.postMessage({ command: 'copyMessagingFix', snippet: msgSnippet });
+  });
 
   function fmtTok(n) {
     if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -397,6 +545,34 @@ function liveHtml(webview: vscode.Webview): string {
       const files = payload.memoryFiles || 0;
       vMem.textContent = String(entries);
       vMem.title = entries + ' entries across ' + files + ' file(s)';
+    }
+    if (vSwitch) {
+      const n = payload.switchesToday || 0;
+      const mins = payload.switchTaxMinutes || 0;
+      const lost = mins >= 10 ? Math.round(mins) + 'm' : mins.toFixed(1) + 'm';
+      vSwitch.textContent = n === 0 ? '—' : n + ' · ' + lost + ' lost';
+    }
+    if (msgStat) {
+      if (payload.messaging) {
+        msgStat.style.display = '';
+        vMsg.textContent = payload.messaging.value;
+        msgStat.title = payload.messaging.tooltip;
+        msgSnippet = payload.messaging.snippet || '';
+      } else {
+        msgStat.style.display = 'none';
+        msgSnippet = '';
+      }
+    }
+    const vQuota = document.getElementById('vQuota');
+    const quotaStat = document.getElementById('quotaStat');
+    if (vQuota && quotaStat) {
+      if (payload.quotaChip) {
+        quotaStat.style.display = '';
+        vQuota.textContent = payload.quotaChip.value;
+        quotaStat.title = payload.quotaChip.title;
+      } else {
+        quotaStat.style.display = 'none';
+      }
     }
     vClock.textContent = new Date().toLocaleTimeString();
 

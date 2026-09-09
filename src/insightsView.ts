@@ -16,6 +16,23 @@ import { execFile } from "child_process";
 import { parseConversation, ParsedConversation } from "./conversationParser";
 import { renderDoctorCardHtml, runRulesDoctor, type DoctorRunResult } from "./rulesDoctor";
 import {
+  collectTranscriptEvidence,
+  renderMessagingDoctorCardHtml,
+  runMessagingDoctor,
+} from "./messagingDoctor";
+import { computeEffortDriftHtml } from "./effortDriftHost";
+import { EFFORT_DRIFT_CARD_CSS } from "./effortDriftCanary";
+import {
+  computeLoopEconomics,
+  renderLoopEconomicsSectionHtml,
+  LOOP_ECON_CARD_CSS,
+} from "./loopEconomics";
+import {
+  computeSubagentBootstrap,
+  renderSubagentBootstrapSectionHtml,
+  SUBAGENT_BOOTSTRAP_CARD_CSS,
+} from "./subagentBootstrap";
+import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
   DEFAULT_EXTRA_ENTRYPOINTS,
@@ -555,6 +572,9 @@ table.project-rollup code { font-family: var(--vscode-editor-font-family, monosp
 .doctor-row a:hover { text-decoration: underline; }
 .doctor-action { float: right; font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--accent); text-decoration: none; font-weight: 500; }
 .doctor-disclaimer { font-size: 11px; color: var(--muted); margin-top: 12px; line-height: 1.45; border-top: 1px solid var(--border); padding-top: 8px; }
+${EFFORT_DRIFT_CARD_CSS}
+${LOOP_ECON_CARD_CSS}
+${SUBAGENT_BOOTSTRAP_CARD_CSS}
 `;
 
 function renderDashboard(opts: {
@@ -568,8 +588,16 @@ function renderDashboard(opts: {
   focusSession?: SessionRow;
   /** Never-referenced rules doctor card HTML (workspace-scoped). */
   rulesDoctorHtml?: string;
+  /** Privacy-env messaging-disable doctor card HTML ("" when env is clean). */
+  messagingDoctorHtml?: string;
+  /** Effort-semantics drift canary HTML ("" when no watch/drift). */
+  effortDriftHtml?: string;
+  /** Multi-backend loop runaway economics HTML ("" when no loop-shaped jobs). */
+  loopEconomicsHtml?: string;
+  /** Subagent bootstrap-vs-useful waterfall HTML ("" when no fan-out families). */
+  subagentBootstrapHtml?: string;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml, subagentBootstrapHtml } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -816,6 +844,13 @@ ${focusSession
   </p>
 </div>
 
+${loopEconomicsHtml ? `<h2 style="margin-top: 28px;">Loop runaway economics</h2>${loopEconomicsHtml}` : ""}
+${subagentBootstrapHtml ? `<h2 style="margin-top: 28px;">Subagent bootstrap economics</h2>${subagentBootstrapHtml}` : ""}
+
+${effortDriftHtml ? `<h2 style="margin-top: 28px;">Effort drift canary</h2>${effortDriftHtml}` : ""}
+
+${messagingDoctorHtml ? `<h2 style="margin-top: 28px;">Messaging doctor</h2>${messagingDoctorHtml}` : ""}
+
 ${rulesDoctorHtml ? `<h2 style="margin-top: 28px;">Rules doctor</h2>${rulesDoctorHtml}` : ""}
 
 </body></html>`;
@@ -921,11 +956,78 @@ export async function openInsightsView(
   // Workspace-scoped rules doctor (independent of the lookback/focus filters —
   // it joins the active folder's rule files against last-N project sessions).
   let rulesDoctorHtml = "";
+  // Privacy-env messaging doctor: read-only probe of this VS Code process's
+  // env for the four vars that silently disable Claude cross-session
+  // messaging, joined with transcript evidence (a `/list-agents` attempt in
+  // recent Claude sessions with the tool never running warns even when this
+  // process's env looks clean — extension-host env ≠ claude's shell).
+  // Renders "" (no card) when both signals are clean.
+  let messagingDoctorHtml = "";
+  try {
+    let evidence;
+    try {
+      evidence = collectTranscriptEvidence(store);
+    } catch {
+      /* transcript probe is best-effort — env-only card still renders */
+    }
+    messagingDoctorHtml = renderMessagingDoctorCardHtml(runMessagingDoctor(process.env, evidence));
+  } catch {
+    /* never block Insights on the probe */
+  }
   try {
     rulesDoctorHtml = renderDoctorCardHtml(computeWorkspaceRulesDoctor(store));
   } catch (e: any) {
     rulesDoctorHtml = `<div class="card"><div class="card-title">Rules doctor</div>
       <div class="subtitle">Failed to build report: ${escapeHtml(e?.message || String(e))}</div></div>`;
+  }
+
+  // Effort-semantics drift canary: needs a full ~8-day window (7d baseline +
+  // today), not the Insights `limit` slice. Effort labels come from extras
+  // when stamped, else Code Build's index (backendSessionId → effort).
+  let effortDriftHtml = "";
+  // Multi-backend loop runaway economics: same 8-day window, automated
+  // sessions grouped into recurring jobs ranked by tokens/run.
+  let loopEconomicsHtml = "";
+  // Subagent bootstrap-vs-useful waterfall: same 8-day window, child
+  // transcripts grouped per parent, first-turn usage as measured bootstrap.
+  let subagentBootstrapHtml = "";
+  try {
+    if (store) {
+      const sinceSec = Math.floor(Date.now() / 1000) - 8 * 86400;
+      const canaryRows = store.listSinceEpoch(sinceSec, true);
+      effortDriftHtml = computeEffortDriftHtml(canaryRows, {
+        openSessionCommand: "codeSessions.openSession",
+      });
+      try {
+        loopEconomicsHtml = renderLoopEconomicsSectionHtml(computeLoopEconomics(canaryRows));
+      } catch {
+        /* advisory card — never block Insights */
+      }
+      try {
+        // Only fetch first-turn usage for children of multi-child parents —
+        // solo spawns never form a family, and the batch SQL should stay
+        // proportional to what the card can actually render.
+        const children = canaryRows.filter(
+          (r) => (r.kind === "subagent" || r.kind === "workflow") && r.parent_session_id && r.session_id,
+        );
+        const perParent = new Map<string, number>();
+        for (const c of children) perParent.set(c.parent_session_id!, (perParent.get(c.parent_session_id!) ?? 0) + 1);
+        const childIds = children
+          .filter((c) => (perParent.get(c.parent_session_id!) ?? 0) >= 2)
+          .map((c) => c.session_id);
+        if (childIds.length > 0) {
+          subagentBootstrapHtml = renderSubagentBootstrapSectionHtml(
+            computeSubagentBootstrap(canaryRows, {
+              firstTurnUsage: store.firstTurnUsageBySession(childIds),
+            }),
+          );
+        }
+      } catch {
+        /* advisory card — never block Insights */
+      }
+    }
+  } catch {
+    /* advisory card — never block Insights */
   }
 
   if (opts.focusSessionId) {
@@ -943,6 +1045,10 @@ export async function openInsightsView(
       parsedCount: deep.parsedSessions,
       focusSession: winRows[0],
       rulesDoctorHtml,
+      messagingDoctorHtml,
+      effortDriftHtml,
+      loopEconomicsHtml,
+      subagentBootstrapHtml,
     });
     return;
   }
@@ -971,5 +1077,9 @@ export async function openInsightsView(
     showAutomated,
     parsedCount: deep.parsedSessions,
     rulesDoctorHtml,
+    messagingDoctorHtml,
+    effortDriftHtml,
+    loopEconomicsHtml,
+    subagentBootstrapHtml,
   });
 }

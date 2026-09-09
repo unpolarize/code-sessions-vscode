@@ -21,6 +21,18 @@ import { EMIT_HANDOFF_COMMAND } from "./compactionCliff";
 import { locateStoreTurns, buildResumeSeed } from "./storeTranscript";
 import { computeWorkspaceRulesDoctor, openInsightsView } from "./insightsView";
 import { exportChecklist } from "./rulesDoctor";
+import { runMessagingDoctor } from "./messagingDoctor";
+import {
+  PIN_SEMANTICS_COMMAND,
+  detectEffortDriftFromSessions,
+  formatPinnedSemanticsNote,
+} from "./effortDriftCanary";
+import { loadCodeBuildEffortLookup } from "./effortDriftHost";
+import {
+  LOOP_KILL_COMMAND,
+  LOOP_REBIND_COMMAND,
+  LOOP_SOFT_STOP_COMMAND,
+} from "./loopEconomics";
 import { openUsageView } from "./usageView";
 import { openSessionGraphView } from "./sessionGraphView";
 import { registerPlanning, setSessionProvider } from "./planning";
@@ -3245,6 +3257,134 @@ export function activate(ctx: vscode.ExtensionContext) {
         vscode.window.showErrorMessage(`Rules doctor checklist failed: ${e?.message || e}`);
       }
     }),
+    // Messaging doctor "Copy fix": puts the unset-snippet for the privacy env
+    // vars that disable Claude cross-session messaging on the clipboard.
+    // Read-only otherwise — never edits shell profiles.
+    vscode.commands.registerCommand("codeSessions.copyMessagingDoctorFix", async (snippet?: unknown) => {
+      // The card passes its own remediation text (env-unset or, for the
+      // evidence-only transcript warn, the hunt commands) so the copy matches
+      // what the card showed. Fallback re-probes env only — the command can
+      // also be run from the palette where no transcript context exists.
+      if (typeof snippet === "string" && snippet.trim().length > 0) {
+        await vscode.env.clipboard.writeText(snippet);
+        vscode.window.showInformationMessage("Copied messaging-doctor fix snippet.");
+        return;
+      }
+      const result = runMessagingDoctor(process.env);
+      if (result.severity === "ok") {
+        vscode.window.showInformationMessage(
+          "Messaging doctor: no disabling env vars set — nothing to fix.",
+        );
+        return;
+      }
+      await vscode.env.clipboard.writeText(result.remediation);
+      vscode.window.showInformationMessage(
+        `Copied unset snippet for ${result.reasons.map((r) => r.envVar).join(", ")}. Restart Claude Code from a shell where they are unset.`,
+      );
+    }),
+    // Effort-drift canary deep link: open the conversation viewer for a session id.
+    vscode.commands.registerCommand("codeSessions.openSession", async (sessionId?: unknown) => {
+      const id = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!id) {
+        vscode.window.showWarningMessage("Open session needs a session id.");
+        return;
+      }
+      if (!store) {
+        vscode.window.showWarningMessage("Session cache is unavailable.");
+        return;
+      }
+      const row = store.getById(id);
+      if (!row) {
+        vscode.window.showWarningMessage(`Session ${id.slice(0, 8)} not found in the index.`);
+        return;
+      }
+      const existing = openViewerPanels.get(id);
+      if (existing) {
+        existing.reveal(preferredEditorColumn());
+        return;
+      }
+      const jsonl = row.jsonl_path;
+      if (!jsonl || !fs.existsSync(jsonl)) {
+        // Fall back to Insights filtered to this session when the transcript is gone.
+        await openInsightsView(ctx, store, { focusSessionId: id });
+        return;
+      }
+      const panel = openConversationViewer(ctx, jsonl, id, row.title || id.slice(0, 8), store);
+      openViewerPanels.set(id, panel);
+      panel.onDidDispose(() => {
+        if (openViewerPanels.get(id) === panel) openViewerPanels.delete(id);
+      });
+    }),
+    // Loop economics actions (v1 stubs): the card must never touch a process
+    // without the host confirming, so Kill is confirm-gated and all three
+    // report what a full implementation would do. Read-only otherwise.
+    vscode.commands.registerCommand(LOOP_KILL_COMMAND, async (label?: unknown, sessionIds?: unknown) => {
+      const name = typeof label === "string" && label ? label : "this loop";
+      const ids = Array.isArray(sessionIds) ? sessionIds.filter((x) => typeof x === "string") : [];
+      const pick = await vscode.window.showWarningMessage(
+        `Kill "${name}"? This signals the loop's host to stop it.`,
+        { modal: true },
+        "Kill loop",
+      );
+      if (pick !== "Kill loop") return;
+      vscode.window.showInformationMessage(
+        `Kill signal for "${name}" recorded (${ids.length} session${ids.length === 1 ? "" : "s"}). Host kill wiring lands in a follow-up — no process was touched.`,
+      );
+    }),
+    vscode.commands.registerCommand(LOOP_REBIND_COMMAND, async (label?: unknown, sessionIds?: unknown) => {
+      const name = typeof label === "string" && label ? label : "this loop";
+      const ids = Array.isArray(sessionIds) ? sessionIds.filter((x) => typeof x === "string") : [];
+      const kpId = await vscode.window.showInputBox({
+        prompt: `Rebind "${name}" to a KP item (its spend rolls up under that id)`,
+        placeHolder: "ideas/… or tasks/…",
+      });
+      if (!kpId) return;
+      vscode.window.showInformationMessage(
+        `Rebind of "${name}" → ${kpId} recorded (${ids.length} session${ids.length === 1 ? "" : "s"}). KP link wiring lands in a follow-up.`,
+      );
+    }),
+    vscode.commands.registerCommand(LOOP_SOFT_STOP_COMMAND, async (label?: unknown) => {
+      const name = typeof label === "string" && label ? label : "this loop";
+      vscode.window.showInformationMessage(
+        `Soft-stop requested for "${name}" — a full implementation injects a wrap-up prompt at the loop's next tick. Stub for now; nothing was sent.`,
+      );
+    }),
+    // Effort-drift canary "Pin expected semantics": copy a markdown note for
+    // the (backend, model, effort) fingerprint so it can be pasted into KP/doctor.
+    vscode.commands.registerCommand(
+      PIN_SEMANTICS_COMMAND,
+      async (backend?: unknown, model?: unknown, effort?: unknown) => {
+        const b = typeof backend === "string" ? backend : "";
+        const m = typeof model === "string" ? model : "";
+        const e = typeof effort === "string" ? effort : "";
+        if (!b || !m || !e) {
+          vscode.window.showWarningMessage(
+            "Pin semantics needs backend, model, and effort (use the Insights card button).",
+          );
+          return;
+        }
+        let note = `# Effort semantics pin — ${b} / ${m} / ${e}\n\nPinned at ${new Date().toISOString()} via ${PIN_SEMANTICS_COMMAND}.\n`;
+        try {
+          if (store) {
+            const sinceSec = Math.floor(Date.now() / 1000) - 8 * 86400;
+            const rows = store.listSinceEpoch(sinceSec, true);
+            const cards = detectEffortDriftFromSessions(rows, {
+              effortBySessionId: loadCodeBuildEffortLookup(),
+            });
+            const card = cards.find(
+              (c) => c.backend === b && c.model === m && c.effort === e.toLowerCase(),
+            );
+            if (card) note = formatPinnedSemanticsNote(card);
+          }
+        } catch {
+          /* fall through with the stub note */
+        }
+        await vscode.env.clipboard.writeText(note);
+        vscode.window.showInformationMessage(
+          `Pinned effort semantics for ${b}/${m}/${e} — markdown note copied to clipboard.`,
+        );
+      },
+    ),
     // Drilldown variant: called from a session row's metrics line. Opens the
     // Insights panel but pre-filters every chart and KPI to just that session
     // so the user sees its cost/tokens/messages in context of the dashboards.

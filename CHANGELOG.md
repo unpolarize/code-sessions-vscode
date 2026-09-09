@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.67.0 — 2026-09-08
+
+### Cross-vendor quota-reset wall-clock chip (live monitor)
+
+- **Live monitor · Quota resets stat:** joins per-backend quota-reset signals into one wall-clock answer to "when can I work next across all subscriptions?" — Codex rolling windows (`rate_limits.{primary,secondary}` from rollout `token_count` events, incl. banked credits when present) and Claude 5h-cap markers (`usage limit reached|<epoch>` transcript lines). Headline shows the earliest reset among currently-exhausted backends (`⏳ 14:05`), or `open` when nothing is exhausted; the tooltip lists each backend window with reset time and used %. Backends with no visible reset signal are omitted — never invented (Cursor joins when telemetry exists). Read-only over the newest transcript tail per backend (one 64 KB read per backend per tick); stale rows whose reset already passed are dropped. New pure module `src/quotaReset.ts` + 15 fixture unit tests. (kp: ideas/csv-cross-vendor-quota-reset-wall-clock-chip-cla)
+
+## 1.66.0 — 2026-09-07
+
+### Loop runaway economics card (multi-backend)
+
+- **Insights · Loop runaway economics:** joins loop/schedule-shaped sessions across every indexed backend (Claude `/loop`/night jobs via the automation predicate, Codex/cron automations, Grok interval work), collapses per-run title variance (dates/times/uuids/counters) to group repeated runs of the same job, and ranks groups by **tokens/run** — the runaway signature where each tick re-buys growing context. Token-silent backends (Grok) rank by a messages/run proxy, marked `~`, always below token-measured loops. Per-loop actions: **Kill** (modal host confirm — never auto-kill; v1 stub records the signal), **Rebind to KP** (input box for a KP id), **Soft-stop** (wrap-up-at-next-tick stub). Read-only over the local session index; no vendor API calls; hidden when no loop-shaped work exists. Fixture unit tests cover Claude-Loops-shaped usage + a non-Claude automation stub. (kp: ideas/csv-loop-runaway-economics-card-multi-backend-lo)
+
+## 1.65.0 — 2026-09-07
+
+### Effort-semantics drift canary — Insights host wiring (slice 2)
+
+- **Insights · Effort drift canary:** maps indexed sessions → per-(backend, model, effort) fingerprints and renders the advisory card when today's tokens/turn · tool-calls/turn · wall-time/turn diverge from the rolling 7-day median (Fable high→low class). Effort labels come from `extras_json` when stamped, else Code Build's `~/.codebuild/index.json` (`backendSessionId` → effort). Cold-start / unlabeled / `default` effort stay silent. Deep-links open the conversation via `codeSessions.openSession`; **Pin expected semantics** copies a markdown note (`codeSessions.effortDrift.pinSemantics`) for KP/doctor paste. Advisory only — no auto model switch. (kp: ideas/csv-vendor-effort-semantics-drift-canary-detect)
+
+## 1.64.0 — 2026-09-07
+
+### Messaging doctor in the Live monitor strip (ops surface)
+
+- **Live monitor · Messaging stat:** the privacy-env messaging doctor now surfaces in the Live monitor summary strip, not just Insights. When cross-session messaging looks disabled the strip shows a warn stat — `⚠ N var(s)` for env-var disables, `⚠ evidence` for the transcript-only warn (`/list-agents` tried, `ListAgents` never ran) — with the full verdict in the tooltip; clicking copies the same fix snippet the Insights card offers. Hidden entirely when healthy. Env is re-probed every 2 s tick; the transcript probe is cached for 5 minutes (too heavy for the poll loop). Claude backend only — the tooltip says so explicitly and other backends never trip it (n/a, not false alarms). (kp: ideas/csv-privacy-env-silent-messaging-disable-doctor)
+
+## 1.63.0 — 2026-09-06
+
+### Messaging doctor: transcript evidence (ListAgents-absence probe)
+
+- **Insights · Messaging doctor** now joins recent Claude session transcripts into the verdict: if `/list-agents` was tried in a recent session but the `ListAgents`/`SendMessage` tools never ran, the card warns **even when this VS Code process's env looks clean** (extension-host env ≠ the shell that launches `claude`; `~/.claude/settings.json` env blocks are invisible here too). Users who never touch messaging stay "no-signal" — no false alarms. When env vars *are* set, transcripts either corroborate ("tried, never ran") or soften the card ("tools did run — may still be working"). Evidence-only warns get hunt commands (env grep + settings.json + shell profiles) on **Copy fix** instead of an unset snippet; the card now passes its exact snippet to the copy command. Claude-source sessions only (last 20); read-only. (kp: ideas/csv-privacy-env-silent-messaging-disable-doctor)
+
+## 1.62.0 — 2026-09-06
+
+### Messaging doctor (privacy-env silent disable)
+
+- **Insights · Messaging doctor card:** detects the four privacy/telemetry env vars that silently disable Claude Code's cross-session messaging feature-flag fetch (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY` — presence-based, any non-empty value counts; `DO_NOT_TRACK`, `DISABLE_GROWTHBOOK` — boolean). The card appears only when at least one is set, lists each var with its value and purpose, and offers **Copy fix** (`codeSessions.copyMessagingDoctorFix`) — an unset snippet plus profile/`~/.claude/settings.json` hints on the clipboard. Read-only probe of the VS Code process env; never edits shell profiles; Claude backend only. (kp: ideas/csv-privacy-env-silent-messaging-disable-doctor)
+
+## 1.61.0 — 2026-09-05
+
+### Context-switch tax meter (slice 1)
+
+- **Switch-tax recorder + chip:** conversation views now log a focus event (session id + backend only, never content) when they gain focus; a pure aggregator debounces <300 ms flickers, collapses same-session refocuses, and prices each remaining cross-session switch at 23 s. The Live monitor header shows a **Switch tax** chip: today's switch count + estimated minutes lost. Opt out with `codeSessions.switchTax.enabled`. (kp: ideas/csv-toxic-flow-context-switch-tax-meter-count-hu)
+
 ## 1.60.0 — 2026-09-03
 
 ### Pipeline: session visibility + done-without-screenshot evidence
