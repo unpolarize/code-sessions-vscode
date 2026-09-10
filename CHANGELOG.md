@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.69.1 — 2026-09-09
+
+### Sessions Activity stays folded across job ticks
+
+- **Activity no longer auto-expands** when `kp export` / store sync / daemon watcher fire. Fresh workspaces start Collapsed even with running jobs; the status-bar activity icon remains the collapsed-mode surface.
+- Collapse/expand is a **user gesture**, persisted in `workspaceState` (`codeSessions.activityBucket.expanded`) via `onDidCollapseElement` / `onDidExpandElement`, so it survives window reload. Stable TreeItem `id` so VS Code can match the node across `onDidChangeTreeData`.
+- Pure decision function `activityBucketCollapsibleState(persisted, running, hasError)` — running/hasError never force Expanded. Matrix unit tests. (kp: tasks/sessions-activity-re-expands-on-every-refresh)
+
 ## 1.69.0 — 2026-09-09
 
 ### Planning Pipeline: In progress lane + Grok default route

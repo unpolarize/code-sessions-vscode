@@ -91,6 +91,13 @@ import {
   type AutomationConfig,
 } from "./automation";
 import { deleteSessionArtifacts } from "./sessionDelete";
+import {
+  ACTIVITY_BUCKET_EXPANDED_KEY,
+  ACTIVITY_BUCKET_TREE_ID,
+  activityBucketCollapsibleState,
+  parseActivityBucketPersisted,
+  type ActivityBucketPersisted,
+} from "./activityBucketState";
 
 // --------------------------------------------------------------------------- //
 // Shared helpers
@@ -812,6 +819,8 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   hostOverride: string | null = null;
   /** Instant toggle while the settings.json write is in flight. */
   showAutomatedOverride: boolean | null = null;
+  /** Last user fold/expand of the Activity bucket (workspaceState). */
+  activityExpanded: ActivityBucketPersisted = undefined;
 
   constructor(
     private readonly store: SessionStore | null,
@@ -1271,7 +1280,13 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       // are still visible per-row via the `[C]` / `[G]` label prefix.
       const kids = this.buildRootChildren();
       if (this.jobs && (this.jobs.runningJobs().length > 0 || this.jobs.recentJobs().length > 0)) {
-        kids.unshift(new ActivityBucketItem(this.jobs.runningJobs().length, this.jobs.lastError() != null));
+        kids.unshift(
+          new ActivityBucketItem(
+            this.jobs.runningJobs().length,
+            this.jobs.lastError() != null,
+            this.activityExpanded,
+          ),
+        );
       }
       return kids;
     }
@@ -1320,13 +1335,15 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 }
 
 class ActivityBucketItem extends vscode.TreeItem {
-  constructor(running: number, hasError: boolean) {
+  constructor(running: number, hasError: boolean, persisted?: ActivityBucketPersisted) {
+    const want = activityBucketCollapsibleState(persisted, running, hasError);
     super(
       running > 0 ? `Activity — ${running} running` : "Activity",
-      running > 0 || hasError
+      want === "expanded"
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed,
     );
+    this.id = ACTIVITY_BUCKET_TREE_ID;
     this.iconPath = new vscode.ThemeIcon(hasError ? "warning" : running > 0 ? "sync~spin" : "pulse");
     this.contextValue = "bucket-activity";
   }
@@ -2703,6 +2720,9 @@ export function activate(ctx: vscode.ExtensionContext) {
   const HOST_OVERRIDE_KEY = "codeSessions.hostFilterOverride";
   sessions.folderOverride = ctx.workspaceState.get<string | null>(FOLDER_OVERRIDE_KEY, null);
   sessions.hostOverride = ctx.workspaceState.get<string | null>(HOST_OVERRIDE_KEY, null);
+  sessions.activityExpanded = parseActivityBucketPersisted(
+    ctx.workspaceState.get<unknown>(ACTIVITY_BUCKET_EXPANDED_KEY),
+  );
   // Feed the planning dashboard's Sessions view from the CS index (recent + rich);
   // it falls back to the ~/.sessions git store when the cache is disabled.
   setSessionProvider(() => (store ? (store.listRecent(500, true, { requireReply: true }) as unknown as never[]) : null));
@@ -2800,6 +2820,22 @@ export function activate(ctx: vscode.ExtensionContext) {
     treeDataProvider: sessions,
     showCollapseAll: true,
   });
+  const persistActivityExpanded = (next: ActivityBucketPersisted) => {
+    sessions.activityExpanded = next;
+    void ctx.workspaceState.update(ACTIVITY_BUCKET_EXPANDED_KEY, next);
+  };
+  ctx.subscriptions.push(
+    sessionsTreeView.onDidCollapseElement((e) => {
+      if (e.element instanceof ActivityBucketItem || e.element.id === ACTIVITY_BUCKET_TREE_ID) {
+        persistActivityExpanded("collapsed");
+      }
+    }),
+    sessionsTreeView.onDidExpandElement((e) => {
+      if (e.element instanceof ActivityBucketItem || e.element.id === ACTIVITY_BUCKET_TREE_ID) {
+        persistActivityExpanded("expanded");
+      }
+    }),
+  );
   void syncShowAutomatedContext();
   ctx.subscriptions.push(
     sessionsTreeView,
