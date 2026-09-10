@@ -60,7 +60,7 @@ python3 -m http.server 8765 --directory "$PWD"
 Then:
 
 1. Confirm lanes paint (no overlay stuck on “Loading planning store”). Console must be clean of script errors.
-2. Click **🚀 Pipeline**. Confirm inbox / approved / implementation / done, the **route** selects, and **☑** on a lane header.
+2. Click **🚀 Pipeline**. Confirm inbox / approved / in progress / implementation / done, the **route** selects (empty default is Grok · grok-4.6 · high), and **☑** on a lane header.
 3. Drive the flow you changed. Examples: Ctrl-click two cards → drag to another lane → `window.__sent` has `pipelineMove` with `ids` and `route`. Change provider/model/effort → `setImplPrefs`.
 4. Inspect `window.__sent` in the console (host messages). Inspect `window.__host.post({type:'setView', view:'board'})` to jump views without the top bar.
 5. Narrow the viewport if CSS/layout changed.
