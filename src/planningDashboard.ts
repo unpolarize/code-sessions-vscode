@@ -262,7 +262,7 @@ export class DashboardPanel {
   <span class="brand">◧ Planning</span>
   <div class="seg" id="viewSeg">
     <button data-view="board" class="on">Board</button>
-    <button data-view="pipeline" title="Coding pipeline: bugs/features/auto items — inbox → approved → implementation → done">🚀 Pipeline</button>
+    <button data-view="pipeline" title="Coding pipeline: bugs/features/auto items — inbox → approved → in progress → implementation → done">🚀 Pipeline</button>
     <button data-view="issues">Bugs / Features</button>
     <button data-view="inbox">Inbox</button>
     <button data-view="autonomous">🤖 Auto</button>

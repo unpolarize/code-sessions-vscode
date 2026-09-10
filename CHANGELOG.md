@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.69.0 — 2026-09-09
+
+### Planning Pipeline: In progress lane + Grok default route
+
+- **In progress lane** sits between Approved and Implementation. Claimed work (`task@in_progress` / `idea@plan`) lives here; live auto-implement (night / grok / board kick / tonight's slate) stays in **Implementation**. Dropping onto In progress sets status and does **not** spawn `night-orchestrator.py --implement-now`; dropping onto Implementation still kicks.
+- **Empty default auto-implement route** is **Grok · grok-4.6 · high** when `kp.implRoute.last` / the board picker is unset. Per-item `implement_backend` / `implement_model` still win. (kp: ideas/csv-planning-board-add-in-progress-lane-between)
+
 ## 1.68.0 — 2026-09-09
 
 ### Fork-cache inheritance bleed detector (Insights)

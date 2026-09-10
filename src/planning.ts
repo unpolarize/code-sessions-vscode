@@ -18,6 +18,7 @@ import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
 import { KpClient, type KpResult } from "./kpClient";
 import { DEFAULT_UI_REPOS, screenshotApplies } from "./screenshotPolicy";
+import { pipelineMoveKicks, pipelineStatusForLane, resolveImplRoute, type ImplRoute } from "./planningPipeline";
 import { ReloadGate } from "./reloadGate";
 import { startSpan } from "./hostTrace";
 import { syncBridge } from "./storeSync";
@@ -1210,9 +1211,8 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     else void vscode.window.showInformationMessage(r.stdout.trim());
   };
 
-  // ── unified pipeline board helpers (inbox → approved → implementation → done) ──
+  // ── unified pipeline board helpers (inbox → approved → in progress → implementation → done) ──
   const objById = (oid: string): any => (((model.get() as any)?.objects as any[]) || []).find((x) => x.id === oid);
-  type ImplRoute = { backend?: string; model?: string; effort?: string };
   const lastImplRoute = () => ctx.globalState.get<ImplRoute>("kp.implRoute.last");
   const persistImplPrefs = async (prefs: ImplRoute): Promise<ImplRoute> => {
     const clean: ImplRoute = {
@@ -1227,9 +1227,7 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
   const applyRememberedRoute = async (oid: string, override?: ImplRoute): Promise<void> => {
     const o = objById(oid);
     if (o && (o.implement_backend || o.implement_model)) return; // explicit route wins
-    const last =
-      override && (override.backend || override.model || override.effort) ? override : lastImplRoute();
-    if (!last || (!last.backend && !last.model && !last.effort)) return;
+    const last = resolveImplRoute(override, lastImplRoute());
     await runKp(["set-implement", oid, "--model", last.model || "-", "--effort", last.effort || "-", "--backend", last.backend || "-"]);
   };
   // The auto-implementer only targets coding items: a target_repo is what
@@ -1339,18 +1337,20 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
       if (!a.ok) void vscode.window.showWarningMessage(`approve failed: ${a.err}`);
       if (opts?.reload !== false) await model.reload(log);
       return { ok: !!a.ok };
-    } else if (lane === "implementation") {
-      // moving to implementation = start building it: mark running, apply the
-      // board/remembered route, and trigger a user-kicked auto-implement session
-      const tr = await ensureTargetRepo(oid, "required to auto-implement");
+    } else if (lane === "implementation" || lane === "in_progress") {
+      // in_progress = claim/start (task@in_progress / idea@plan), no builder.
+      // implementation = same status + kick night-orchestrator --implement-now.
+      const why = lane === "implementation" ? "required to auto-implement" : "required to start work";
+      const tr = await ensureTargetRepo(oid, why);
       if (!tr.ok) {
-        void vscode.window.showWarningMessage(`implementation move: ${tr.err}`);
+        void vscode.window.showWarningMessage(`${lane} move: ${tr.err}`);
         if (opts?.reload !== false) await model.reload(log);
         return { ok: false };
       }
       await applyRememberedRoute(oid, opts?.route);
-      r = await runKp(withNote(["set-status", oid, t === "task" ? "in_progress" : "plan"]));
-      if (r.ok && opts?.kick !== false) kicked = kickAutoImplement(oid, { quietQueued: opts?.quietQueued });
+      const st = pipelineStatusForLane(t, lane) || (t === "task" ? "in_progress" : "plan");
+      r = await runKp(withNote(["set-status", oid, st]));
+      if (r.ok && pipelineMoveKicks(lane, opts)) kicked = kickAutoImplement(oid, { quietQueued: opts?.quietQueued });
     } else if (lane === "done") {
       r = await runKp(withNote(["set-status", oid, "done"]));
       // done without implementation evidence — nudge once, with a one-click fix
@@ -2010,7 +2010,7 @@ exec "${chatInv.node}" "${chatInv.cli}" "$@"
     },
     getLoadStatus: () => model.getLoadStatus(),
     onLoadStatus: (cb) => model.onStatus.event(cb),
-    getImplPrefs: () => lastImplRoute(),
+    getImplPrefs: () => resolveImplRoute(undefined, lastImplRoute()),
     chat: {
       send: (t, runtime) => planningChat.send(t, runtime as never),
       runtimeInfo: () => ({

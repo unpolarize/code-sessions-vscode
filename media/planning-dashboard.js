@@ -16,10 +16,12 @@ const TYPE_COLOR = {idea:'#d7ba7d',plan:'#4ec9b0',task:'#569cd6',project:'#c586c
 const LANE_COLOR = {inbox:'#888',today:'#569cd6',in_progress:'#dcdcaa',done:'#4ec9b0',deferred:'#a08',outdated:'#d16969',capture:'#d7ba7d',refine:'#dcdcaa',accepted:'#4ec9b0',parked:'#888',plan:'#569cd6',prototype:'#c586c0',implement:'#dcdcaa',validate:'#4fc1ff',new:'#d7ba7d',kept:'#4ec9b0',converted:'#569cd6',archived:'#666'};
 // Coding pipeline view: bugs/features/auto coding items in one lifecycle,
 // separate from the per-type Board (tasks/ideas/plans/thoughts don't fit it).
-const PIPE_LANES=['inbox','approved','implementation','done'];
-const PIPE_COLOR={inbox:'#888',approved:'#4ec9b0',implementation:'#dcdcaa',done:'#569cd6'};
+const PIPE_LANES=['inbox','approved','in_progress','implementation','done'];
+const PIPE_LABEL={inbox:'inbox',approved:'approved',in_progress:'in progress',implementation:'implementation',done:'done'};
+const PIPE_COLOR={inbox:'#888',approved:'#4ec9b0',in_progress:'#dcdcaa',implementation:'#ce9178',done:'#569cd6'};
 const IMPL_PROV={claude:['default','fable','opus','sonnet','haiku'],grok:['default','grok-4.6','grok-4.5','grok-code-fast-1']};
 const IMPL_EFF=['default','low','medium','high','xhigh','max'];
+const DEFAULT_IMPL_PREFS={backend:'grok',model:'grok-4.6',effort:'high'};
 let S = null, view='board', laneSet='task';
 let renderError=null;
 let SESS=null, sessFilter='today', sessSearch='', sessHost='all', sessUnlinked=false, sessHideAuto=true, sessOpenUuid=null, sessExplain={};
@@ -33,7 +35,11 @@ let doneWindow = _st.doneWindow || 'week'; // hide done items older than: yester
 let sortBy = _st.sortBy || 'priority';
 let tagFilter = Array.isArray(_st.tagFilter) ? _st.tagFilter.slice() : [];
 laneSet = (_st.laneSet && _st.laneSet !== 'pipeline') ? _st.laneSet : 'task';
-let implPrefs = null; // host-persisted last provider/model/effort (globalState)
+function routeOrDefault(p){
+  if(p&&(p.backend||p.model||p.effort)) return {backend:p.backend||'',model:p.model||'',effort:p.effort||''};
+  return {backend:DEFAULT_IMPL_PREFS.backend,model:DEFAULT_IMPL_PREFS.model,effort:DEFAULT_IMPL_PREFS.effort};
+}
+let implPrefs = routeOrDefault(null); // empty remembered route → Grok · grok-4.6 · high
 const selectedIds = new Set(); // multi-select on board/pipeline cards
 let lastSel = {id:null, lane:null};
 let didDrag = false;
@@ -55,8 +61,8 @@ function blockedSet(){ return new Set(((S&&S.blocked)||[]).map(b=>b.id)); }
 function addDays(d,n){ const x=new Date(d+'T00:00:00Z'); x.setUTCDate(x.getUTCDate()+n); return x.toISOString().slice(0,10); }
 
 window.addEventListener('message',e=>{const m=e.data;
-  if(m.type==='snapshot'){S=m.data; if(m.implPrefs)implPrefs=m.implPrefs; window.__paintTried=false; render();}
-  else if(m.type==='implPrefs'){ implPrefs=m.data||implPrefs; if(view==='pipeline') syncPipeRouteBar(); }
+  if(m.type==='snapshot'){S=m.data; if(m.implPrefs!==undefined)implPrefs=routeOrDefault(m.implPrefs); window.__paintTried=false; render();}
+  else if(m.type==='implPrefs'){ implPrefs=routeOrDefault(m.data); if(view==='pipeline') syncPipeRouteBar(); }
   else if(m.type==='loadStatus'){ applyLoadStatus(m.data); }
   else if(m.type==='detail'){renderDrawer(m.data);}
   else if(m.type==='setView'){view=m.view;syncSeg();render();}
@@ -298,9 +304,10 @@ $('#resCancel').addEventListener('click',()=>closeResModal(false));
 $('#resX').addEventListener('click',()=>closeResModal(false));
 $('#resNote').addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();closeResModal(true,true);} if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeResModal(false);} });
 // ── coding pipeline: bugs/features/auto coding items in one lifecycle view ────
-// inbox → approved (auto_implement: ready / accepted / today) → implementation
-// (in_progress statuses, plus every active machine implement: night/grok/kick
-// running items and tonight's slate picks — see activeImplements()) → done.
+// inbox → approved (auto_implement: ready / accepted / today) → in progress
+// (task@in_progress / idea@plan, claimed but not a live machine run) →
+// implementation (every active machine implement: night/grok/kick running
+// items and tonight's slate picks — see activeImplements()) → done.
 // Only coding work belongs
 // here: tasks/ideas that are bugs/features, target a repo, are routed to an
 // implementer, or came from the night ideation. The Board keeps per-type lanes.
@@ -369,8 +376,9 @@ function pipeLaneOf(o){
   // Implementation, even if a lane artifact still lists it as running/queued
   if(CLOSING.has(st)||st==='converted'||st==='archived') return 'done';
   if(activeImplOf(o.id)) return 'implementation';
-  // idea@plan = being planned/implemented (ideas have no in_progress status)
-  if(st==='in_progress'||(o.type==='idea'&&st==='plan')) return 'implementation';
+  // claimed/started, not a live machine run. idea@plan stands in for in_progress
+  // (ideas have no in_progress status).
+  if(st==='in_progress'||(o.type==='idea'&&st==='plan')) return 'in_progress';
   if(o.auto_implement==='ready'||st==='accepted'||st==='today') return 'approved';
   return 'inbox';
 }
@@ -438,6 +446,7 @@ function fillSelect(sel, opts, cur){
   if(!sel) return;
   sel.innerHTML='';
   opts.forEach(([v,l])=>{ const op=el('option',null,l); op.value=v; if(v===cur) op.selected=true; sel.appendChild(op); });
+  sel.value=cur||'';
 }
 function syncPipeRouteBar(){
   const pb=$('#ppProv'), pm=$('#ppModel'), pe=$('#ppEffort');
@@ -511,7 +520,7 @@ function renderBoard(){
       '<select id="ppProj" title="Filter by project">'+projOpts+'</select>'+
       '<button class="ghost'+(pipeGroupProj?' on':'')+'" id="ppGroup" title="Group cards by project within each lane">⫶ by project</button>'+
       '<span style="display:inline-flex;gap:4px">'+winSeg+'</span>'+
-      '<span class="piperoute" title="Default provider · model · effort applied when an unrouted card is dropped on Implementation">'+
+      '<span class="piperoute" title="Default provider · model · effort applied when an unrouted card is dropped on In progress or Implementation">'+
         '<span style="opacity:.6">route</span>'+
         '<select id="ppProv" title="Default auto-implement provider"></select>'+
         '<select id="ppModel" title="Default auto-implement model"></select>'+
@@ -589,7 +598,7 @@ function renderBoard(){
     }
     const isMax=maxLane===lane;
     const col=el('div','col'+(isMax?' max':'')); col.dataset.lane=lane;
-    const h=el('h3',null,'<span class="dot" style="background:'+((pipe&&PIPE_COLOR[lane])||LANE_COLOR[lane]||TYPE_COLOR[lane]||'#888')+'"></span>'+esc(lane)+(isMax?' <span style="opacity:.5;font-weight:400;text-transform:none">(double-click or Esc to restore)</span>':'')+'<span class="cnt">'+rows.length+(hidDone?' <span style="opacity:.55" title="'+hidDone+' older done hidden">+'+hidDone+' older</span>':'')+'</span>');
+    const h=el('h3',null,'<span class="dot" style="background:'+((pipe&&PIPE_COLOR[lane])||LANE_COLOR[lane]||TYPE_COLOR[lane]||'#888')+'"></span>'+esc((pipe&&PIPE_LABEL[lane])||lane)+(isMax?' <span style="opacity:.5;font-weight:400;text-transform:none">(double-click or Esc to restore)</span>':'')+'<span class="cnt">'+rows.length+(hidDone?' <span style="opacity:.55" title="'+hidDone+' older done hidden">+'+hidDone+' older</span>':'')+'</span>');
     col.title='double-click to '+(isMax?'restore':'maximize as a list');
     col.addEventListener('dblclick',ev=>{ if(ev.target.closest('.card')||ev.target.closest('.laneselect')||ev.target.tagName==='SELECT')return; maxLane=isMax?null:lane; renderBoard(); });
     if(isDone){
@@ -632,7 +641,7 @@ function renderBoard(){
         if(ss.length){
           const top=ss[0], st=top.status||'';
           extra+='<span class="sesschip'+(st==='live-local'||st==='active-remote'?' live':st==='open'?' opensess':'')+'" data-sess="'+esc(top.uuid)+'" title="'+esc((top.title||top.uuid)+(top.host?' · '+top.host:'')+(top.agent?' · '+top.agent:''))+' — click to open the session">▸ '+esc(sessStateLabel(top))+(ss.length>1?' ×'+ss.length:'')+'</span>';
-        } else if(lane==='implementation'||lane==='done'){
+        } else if(lane==='in_progress'||lane==='implementation'||lane==='done'){
           extra+='<span class="sesschip none" data-newsess="1" title="no linked session — click to open a Code Build session with this item’s context">▸ no session</span>';
         }
       }
