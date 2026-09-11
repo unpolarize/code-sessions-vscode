@@ -11,6 +11,7 @@ import {
   pipelineMoveKicks,
   pipelineStatusForLane,
   resolveImplRoute,
+  resolveOpenCbTarget,
 } from "../../src/planningPipeline";
 
 const src = readFileSync(resolve(__dirname, "../../media/planning-dashboard.js"), "utf8");
@@ -205,6 +206,7 @@ function miniDom(snapshot: unknown, state: Record<string, unknown>, initialView?
     "calendar", "graph", "gfilters", "canvas", "backdrop", "drawer", "drawerInner",
     "resmodal", "resTitle", "resSub", "resWarn", "resNote", "resSave", "resSkip", "resCancel",
     "resX", "search", "syncPill", "captureBtn", "refreshBtn", "syncBtn", "topbar", "main",
+    "flight",
   ];
   for (const id of ids) {
     const el = create("div");
@@ -214,14 +216,15 @@ function miniDom(snapshot: unknown, state: Record<string, unknown>, initialView?
     byId.set(id, el);
   }
 
+  let onMessage: ((e: { data: unknown }) => void) | null = null;
   const windowObj: Record<string, unknown> = {
     __paintTried: false,
     addEventListener: (type: string, fn: (...a: unknown[]) => void) => {
       if (type !== "message") return;
-      const send = fn as (e: { data: unknown }) => void;
-      send({ data: { type: "snapshot", data: snapshot } });
-      if (sessions) send({ data: { type: "sessions", data: sessions } });
-      if (initialView) send({ data: { type: "setView", view: initialView } });
+      onMessage = fn as (e: { data: unknown }) => void;
+      onMessage({ data: { type: "snapshot", data: snapshot } });
+      if (sessions) onMessage({ data: { type: "sessions", data: sessions } });
+      if (initialView) onMessage({ data: { type: "setView", view: initialView } });
     },
   };
   const document = {
@@ -271,7 +274,7 @@ function miniDom(snapshot: unknown, state: Record<string, unknown>, initialView?
     console,
   };
   (sandbox.window as { document: typeof document }).document = document;
-  return { sandbox, byId, posted, fire };
+  return { sandbox, byId, posted, fire, host: (m: unknown) => onMessage?.({ data: m }) };
 }
 
 function fire(el: El, type: string, init: Partial<FakeEvent> = {}): FakeEvent {
@@ -333,6 +336,9 @@ function lanesOf(byId: Map<string, El>, container = "pipeline"): Record<string, 
 }
 function cardIds(col: El): string[] {
   return col.querySelectorAll(".card").map((c) => c.dataset.id!);
+}
+function allText(n: El): string {
+  return [n.textContent || "", ...n.children.map(allText)].join(" ");
 }
 
 describe("coding pipeline view", () => {
@@ -644,7 +650,7 @@ const fleet = [
 ];
 
 describe("pipeline session chips", () => {
-  it("shows a live chip from linked_sessions and opens the session on click", () => {
+  it("shows a live chip from linked_sessions and opens the centered item panel on click", () => {
     const { sandbox, byId, posted } = miniDom(sessSnapshot, {}, "pipeline", fleet);
     runInNewContext(src, sandbox, { filename: "planning-dashboard.js" });
     const lanes = lanesOf(byId);
@@ -653,9 +659,61 @@ describe("pipeline session chips", () => {
     expect(wip.innerHTML).toContain("▸ live");
     const chip = wip.querySelectorAll(".sesschip")[0]!;
     fire(wip, "click", { target: chip });
-    const msg = posted.find((m) => m.action === "openSession");
-    expect(msg).toMatchObject({ uuid: "sess-live", title: "Being built" });
-    expect(posted.some((m) => m.type === "show")).toBe(false); // chip click ≠ open drawer
+    // chip click → same centered drawer as a card click, never the conversation viewer
+    const shown = posted.find((m) => m.type === "show");
+    expect(shown).toMatchObject({ id: "tasks/wip" });
+    expect(posted.some((m) => m.action === "openSession")).toBe(false);
+    expect(byId.get("drawer")!.classList.contains("center")).toBe(true);
+    expect(byId.get("drawer")!.classList.contains("hidden")).toBe(false);
+  });
+
+  it("⚡ in-flight view buckets live / machine / claimed and opens the same centered panel as the board", () => {
+    const snap = JSON.parse(JSON.stringify(sessSnapshot));
+    snap.autonomous = {
+      enabled: true,
+      current_window: {
+        implement: { status: "running", item: "tasks/wip2" },
+        end: new Date(Date.now() + 3600_000).toISOString(),
+      },
+    };
+    const { sandbox, byId, posted, host } = miniDom(snap, {}, "flight", fleet);
+    runInNewContext(src, sandbox, { filename: "planning-dashboard.js" });
+    const lanes = lanesOf(byId, "flight");
+    expect(cardIds(lanes.live)).toEqual(["tasks/wip"]); // linked live session
+    expect(cardIds(lanes.machine)).toEqual(["tasks/wip2"]); // night implement running
+    expect(cardIds(lanes.claimed)).toContain("tasks/lone"); // in_progress, no session
+    // closed and merely-scheduled items stay out of flight entirely
+    const all = [...cardIds(lanes.live), ...cardIds(lanes.machine), ...cardIds(lanes.claimed)];
+    expect(all).not.toContain("tasks/noproof");
+    expect(all).not.toContain("tasks/refonly");
+    const card = lanes.live.querySelectorAll(".card")[0]!;
+    fire(card, "click", { target: card });
+    expect(posted.find((m) => m.type === "show")).toMatchObject({ id: "tasks/wip" });
+    expect(posted.some((m) => m.action === "openSession")).toBe(false);
+    const drawer = byId.get("drawer")!;
+    expect(drawer.classList.contains("center")).toBe(true);
+    expect(drawer.classList.contains("hidden")).toBe(false);
+    host({
+      type: "detail",
+      data: {
+        id: "tasks/wip",
+        title: "Being built",
+        type: "task",
+        status: "in_progress",
+        body: "notes in the shared panel",
+        frontmatter: { issue_kind: "feature", priority: "p1" },
+        linked_sessions: ["sess-live"],
+      },
+    });
+    const inner = byId.get("drawerInner")!;
+    const text = allText(inner);
+    expect(inner.querySelector(".titleEdit")?.value).toBe("Being built");
+    expect(text).toContain("Agent actions");
+    expect(text).toContain("Notes / details");
+    expect(byId.get("sessPane")).toBeTruthy();
+    expect(byId.get("sessPane")!.className).toContain("sesspane");
+    expect(allText(byId.get("sessPane")!)).toContain("Session activity");
+    expect(posted.some((m) => m.type === "requestTranscript" && m.uuid === "sess-live")).toBe(true);
   });
 
   it("also picks up sessions linked only via the envelope's planning_refs", () => {
@@ -877,5 +935,64 @@ describe("host pipeline move: kick vs claim + default route", () => {
       model: "opus",
       effort: "",
     });
+  });
+});
+
+describe("item-view Open in Code Build: linked session over new conversation", () => {
+  const fleetSess = (over: Partial<{ uuid: string; source: string; projectPath?: string; mtime: number; title?: string }>) => ({
+    uuid: "u-default",
+    source: "claude",
+    projectPath: "/Users/me/projects/repo",
+    mtime: 1000,
+    title: "t",
+    ...over,
+  });
+
+  it("resumes the item's linked session when it resolves in the fleet list", () => {
+    const t = resolveOpenCbTarget(["u-1"], [fleetSess({ uuid: "u-1", title: "impl session" })]);
+    expect(t).toEqual({
+      mode: "resume",
+      uuid: "u-1",
+      source: "claude",
+      cwd: "/Users/me/projects/repo",
+      title: "impl session",
+    });
+  });
+
+  it("picks the most recently active linked session when several are linked", () => {
+    const t = resolveOpenCbTarget(
+      ["u-old", "u-new"],
+      [fleetSess({ uuid: "u-old", mtime: 100 }), fleetSess({ uuid: "u-new", mtime: 200 })],
+    );
+    expect(t).toMatchObject({ mode: "resume", uuid: "u-new" });
+  });
+
+  it("falls back to a new conversation when nothing is linked or nothing resolves", () => {
+    expect(resolveOpenCbTarget([], [fleetSess({})])).toEqual({ mode: "new" });
+    expect(resolveOpenCbTarget(undefined, [fleetSess({})])).toEqual({ mode: "new" });
+    expect(resolveOpenCbTarget(["u-gone"], [fleetSess({ uuid: "u-other" })])).toEqual({ mode: "new" });
+  });
+
+  it("skips git-store-only rows and rows without a cwd (openExternalSession needs both)", () => {
+    expect(resolveOpenCbTarget(["u-1"], [fleetSess({ uuid: "u-1", source: "git" })])).toEqual({ mode: "new" });
+    expect(resolveOpenCbTarget(["u-1"], [fleetSess({ uuid: "u-1", projectPath: undefined })])).toEqual({ mode: "new" });
+    // a resumable duplicate of the same uuid still wins over the git row
+    const t = resolveOpenCbTarget(
+      ["u-1"],
+      [fleetSess({ uuid: "u-1", source: "git", projectPath: undefined, mtime: 900 }), fleetSess({ uuid: "u-1", mtime: 100 })],
+    );
+    expect(t).toMatchObject({ mode: "resume", uuid: "u-1", source: "claude" });
+  });
+  it("decodes claude's dash-encoded project dir to the real cwd (transcript lookup needs it)", () => {
+    // claude rows store the ~/.claude/projects store dir, not the cwd — passing it
+    // raw made CB re-encode it and miss the transcript ("Starting fresh").
+    const t = resolveOpenCbTarget(
+      ["u-1"],
+      [fleetSess({ uuid: "u-1", projectPath: "/Users/me/.claude/projects/-Users-me-projects-repo" })],
+    );
+    expect(t).toMatchObject({ mode: "resume", cwd: "/Users/me/projects/repo" });
+    // grok / already-decoded rows pass through unchanged
+    const g = resolveOpenCbTarget(["u-2"], [fleetSess({ uuid: "u-2", source: "grok", projectPath: "/Users/me/docs" })]);
+    expect(g).toMatchObject({ mode: "resume", cwd: "/Users/me/docs" });
   });
 });

@@ -55,7 +55,46 @@
   window.__state = {};
   window.acquireVsCodeApi = function () {
     return {
-      postMessage: function (m) { window.__sent.push(m); },
+      postMessage: function (m) {
+        window.__sent.push(m);
+        if (m && m.type === "show" && m.id) {
+          var snap = window.__snapshot || { objects: [] };
+          var o = (snap.objects || []).find(function (x) { return x.id === m.id; }) || { id: m.id, title: m.id, type: "task", status: "inbox" };
+          var linked = o.linked_sessions;
+          if (typeof linked === "string") { try { linked = JSON.parse(linked); } catch (e) { linked = []; } }
+          setTimeout(function () {
+            window.__host.post({
+              type: "detail",
+              data: {
+                id: o.id,
+                title: o.title,
+                type: o.type,
+                status: o.status,
+                body: "Harness fixture body for " + o.id + ".\n\nNotes stay in the same centered panel as Pipeline / Board.",
+                domain: o.domain || "",
+                project: o.project || "",
+                frontmatter: { priority: o.priority, issue_kind: o.issue_kind, target_repo: o.target_repo },
+                linked_sessions: linked || [],
+                blocked_by: [], cites: [], children: [], depends_on: [], related: []
+              }
+            });
+          }, 0);
+        }
+        if (m && m.type === "requestTranscript") {
+          setTimeout(function () {
+            window.__host.post({
+              type: "transcript",
+              uuid: m.uuid,
+              title: "Harness transcript",
+              total: 2,
+              turns: [
+                { user: "please implement this", assistant: "working on it — live strip plus the item panel.", tools: ["read_file"], endMs: Date.now() - 20000 },
+                { user: "status?", assistant: "still going. Session history belongs in this panel, not a second overlay.", tools: [], endMs: Date.now() }
+              ]
+            });
+          }, 0);
+        }
+      },
       getState: function () { return window.__state; },
       setState: function (s) { window.__state = s; }
     };
@@ -72,6 +111,7 @@
   <div class="seg" id="viewSeg">
     <button data-view="board" class="on">Board</button>
     <button data-view="pipeline" title="Coding pipeline">🚀 Pipeline</button>
+    <button data-view="flight" title="Everything in flight across all types">⚡ In flight</button>
     <button data-view="issues">Bugs / Features</button>
     <button data-view="inbox">Inbox</button>
     <button data-view="autonomous">🤖 Auto</button>
@@ -138,6 +178,7 @@
 <div id="main">
   <div id="board" class="view"></div>
   <div id="pipeline" class="view hidden"></div>
+  <div id="flight" class="view hidden"></div>
   <div id="issues" class="view hidden"></div>
   <div id="inbox" class="view hidden"></div>
   <div id="autonomous" class="view hidden"></div>

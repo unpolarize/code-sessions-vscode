@@ -43,6 +43,8 @@ let implPrefs = routeOrDefault(null); // empty remembered route → Grok · grok
 const selectedIds = new Set(); // multi-select on board/pipeline cards
 let lastSel = {id:null, lane:null};
 let didDrag = false;
+// session selected inside the centered item panel (transcript pane)
+let drawerSess={id:'',uuid:'',turns:null,o:null}, drawerPoll=null;
 // pipeline quick filters: kind ('' | bug | feature | auto), project, worked-on window
 let pipeKind = _st.pipeKind || '';
 let pipeProject = _st.pipeProject || '';
@@ -64,12 +66,13 @@ window.addEventListener('message',e=>{const m=e.data;
   if(m.type==='snapshot'){S=m.data; if(m.implPrefs!==undefined)implPrefs=routeOrDefault(m.implPrefs); window.__paintTried=false; render();}
   else if(m.type==='implPrefs'){ implPrefs=routeOrDefault(m.data); if(view==='pipeline') syncPipeRouteBar(); }
   else if(m.type==='loadStatus'){ applyLoadStatus(m.data); }
-  else if(m.type==='detail'){renderDrawer(m.data);}
+  else if(m.type==='detail'){ renderDrawer(m.data); }
   else if(m.type==='setView'){view=m.view;syncSeg();render();}
   else if(m.type==='laneAdded'){ if(groupBy!=='lane'){groupBy='lane';const gb=$('#groupBy');if(gb)gb.value='lane';} if(m.name&&!customLanes.includes(m.name))customLanes.push(m.name); saveState(); renderBoard(); }
   else if(m.type==='openItem'){ view='board'; syncSeg(); render(); if(m.id)openDetail(m.id); }
   else if(m.type==='syncStatus'){ renderSyncPill(m.data); }
-  else if(m.type==='sessions'){ const prev=sessSig(SESS); SESS=m.data||[]; if(view==='sessions')renderSessions(); else if(view==='pipeline'&&sessSig(SESS)!==prev)renderBoard(); }
+  else if(m.type==='sessions'){ const prev=sessSig(SESS); SESS=m.data||[]; if(view==='sessions')renderSessions(); else if(sessSig(SESS)!==prev){ if(view==='pipeline'||view==='board')renderBoard(); else if(view==='flight')renderFlight(); } }
+  else if(m.type==='transcript'){ if(drawerSess.uuid&&m.uuid===drawerSess.uuid){ drawerSess.turns=m; renderDrawerTurns(); } }
   else if(m.type==='sessionExplain'||m.type==='sessionAsk'||m.type==='sessionExplainStatus'){ applySessionExplain(m); }
   else if(m.type==='fleetChat'||m.type==='fleetChatApplied'){ onFleetChatHost(m); }
 });
@@ -106,7 +109,7 @@ function tagMatch(o){ if(!tagFilter.length) return true; const t=objTags(o); ret
 function issueKindOf(o){ const k=o&&o.issue_kind; if(k==='bug'||k==='feature') return k; const t=objTags(o); if(t.indexOf('bug')>=0) return 'bug'; if(t.indexOf('feature')>=0) return 'feature'; return ''; }
 function applySearch(){const q=searchTerm.toLowerCase();
   const vis=c=>!q||(c.textContent||'').toLowerCase().includes(q);
-  ['#board','#pipeline'].forEach(sel=>{ const n=$(sel); if(n) n.querySelectorAll('.card').forEach(c=>{c.style.display=vis(c)?'':'none';}); });
+  ['#board','#pipeline','#flight'].forEach(sel=>{ const n=$(sel); if(n) n.querySelectorAll('.card').forEach(c=>{c.style.display=vis(c)?'':'none';}); });
   ['#inbox','#social'].forEach(sel=>{ const n=$(sel); if(n) n.querySelectorAll('.socialcard').forEach(c=>{c.style.display=vis(c)?'':'none';}); });
   const proj=$('#projects'); if(proj) proj.querySelectorAll('.pcard').forEach(c=>{c.style.display=vis(c)?'':'none';});
   const auto=$('#autonomous'); if(auto) auto.querySelectorAll('.card').forEach(c=>{c.style.display=vis(c)?'':'none';});
@@ -114,7 +117,7 @@ function applySearch(){const q=searchTerm.toLowerCase();
   paintSelection();}
 function applyBoardCmd(cmd){
   if(!cmd)return;
-  const VIEWS=['board','pipeline','issues','inbox','autonomous','projects','sessions','social','calendar','graph','canvas'];
+  const VIEWS=['board','pipeline','flight','issues','inbox','autonomous','projects','sessions','social','calendar','graph','canvas'];
   if(cmd.view && VIEWS.indexOf(cmd.view)>=0) view=cmd.view;
   if(cmd.lane && BOARD_TYPES.indexOf(cmd.lane)>=0) laneSet=cmd.lane;
   if(typeof cmd.tag==='string'){ tagFilter = cmd.tag ? [cmd.tag] : []; saveState(); }
@@ -158,6 +161,7 @@ function syncSeg(){
   boardOnly.forEach(sel=>{ const n=$(sel); if(n) n.style.display = (view==='board'||(view==='pipeline'&&sel==='#sortBy'))?'':'none'; });
   $('#board').classList.toggle('hidden',view!=='board');
   $('#pipeline')&&$('#pipeline').classList.toggle('hidden',view!=='pipeline');
+  $('#flight')&&$('#flight').classList.toggle('hidden',view!=='flight');
   $('#issues').classList.toggle('hidden',view!=='issues');
   $('#inbox').classList.toggle('hidden',view!=='inbox');
   $('#autonomous').classList.toggle('hidden',view!=='autonomous');
@@ -239,7 +243,7 @@ function render(){
     renderOverduePill();
     renderInboxPill();
     renderTagBar();
-    if(view==='board'||view==='pipeline')renderBoard(); else if(view==='issues')renderIssues(); else if(view==='inbox')renderInbox(); else if(view==='autonomous')renderAutonomous(); else if(view==='projects')renderProjects(); else if(view==='sessions')renderSessions(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
+    if(view==='board'||view==='pipeline')renderBoard(); else if(view==='flight')renderFlight(); else if(view==='issues')renderIssues(); else if(view==='inbox')renderInbox(); else if(view==='autonomous')renderAutonomous(); else if(view==='projects')renderProjects(); else if(view==='sessions')renderSessions(); else if(view==='social')renderSocial(); else if(view==='calendar')renderCalendar(); else if(view==='graph')requestAnimationFrame(renderGraph); else renderCanvas();
     applySearch();
     renderError=null;
   } catch (e) {
@@ -370,6 +374,162 @@ function sessionsFor(o){
 function sessStateLabel(s){ const st=s&&s.status;
   return st==='live-local'?'live':st==='active-remote'?'remote':st==='open'?'open':(s&&(s.lastActivity||s.mtime))?agoStr(s.lastActivity||s.mtime):'session'; }
 function sessSig(list){ return (list||[]).map(s=>s.uuid+':'+(s.status||'')+':'+(s.lastActivity||0)).join('|'); }
+// ── live sessions on the board ────────────────────────────────────────────────
+// Every running session surfaces: linked ones pulse on their card, all of them
+// show in a strip above the lanes (unlinked → "ideation / chat").
+function liveSessions(){ return (SESS||[]).filter(s=>s.status==='live-local'||s.status==='active-remote'); }
+function liveRefMap(){
+  const byRef={}, byUuid={};
+  liveSessions().forEach(s=>{ byUuid[s.uuid]=s; (s.planningRefs||[]).forEach(r=>{(byRef[r]=byRef[r]||[]).push(s);}); });
+  return {byRef:byRef, byUuid:byUuid};
+}
+function sessIntent(s){ const hit=(s.labels||[]).find(l=>String(l).indexOf('intent:')===0); return hit?String(hit).slice(7).trim():''; }
+function renderLiveStrip(board){
+  const rows=liveSessions().sort((a,b)=>((b.lastActivity||b.mtime||0)-(a.lastActivity||a.mtime||0)));
+  if(!rows.length)return;
+  const linkedByUuid={};
+  (S&&S.objects||[]).forEach(o=>{ parseLinked(o).forEach(u=>{ (linkedByUuid[u]=linkedByUuid[u]||[]).push(o.id); }); });
+  const head=el('div','livehead','<span class="livedot"></span><b>'+rows.length+' live session'+(rows.length>1?'s':'')+'</b><span style="opacity:.6">running now — linked to the work they advance</span>');
+  board.appendChild(head);
+  const strip=el('div','livestrip');
+  rows.forEach(s=>{
+    const refs=(s.planningRefs||[]).slice();
+    (linkedByUuid[s.uuid]||[]).forEach(id=>{ if(refs.indexOf(id)<0)refs.push(id); });
+    const linked=refs.slice(0,3).map(id=>{const o=(S&&S.objects||[]).find(x=>x.id===id);return o?{id:id,title:o.title||id}:{id:id,title:id};});
+    const intent=sessIntent(s);
+    const kind=linked.length?'':(intent||'ideation / chat');
+    const host=String(s.host||'').replace(/\.(local|lan)$/i,'');
+    const c=el('div','livecard');
+    c.title=(s.title||s.uuid)+' — click to open the session';
+    c.innerHTML='<div class="lt"><span class="livedot"></span><span style="overflow:hidden;text-overflow:ellipsis">'+esc(s.title||'(untitled session)')+'</span></div>'+
+      '<div class="lm">'+(s.project?'<span>['+esc(String(s.project).split('/').pop())+']</span>':'')+
+      (host?'<span>💻 '+esc(host)+'</span>':'')+
+      (s.agent?'<span>'+esc(s.agent)+'</span>':'')+
+      (kind?'<span class="badge">'+esc(kind)+'</span>':'')+
+      linked.map(o=>'<span class="lkp" data-id="'+esc(o.id)+'" title="open '+esc(o.id)+'">↔ '+esc(o.title)+'</span>').join('')+
+      '</div>';
+    c.addEventListener('click',ev=>{
+      const k=ev.target.closest('.lkp');
+      if(k){ openDetail(k.getAttribute('data-id'),s.uuid); return; }
+      // linked session → same centered item panel as a board card; unlinked → conversation viewer
+      if(linked.length){ openDetail(linked[0].id,s.uuid); return; }
+      vscode.postMessage({type:'action',action:'openSession',uuid:s.uuid,title:s.title||s.uuid});
+    });
+    strip.appendChild(c);
+  });
+  board.appendChild(strip);
+}
+// ── ⚡ In flight: one view of everything moving right now, across all types ──
+function renderFlight(){
+  const root=$('#flight'); if(!root)return; root.innerHTML='';
+  if(SESS===null)vscode.postMessage({type:'requestSessions'});
+  armSessPoll();
+  renderLiveStrip(root);
+  const liveMap=liveRefMap();
+  const liveOf=o=>{const out=(liveMap.byRef[o.id]||[]).slice();parseLinked(o).forEach(u=>{const s=liveMap.byUuid[u];if(s&&out.indexOf(s)<0)out.push(s);});return out;};
+  const pool=(S.objects||[]).filter(o=>['task','idea','plan','thought'].indexOf(o.type)>=0&&!CLOSING.has(String(o.status||''))&&String(o.status)!=='converted'&&String(o.status)!=='archived'&&tagMatch(o));
+  const buckets=[
+    {key:'live',label:'▶ live session now',color:'#89d185',rows:[]},
+    {key:'machine',label:'🤖 machine implementing',color:'#ce9178',rows:[]},
+    {key:'claimed',label:'⏳ claimed in progress',color:'#dcdcaa',rows:[]}];
+  pool.forEach(o=>{
+    const lv=liveOf(o);
+    const rec=activeImplOf(o.id);
+    if(lv.length)buckets[0].rows.push({o:o,live:lv,rec:rec});
+    else if(rec&&rec.kind==='running')buckets[1].rows.push({o:o,rec:rec});
+    else if(String(o.status)==='in_progress'||(o.type==='idea'&&String(o.status)==='plan'))buckets[2].rows.push({o:o});
+  });
+  const n=buckets.reduce((a,b)=>a+b.rows.length,0);
+  root.appendChild(el('div','livehead','<b>'+n+' item(s) in flight</b><span style="opacity:.6">live sessions · machine runs · claimed in-progress — every type, one view. Click a card to open it.</span>'));
+  const lanesWrap=el('div','lanes');root.appendChild(lanesWrap);
+  buckets.forEach(bk=>{
+    const col=el('div','col'); col.dataset.lane=bk.key;
+    col.innerHTML='<h3><span class="dot" style="background:'+bk.color+'"></span>'+bk.label+'<span class="cnt">'+bk.rows.length+'</span></h3>';
+    const cards=el('div','cards');
+    if(!bk.rows.length)cards.appendChild(el('div',null,'<div style="opacity:.45;padding:8px;font-size:11px">none</div>'));
+    bk.rows.forEach(r=>{
+      const o=r.o, kind=issueKindOf(o), top=r.live&&r.live[0];
+      const c=el('div','card'+(top?' haslive':'')); c.dataset.id=o.id;
+      c.innerHTML='<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm">'+
+        '<span class="badge">'+o.type+'</span>'+
+        (kind?'<span class="badge '+(kind==='bug'?'kindbug':'kindfeat')+'">'+(kind==='bug'?'🐛':'✨')+' '+kind+'</span>':'')+
+        (o.status?'<span class="badge">'+esc(o.status)+'</span>':'')+
+        (top?'<span class="sesschip live" data-sess="'+esc(top.uuid)+'" title="'+esc((top.title||top.uuid)+(top.host?' · '+top.host:''))+'"><span class="livedot"></span> live'+(r.live.length>1?' ×'+r.live.length:'')+'</span>':'')+
+        (r.rec&&r.rec.kind==='running'?'<span class="runchip">▶ implementing</span><span class="badge">'+esc(r.rec.lane)+'</span>':'')+
+        (o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+
+        (o.project?'<span>· '+esc(String(o.project).split('/').pop())+'</span>':'')+
+        '</div>';
+      c.addEventListener('click',()=>openDetail(o.id,(top&&top.uuid)||(r.rec&&r.rec.session)||''));
+      cards.appendChild(c);
+    });
+    col.appendChild(cards); lanesWrap.appendChild(col);
+  });
+}
+// ── session activity pane inside the centered item panel (same chrome as a board click) ──
+function armDrawerPoll(){
+  if(drawerPoll)return;
+  drawerPoll=setInterval(()=>{
+    if(!drawerSess.uuid)return;
+    const d=$('#drawer'); if(!d||d.classList.contains('hidden'))return;
+    vscode.postMessage({type:'requestTranscript',uuid:drawerSess.uuid});
+  },5000);
+}
+function renderDrawerTurns(){
+  const box=document.getElementById('sessTurns'); if(!box)return;
+  const d=drawerSess.turns;
+  if(!d){ box.innerHTML='<div style="opacity:.55;padding:8px">loading transcript…</div>'; return; }
+  if(d.error){ box.innerHTML='<div style="opacity:.55;padding:8px">transcript unavailable: '+esc(d.error)+'</div>'; return; }
+  if(!d.turns||!d.turns.length){ box.innerHTML='<div style="opacity:.55;padding:8px">no turns captured yet</div>'; return; }
+  const stick=!box.dataset.scrolled||box.scrollTop+box.clientHeight>=box.scrollHeight-40;
+  box.innerHTML=(d.total>d.turns.length?'<div style="opacity:.5;font-size:11px;padding:4px 8px">… '+(d.total-d.turns.length)+' earlier turn(s) — ⤢ Full conversation for everything</div>':'')+
+    d.turns.map(t=>{
+      const tm=t.endMs?new Date(t.endMs).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
+      return '<div class="sessturn">'+
+        (t.user?'<div class="ft u"><span class="who">you</span>'+esc(t.user)+'</div>':'')+
+        (t.assistant?'<div class="ft a"><span class="who">agent'+(tm?' · '+tm:'')+'</span>'+esc(t.assistant)+'</div>':'')+
+        (t.tools&&t.tools.length?'<div class="ft t">🔧 '+esc(t.tools.join(', '))+'</div>':'')+
+        '</div>';
+    }).join('');
+  if(stick)box.scrollTop=box.scrollHeight;
+  box.dataset.scrolled='1';
+}
+function renderSessPane(o){
+  drawerSess.o=o; drawerSess.id=o.id;
+  const ss=sessionsFor(o);
+  if(drawerSess.uuid && ss.map(function(s){return s.uuid;}).indexOf(drawerSess.uuid)<0) drawerSess.uuid='';
+  if(!drawerSess.uuid&&ss.length)drawerSess.uuid=ss[0].uuid;
+  const I=$('#drawerInner'); if(!I)return;
+  let pane=document.getElementById('sessPane');
+  if(!pane){ pane=el('div'); pane.id='sessPane'; I.appendChild(pane); }
+  pane.className='sesspane'+(ss.length?'':' empty');
+  pane.innerHTML='';
+  const tabs=el('div','sesstabs');
+  tabs.appendChild(el('h4',null,'Session activity'));
+  ss.slice(0,6).forEach(s2=>{
+    const live=s2.status==='live-local'||s2.status==='active-remote';
+    const b=el('button','ghost mini'+(s2.uuid===drawerSess.uuid?' on':''),
+      (live?'<span class="livedot"></span> ':'▸ ')+esc(String(s2.title||s2.uuid.slice(0,10)+'…').slice(0,32))+' <span style="opacity:.55">'+esc(sessStateLabel(s2))+'</span>');
+    b.title=(s2.title||s2.uuid)+(s2.host?' · '+s2.host:'')+(s2.agent?' · '+s2.agent:'');
+    b.addEventListener('click',()=>{drawerSess.uuid=s2.uuid;drawerSess.turns=null;renderSessPane(o);vscode.postMessage({type:'requestTranscript',uuid:s2.uuid});});
+    tabs.appendChild(b);
+  });
+  if(!ss.length)tabs.appendChild(el('span','badge','no linked session'));
+  if(ss.length){
+    const og=el('button','ghost mini','⤢ Full conversation'); og.title='open the full conversation viewer';
+    og.addEventListener('click',()=>{ if(drawerSess.uuid)vscode.postMessage({type:'action',action:'openSession',uuid:drawerSess.uuid,title:o.title||o.id}); });
+    tabs.appendChild(og);
+    const cb=el('button','ghost mini','▶ Code Build'); cb.title='resume the linked session (or open a new one with this item’s context)';
+    cb.addEventListener('click',()=>{ if(drawerSess.uuid)vscode.postMessage({type:'action',action:'resumeSession',uuid:drawerSess.uuid,title:o.title||o.id}); else vscode.postMessage({type:'action',action:'openCB',id:o.id}); });
+    tabs.appendChild(cb);
+  }
+  pane.appendChild(tabs);
+  const turns=el('div','sessturns'); turns.id='sessTurns';
+  turns.innerHTML='<div style="opacity:.55;padding:8px">'+(drawerSess.uuid?'loading transcript…':'link a session to see its history here')+'</div>';
+  pane.appendChild(turns);
+  if(drawerSess.turns&&drawerSess.turns.uuid===drawerSess.uuid)renderDrawerTurns();
+  else if(drawerSess.uuid)vscode.postMessage({type:'requestTranscript',uuid:drawerSess.uuid});
+  armDrawerPoll();
+}
 function pipeLaneOf(o){
   const st=String(o.status||'');
   // done wins: an item whose status already routes it out never re-enters
@@ -571,7 +731,16 @@ function renderBoard(){
   if(overdueOnly)objs=objs.filter(isOverdue);
   if(staleOnly)objs=objs.filter(isStale);
   if(fb.querySelector('#bfN'))fb.querySelector('#bfN').textContent=overdueOnly?(objs.length+' overdue'):staleOnly?(objs.length+' stale'):(boardDateVal?(objs.length+' '+laneSet+'(s) '+boardDateField+' '+boardDateVal):'');
+  if(SESS===null)vscode.postMessage({type:'requestSessions'}); // live strip + chips need fleet metadata
+  armSessPoll();
   }
+  renderLiveStrip(board);
+  const liveMap=liveRefMap();
+  const liveFor=o=>{
+    const out=(liveMap.byRef[o.id]||[]).slice();
+    parseLinked(o).forEach(u=>{const s=liveMap.byUuid[u]; if(s&&out.indexOf(s)<0)out.push(s);});
+    return out;
+  };
   const lanesWrap=el('div','lanes');board.appendChild(lanesWrap);
   const shown=(maxLane&&lanes.includes(maxLane))?[maxLane]:lanes;
   shown.forEach(lane=>{
@@ -621,7 +790,8 @@ function renderBoard(){
         const pj=String(o.project||'(no project)');
         if(pj!==prevProj){ prevProj=pj; cards.appendChild(el('div','planehead','⫶ '+esc(pj.split('/').pop()))); }
       }
-      const card=el('div','card'+(bl.has(o.id)?' blocked':'')+(isMax?' compact':'')+(selectedIds.has(o.id)?' selected':'')); card.draggable=true; card.dataset.id=o.id; card.dataset.lane=lane;
+      const liveHere=liveFor(o);
+      const card=el('div','card'+(bl.has(o.id)?' blocked':'')+(isMax?' compact':'')+(selectedIds.has(o.id)?' selected':'')+(liveHere.length?' haslive':'')); card.draggable=true; card.dataset.id=o.id; card.dataset.lane=lane;
       const isThought=o.type==='thought';
       const kind=issueKindOf(o);
       const rec=activeImplOf(o.id);
@@ -644,6 +814,10 @@ function renderBoard(){
         } else if(lane==='in_progress'||lane==='implementation'||lane==='done'){
           extra+='<span class="sesschip none" data-newsess="1" title="no linked session — click to open a Code Build session with this item’s context">▸ no session</span>';
         }
+      } else if(!pipe&&liveHere.length){
+        // per-type Board: pulse items that a running session is advancing
+        const top=liveHere[0];
+        extra+='<span class="sesschip live" data-sess="'+esc(top.uuid)+'" title="'+esc((top.title||top.uuid)+(top.host?' · '+top.host:'')+(top.agent?' · '+top.agent:''))+' — click to open the session">▸ live'+(liveHere.length>1?' ×'+liveHere.length:'')+'</span>';
       }
       if(pipe&&lane==='done'&&o.has_screenshot===false){
         extra+='<span class="badge noshot" data-shot="1" title="done without an implementation screenshot — click to attach one">📷 missing</span>';
@@ -654,11 +828,11 @@ function renderBoard(){
         if(didDrag){ didDrag=false; return; }
         if(ev.shiftKey||ev.metaKey||ev.ctrlKey){ ev.preventDefault(); toggleSelect(o.id,lane,ev); return; }
         const rc=ev.target.closest('.runchip');
-        if(rc){ const su=rc.getAttribute('data-sess'); if(su){vscode.postMessage({type:'action',action:'openSession',uuid:su,title:o.title||o.id}); return;} }
+        if(rc){ const su=rc.getAttribute('data-sess'); if(su){openDetail(o.id,su); return;} }
         const sc=ev.target.closest('.sesschip');
         if(sc){
           if(sc.getAttribute('data-newsess'))vscode.postMessage({type:'action',action:'openCB',id:o.id});
-          else vscode.postMessage({type:'action',action:'openSession',uuid:sc.getAttribute('data-sess'),title:o.title||o.id});
+          else openDetail(o.id,sc.getAttribute('data-sess'));
           return;
         }
         if(ev.target.closest('.noshot')){ vscode.postMessage({type:'action',action:'attachImage',id:o.id}); return; }
@@ -999,8 +1173,8 @@ function applySessionExplain(m){
 }
 function armSessPoll(){
   if(sessPoll)return;
-  // pipeline cards carry live session chips, so keep them fresh there too
-  sessPoll=setInterval(()=>{ if(view==='sessions'||view==='pipeline') vscode.postMessage({type:'requestSessions'}); }, 8000);
+  // pipeline + board + in-flight carry live session chips/strip, so keep them fresh there too
+  sessPoll=setInterval(()=>{ if(view==='sessions'||view==='pipeline'||view==='board'||view==='flight') vscode.postMessage({type:'requestSessions'}); }, 8000);
 }
 function fleetAct(label, title, fn){
   const b=el('button','ghost mini',label); b.title=title; b.addEventListener('click',ev=>{ev.stopPropagation(); fn();}); return b;
@@ -1415,8 +1589,21 @@ function renderCanvas(){ $('#canvas').innerHTML='<div style="font-size:40px">✎
 
 // detail drawer
 let flushAutosave=null;
-function openDetail(id){ vscode.postMessage({type:'show',id:id}); const d=$('#drawer'); d.classList.remove('hidden'); d.classList.add('center'); $('#backdrop').classList.remove('hidden'); $('#drawerInner').innerHTML='<div style="opacity:.6">Loading '+esc(id)+'…</div>'; }
-function closeDrawer(){ if(flushAutosave){try{flushAutosave();}catch(e){}} flushAutosave=null; const d=$('#drawer'); d.classList.add('hidden'); d.classList.remove('center'); $('#backdrop').classList.add('hidden'); }
+function openDetail(id,uuid){
+  if(drawerSess.id!==id){ drawerSess={id:id,uuid:uuid||'',turns:null,o:null}; }
+  else if(uuid && drawerSess.uuid!==uuid){ drawerSess.uuid=uuid; drawerSess.turns=null; }
+  vscode.postMessage({type:'show',id:id});
+  const d=$('#drawer'); d.classList.remove('hidden'); d.classList.add('center');
+  $('#backdrop').classList.remove('hidden');
+  $('#drawerInner').innerHTML='<div style="opacity:.6">Loading '+esc(id)+'…</div>';
+}
+function closeDrawer(){
+  if(flushAutosave){try{flushAutosave();}catch(e){}} flushAutosave=null;
+  drawerSess={id:'',uuid:'',turns:null,o:null};
+  if(drawerPoll){clearInterval(drawerPoll);drawerPoll=null;}
+  const d=$('#drawer'); d.classList.add('hidden'); d.classList.remove('center');
+  $('#backdrop').classList.add('hidden');
+}
 function domainOptions(){ const s=new Set(); ((S&&S.objects)||[]).forEach(x=>{ if(x.type==='domain')s.add(String(x.title||x.id.split('/').pop())); else if(x.domain)s.add(String(x.domain)); }); return [...s].sort(); }
 function projectOptions(){ return ((S&&S.objects)||[]).filter(x=>x.type==='project').map(x=>({id:x.id,title:x.title||x.id.split('/').pop()})).sort((a,b)=>a.title.localeCompare(b.title)); }
 // New-item editor rendered in the side drawer — all fields editable before it's
@@ -1560,8 +1747,8 @@ function renderDrawer(o){
       const top=ss[0], st=top.status||'';
       const chip=el('button','ghost mini sesschip'+(st==='live-local'||st==='active-remote'?' live':''),
         '▸ '+esc(top.title?String(top.title).slice(0,36):top.uuid.slice(0,10)+'…')+' <span style="opacity:.6">'+esc(sessStateLabel(top))+'</span>');
-      chip.title='open the latest linked session'+(top.host?' — '+top.host:'')+(top.agent?' · '+top.agent:'');
-      chip.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openSession',uuid:top.uuid,title:o.title||o.id}));
+      chip.title='show this session in the activity pane'+(top.host?' — '+top.host:'')+(top.agent?' · '+top.agent:'');
+      chip.addEventListener('click',()=>{ drawerSess.uuid=top.uuid; drawerSess.turns=null; renderSessPane(o); });
       sr.appendChild(chip);
       if(ss.length>1){const n2=el('span',null,'+'+(ss.length-1)+' more ↓');n2.style.opacity='.55';n2.style.fontSize='11px';n2.title='all linked sessions are listed at the bottom of the drawer';sr.appendChild(n2);}
     } else sr.appendChild(el('span','badge','(none)'));
@@ -1636,14 +1823,7 @@ function renderDrawer(o){
   const refs=[['Blocked by knowledge',o.blocked_by,true],['Cites',o.cites,false],['Children',o.children,false],['Depends on',o.depends_on,false],['Related',o.related,false]];
   refs.forEach(([label,list,isBlock])=>{ if(!list||!list.length)return; const s=el('div','sec'); s.appendChild(el('h4',null,label+' ('+list.length+')')); const rl=el('div','reflist'); list.forEach(r=>{ const bad=isBlock?(r.status!=='resolved'):(r.exists===false||r.missing); const open = r.id&&!r.missing? ()=>openDetail(r.id) : (r.path? ()=>vscode.postMessage({type:'open',kbPath:r.path}) : null); rl.appendChild(refRow(r,bad,open)); }); s.appendChild(rl); main.appendChild(s); });
   if(o.parent){ const s=el('div','sec'); s.appendChild(el('h4',null,'Parent')); const rl=el('div','reflist'); rl.appendChild(refRow(o.parent,false,()=>openDetail(o.parent.id))); s.appendChild(rl); main.appendChild(s); }
-  if(o.linked_sessions&&o.linked_sessions.length){ const s=el('div','sec'); s.appendChild(el('h4',null,'Linked sessions ('+o.linked_sessions.length+')')); const rl=el('div','reflist');
-    o.linked_sessions.forEach(u=>{
-      const m=(SESS||[]).find(x=>x.uuid===u);
-      const t=m?('▸ '+(m.title||u.slice(0,18)+'…')+' — '+[m.host,m.agent,sessStateLabel(m)].filter(Boolean).join(' · '))
-             :('▸ open chat — '+u.slice(0,18)+'…');
-      rl.appendChild(refRow({id:u,title:t},false,()=>vscode.postMessage({type:'action',action:'openSession',uuid:u})));
-    });
-    s.appendChild(rl); main.appendChild(s); }
+  renderSessPane(o);
 }
 
 // ---- embedded planning chat (host: src/planningChat.ts) --------------------

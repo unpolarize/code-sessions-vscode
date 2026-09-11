@@ -18,7 +18,7 @@ import * as path from "node:path";
 import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
 import { KpClient, type KpResult } from "./kpClient";
 import { DEFAULT_UI_REPOS, screenshotApplies } from "./screenshotPolicy";
-import { pipelineMoveKicks, pipelineStatusForLane, resolveImplRoute, type ImplRoute } from "./planningPipeline";
+import { pipelineMoveKicks, pipelineStatusForLane, resolveImplRoute, resolveOpenCbTarget, type ImplRoute } from "./planningPipeline";
 import { ReloadGate } from "./reloadGate";
 import { startSpan } from "./hostTrace";
 import { syncBridge } from "./storeSync";
@@ -32,6 +32,8 @@ import {
   type FleetSession,
 } from "./sessionFleet";
 import { buildExplainPrompt, invokeClaudeP, parseLabelJson } from "./sessionExplain";
+import { locateStoreTurns, turnsToConversation } from "./storeTranscript";
+import { parseConversation, type ParsedConversation } from "./conversationParser";
 import { invokeAskAgent, pickAskRuntime } from "./askAgent";
 import { isAutomatedSession } from "./automation";
 import { cachedDaemonSessions } from "./daemonClient";
@@ -1080,6 +1082,34 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
 
   const openInCB = async (id: string) => {
     const d = await detailOf(id);
+    // An item with a linked session resumes that session ("＋ New with context"
+    // covers the fresh-conversation case); only fall back to a seeded new chat.
+    const linked = Array.isArray(d?.linked_sessions) ? (d.linked_sessions as string[]) : [];
+    const target = resolveOpenCbTarget(linked, listSessionsRich());
+    if (target.mode === "resume") {
+      const ext = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
+      if (ext && !ext.isActive) {
+        try {
+          await ext.activate();
+        } catch (e) {
+          log?.appendLine(`[planning] Code Build activate failed: ${String(e)}`);
+        }
+      }
+      const cmds = await vscode.commands.getCommands(true);
+      if (cmds.includes("codeBuild.openExternalSession")) {
+        await vscode.commands.executeCommand("codeBuild.openExternalSession", {
+          source: target.source,
+          sessionId: target.uuid,
+          cwd: target.cwd,
+          title: target.title,
+        });
+        void vscode.window.setStatusBarMessage(
+          `Code Build is opening ${id}'s linked session ${target.uuid.slice(0, 8)}…`,
+          8000,
+        );
+        return;
+      }
+    }
     const refs = linkedRefs(d);
     let seed = d ? agentPrompt("execute", d) : id;
     if (refs.length) {
@@ -2002,6 +2032,38 @@ exec "${chatInv.node}" "${chatInv.cli}" "$@"
     runKp: (args, input) => runKp(args, input),
     onAction: dashAction,
     listSessions: () => listSessionsRich(),
+    // Item-panel session pane: condensed turns from the git store (syncs
+    // live for daemon-captured sessions), native ~/.claude JSONL as fallback.
+    getTranscript: (uuid: string) => {
+      try {
+        const ref = locateStoreTurns(uuid);
+        let conv: ParsedConversation | null = ref ? turnsToConversation(ref, uuid) : null;
+        if (!conv || !conv.turns.length) {
+          const root = path.join(os.homedir(), ".claude", "projects");
+          let jsonl = "";
+          try {
+            for (const d of readdirSync(root)) {
+              const p = path.join(root, d, uuid + ".jsonl");
+              if (existsSync(p)) { jsonl = p; break; }
+            }
+          } catch { /* no native transcripts root */ }
+          if (jsonl) conv = parseConversation(jsonl);
+        }
+        const all = conv?.turns ?? [];
+        return {
+          title: conv?.title ?? "",
+          total: all.length,
+          turns: all.slice(-40).map((t) => ({
+            user: (t.userText || "").slice(0, 2500),
+            assistant: (t.assistantText || "").slice(0, 4000),
+            tools: (t.toolCalls || []).map((tc) => tc.name).slice(0, 16),
+            endMs: t.turnEndMs ?? t.assistantStartMs ?? t.userTimestampMs ?? null,
+          })),
+        };
+      } catch (e) {
+        return { error: String(e), total: 0, turns: [] };
+      }
+    },
     noteActivity: () => syncBridge()?.noteActivity(),
     getSyncStatus: () => syncBridge()?.getStatus(),
     onSyncStatus: (cb) => {

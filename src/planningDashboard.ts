@@ -23,6 +23,8 @@ export interface DashboardDeps {
   onAction: (msg: { type: string; [k: string]: unknown }) => void | Promise<void>;
   /** rich session list from the ~/.sessions git store, for the Sessions view */
   listSessions?: () => unknown[];
+  /** condensed session transcript for the item panel's session-activity pane */
+  getTranscript?: (uuid: string) => { title?: string; total?: number; turns?: unknown[]; error?: string };
   /** the user is interacting with the board — arm aggressive store polling */
   noteActivity?: () => void;
   /** current store-sync status for the header indicator */
@@ -148,6 +150,12 @@ export class DashboardPanel {
       case "requestSessions":
         this.post({ type: "sessions", data: this.deps.listSessions?.() ?? [] });
         break;
+      case "requestTranscript": {
+        const uuid = String(m.uuid ?? "");
+        const t = uuid && this.deps.getTranscript ? this.deps.getTranscript(uuid) : { error: "transcript source unavailable", turns: [] };
+        this.post({ type: "transcript", uuid, ...t });
+        break;
+      }
       case "syncNow":
         void vscode.commands.executeCommand("codeSessions.syncStoresNow");
         break;
@@ -263,6 +271,7 @@ export class DashboardPanel {
   <div class="seg" id="viewSeg">
     <button data-view="board" class="on">Board</button>
     <button data-view="pipeline" title="Coding pipeline: bugs/features/auto items — inbox → approved → in progress → implementation → done">🚀 Pipeline</button>
+    <button data-view="flight" title="Everything in flight across all types — items with a live session, machine implement runs, claimed in-progress work">⚡ In flight</button>
     <button data-view="issues">Bugs / Features</button>
     <button data-view="inbox">Inbox</button>
     <button data-view="autonomous">🤖 Auto</button>
@@ -348,6 +357,7 @@ export class DashboardPanel {
 <div id="main">
   <div id="board" class="view"></div>
   <div id="pipeline" class="view hidden"></div>
+  <div id="flight" class="view hidden"></div>
   <div id="issues" class="view hidden"></div>
   <div id="inbox" class="view hidden"></div>
   <div id="autonomous" class="view hidden"></div>

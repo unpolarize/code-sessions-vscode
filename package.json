@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.69.1",
+  "version": "1.69.6",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -867,7 +867,9 @@
         },
         "codeSessions.automation.titlePatterns": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [
             "you are an autonomous overnight",
             "you are an autonomous",
@@ -891,14 +893,34 @@
         },
         "codeSessions.automation.extraEntrypoints": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["sdk", "routine", "headless", "cron", "launchd", "api"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "sdk",
+            "routine",
+            "headless",
+            "cron",
+            "launchd",
+            "api"
+          ],
           "description": "Entrypoints treated as automated in addition to anything outside the interactive allow-list (cli, claude-code, claude-vscode, claude-jetbrains, sdk-cli)."
         },
         "codeSessions.automation.labels": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["cron", "automated", "headless", "launchd", "fleet", "night-loop", "night-ideate", "night-implement"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "cron",
+            "automated",
+            "headless",
+            "launchd",
+            "fleet",
+            "night-loop",
+            "night-ideate",
+            "night-implement"
+          ],
           "description": "Git-store extras.labels values that mark a session as automated."
         },
         "codeSessions.showHidden": {

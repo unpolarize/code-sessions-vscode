@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.69.6 — 2026-09-10
+
+### Fix: linked-session resume handed CB the claude store dir, not the cwd
+
+- 1.69.5's item-view resume passed the session's raw `project_path` — for claude that's the dash-encoded `~/.claude/projects/-Users-…` store dir — so Code Build re-encoded it, missed the transcript, and showed "Could not read claude transcript … Starting fresh." `resolveOpenCbTarget` now decodes the dash-basename form to the real cwd (same heuristic as the session rows' `sessionCwd`); grok / already-decoded paths pass through.
+
+## 1.69.5 — 2026-09-10
+
+### Item-view "Open in Code Build" resumes the linked session
+
+- The item panel's **Open in Code Build** action now resumes the item's most recently active linked session via `codeBuild.openExternalSession` (right backend + cwd) instead of always spawning a new seeded conversation. "＋ New with context" keeps covering the fresh-session case; items with no locally-resumable linked session fall back to the seeded new chat as before.
+- (kp: ideas/cb-open-in-code-build-from-bug-task-item-view-op)
+
+## 1.69.4 — 2026-09-10
+
+### In-flight opens the same centered item panel as the board
+
+- **⚡ In-flight / session-chip / live-strip clicks** now open the same centered `#drawer.center` item panel as a Board or Pipeline card (title, fields, notes, screenshots, agent actions). The full-window `#focus` overlay is gone.
+- **Session activity** sits in the bottom third of that panel: linked-session tabs, condensed live transcript (5s poll), Full conversation / Code Build. Unlinked live-strip cards still open the conversation viewer.
+- (kp: tasks/csv-in-flight-item-click-should-open-the-same-ce)
+
+## 1.69.3 — 2026-09-10
+
+### ⚡ In-flight view
+
+- New **⚡ In flight** tab: live-session / machine-implementing / claimed-in-progress buckets across every type, with the live strip on top.
+
+## 1.69.2 — 2026-09-10
+
+### Live sessions strip on Board and Pipeline
+
+- Full-width **live strip** of running sessions on Board and Pipeline. Linked sessions chip to their item; unlinked ones labeled ideation / chat. Cards a running session is advancing get a pulsing live chip and green border.
+
 ## 1.69.1 — 2026-09-09
 
 ### Sessions Activity stays folded across job ticks

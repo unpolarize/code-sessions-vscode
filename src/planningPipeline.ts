@@ -41,3 +41,42 @@ export function pipelineStatusForLane(type: string, lane: string): string | null
   if (lane === "done") return "done";
   return null;
 }
+
+/** Minimal session shape resolveOpenCbTarget needs (structural — FleetSession fits). */
+export type OpenCbSession = {
+  uuid: string;
+  source: string;
+  projectPath?: string;
+  mtime?: number;
+  title?: string;
+};
+
+export type OpenCbTarget =
+  | { mode: "resume"; uuid: string; source: string; cwd: string; title?: string }
+  | { mode: "new" };
+
+/** Item-view "Open in Code Build": resume the item's linked session when one is
+ * resumable locally (codeBuild.openExternalSession needs a source + cwd, so
+ * git-store-only rows don't qualify); otherwise open a new seeded conversation. */
+export function resolveOpenCbTarget(
+  linked: readonly string[] | undefined,
+  sessions: readonly OpenCbSession[],
+): OpenCbTarget {
+  const ids = new Set((linked ?? []).filter(Boolean));
+  if (ids.size === 0) return { mode: "new" };
+  const hit = sessions
+    .filter((s) => ids.has(s.uuid) && s.source !== "git" && !!s.projectPath)
+    .sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0))[0];
+  if (!hit) return { mode: "new" };
+  return { mode: "resume", uuid: hit.uuid, source: hit.source, cwd: decodeSessionCwd(hit.projectPath!), title: hit.title };
+}
+
+/** Claude rows carry the `~/.claude/projects/-Users-...` store dir, not the cwd;
+ * CB re-encodes whatever cwd it is handed to find the transcript, so the raw
+ * form must be decoded here (same dash-basename heuristic as SessionsProvider.
+ * decodeClaudeProjectDir). Grok / already-decoded paths pass through. */
+function decodeSessionCwd(projectPath: string): string {
+  const base = projectPath.split("/").filter(Boolean).pop() ?? "";
+  if (!base.startsWith("-")) return projectPath;
+  return "/" + base.replace(/^-/, "").replace(/-/g, "/");
+}

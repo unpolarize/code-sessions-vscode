@@ -27,6 +27,7 @@
       }
     }
   };
+  window.__snapshot = snapshot;
   window.__host.post({
     type: "snapshot",
     data: snapshot,
