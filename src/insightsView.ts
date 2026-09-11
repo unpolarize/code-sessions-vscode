@@ -44,6 +44,12 @@ import {
   MEMORY_SILO_CARD_CSS,
 } from "./memoryWorktreeSilo";
 import {
+  computeCompactionFidelity,
+  observationsFromSessionRows,
+  renderCompactionFidelitySectionHtml,
+  COMPACTION_FIDELITY_CARD_CSS,
+} from "./compactionFidelity";
+import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
   DEFAULT_EXTRA_ENTRYPOINTS,
@@ -588,6 +594,7 @@ ${LOOP_ECON_CARD_CSS}
 ${SUBAGENT_BOOTSTRAP_CARD_CSS}
 ${FORK_CACHE_BLEED_CARD_CSS}
 ${MEMORY_SILO_CARD_CSS}
+${COMPACTION_FIDELITY_CARD_CSS}
 `;
 
 function renderDashboard(opts: {
@@ -613,8 +620,10 @@ function renderDashboard(opts: {
   forkCacheBleedHtml?: string;
   /** Auto-memory worktree silo doctor HTML ("" when no repo has ≥2 silos). */
   memorySiloHtml?: string;
+  /** Compaction fidelity leaderboard HTML ("" when no KP-linked compact events). */
+  compactionFidelityHtml?: string;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml, subagentBootstrapHtml, forkCacheBleedHtml, memorySiloHtml } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml, subagentBootstrapHtml, forkCacheBleedHtml, memorySiloHtml, compactionFidelityHtml } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -864,6 +873,7 @@ ${focusSession
 ${loopEconomicsHtml ? `<h2 style="margin-top: 28px;">Loop runaway economics</h2>${loopEconomicsHtml}` : ""}
 ${subagentBootstrapHtml ? `<h2 style="margin-top: 28px;">Subagent bootstrap economics</h2>${subagentBootstrapHtml}` : ""}
 ${forkCacheBleedHtml ? `<h2 style="margin-top: 28px;">Fork-cache inheritance bleed</h2>${forkCacheBleedHtml}` : ""}
+${compactionFidelityHtml ? `<h2 style="margin-top: 28px;">Compaction fidelity</h2>${compactionFidelityHtml}` : ""}
 ${memorySiloHtml ? `<h2 style="margin-top: 28px;">Auto-memory worktree silos</h2>${memorySiloHtml}` : ""}
 
 ${effortDriftHtml ? `<h2 style="margin-top: 28px;">Effort drift canary</h2>${effortDriftHtml}` : ""}
@@ -1017,6 +1027,9 @@ export async function openInsightsView(
   // ~/.claude/projects/*/memory, grouped by git common-dir / worktree stem.
   // Optional bleed chip uses the same 8-day session window.
   let memorySiloHtml = "";
+  // Compaction fidelity leaderboard: KP-linked compact events ranked by
+  // post-compact Acceptance-bullet retention (anti-lobotomy).
+  let compactionFidelityHtml = "";
   try {
     if (store) {
       const sinceSec = Math.floor(Date.now() / 1000) - 8 * 86400;
@@ -1078,6 +1091,15 @@ export async function openInsightsView(
       } catch {
         /* advisory card — never block Insights */
       }
+      try {
+        compactionFidelityHtml = renderCompactionFidelitySectionHtml(
+          computeCompactionFidelity(observationsFromSessionRows(canaryRows), {
+            openSessionCommand: "codeSessions.openSession",
+          }),
+        );
+      } catch {
+        /* advisory card — never block Insights */
+      }
     } else {
       try {
         memorySiloHtml = renderMemorySiloDoctorHtml(clusterMemorySilos(scanClaudeMemorySilos()));
@@ -1110,6 +1132,7 @@ export async function openInsightsView(
       subagentBootstrapHtml,
       forkCacheBleedHtml,
       memorySiloHtml,
+      compactionFidelityHtml,
     });
     return;
   }
@@ -1144,5 +1167,6 @@ export async function openInsightsView(
     subagentBootstrapHtml,
     forkCacheBleedHtml,
     memorySiloHtml,
+    compactionFidelityHtml,
   });
 }

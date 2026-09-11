@@ -29,6 +29,7 @@ import {
   formatMergeCandidatesList,
   scanClaudeMemorySilos,
 } from "./memoryWorktreeSilo";
+import { EXPORT_FIDELITY_JSON_COMMAND } from "./compactionFidelity";
 import {
   PIN_SEMANTICS_COMMAND,
   detectEffortDriftFromSessions,
@@ -3324,6 +3325,21 @@ export function activate(ctx: vscode.ExtensionContext) {
       vscode.window.showInformationMessage(
         `Copied unset snippet for ${result.reasons.map((r) => r.envVar).join(", ")}. Restart Claude Code from a shell where they are unset.`,
       );
+    }),
+    // Compaction fidelity leaderboard: copy night-report JSON (read-only).
+    vscode.commands.registerCommand(EXPORT_FIDELITY_JSON_COMMAND, async (snippet?: unknown) => {
+      try {
+        if (typeof snippet === "string" && snippet.trim().length > 0) {
+          await vscode.env.clipboard.writeText(snippet);
+          vscode.window.showInformationMessage("Copied compaction-fidelity leaderboard JSON.");
+          return;
+        }
+        vscode.window.showInformationMessage(
+          "Open Insights and use Export JSON on the Compaction fidelity card (needs KP-linked compact events).",
+        );
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Compaction-fidelity export failed: ${e?.message || e}`);
+      }
     }),
     // Auto-memory silo doctor: copy the merge-candidates list (read-only).
     vscode.commands.registerCommand(COPY_MEMORY_SILO_MERGE_COMMAND, async (snippet?: unknown) => {

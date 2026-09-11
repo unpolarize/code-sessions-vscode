@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.71.0 — 2026-09-10
+
+### Compaction fidelity leaderboard (Insights)
+
+- **Insights · Compaction fidelity:** ranks backends (claude / grok / codex / …) by **post-compact KP-acceptance retention** — % of Acceptance bullets still recoverable in the post-compact transcript or handoff pack (anti-lobotomy). Unlinked sessions are excluded from the denominator (not scored as 0%). Backends below the minimum compact-event sample (default 2) are listed but not ranked, so an empty corpus cannot fake a leaderboard. Click-through to 1–3 worst-fidelity example sessions per backend; **Export JSON** copies the same rank order for night reports. v1 heuristic is case-insensitive substring match (no LLM judge). Read-only — never triggers a compact. Pure module `src/compactionFidelity.ts` + fixture unit tests.
+- (kp: ideas/csv-compaction-fidelity-leaderboard-cross-backen)
+
 ## 1.70.0 — 2026-09-10
 
 ### Auto-memory worktree silo doctor (Insights)
