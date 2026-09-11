@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Background-session lifecycle harness</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --vscode-font-family: ui-sans-serif, system-ui, sans-serif;
+  --vscode-editor-foreground: #ccc;
+  --vscode-editor-background: #1e1e1e;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-panel-border: #3c3c3c;
+  --vscode-textLink-foreground: #4fc1ff;
+  --vscode-editorWidget-background: #252526;
+  --vscode-sideBar-background: #252526;
+  --vscode-inputValidation-warningForeground: #e8a838;
+  --vscode-charts-green: #5eba7d;
+  --vscode-editor-font-family: ui-monospace, Menlo, monospace;
+  --card-bg: #252526;
+  --border: #3c3c3c;
+  --muted: #9d9d9d;
+  --accent: #4fc1ff;
+  --fg: #ccc;
+  --bg: #1e1e1e;
+}
+body { font-family: var(--vscode-font-family); color: var(--fg); background: var(--bg); margin: 0; padding: 16px 24px; }
+h2 { margin: 24px 0 8px 0; font-size: 14px; }
+.bsl-card { background: var(--card-bg, var(--vscode-editorWidget-background, #1e1e1e)); border: 1px solid var(--border, var(--vscode-panel-border, #333)); border-radius: 6px; padding: 12px 14px; margin-top: 8px; }
+.bsl-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.bsl-title { font-size: 11px; text-transform: uppercase; color: var(--muted, var(--vscode-descriptionForeground, #999)); letter-spacing: 0.5px; font-weight: 600; }
+.bsl-chip { display: inline-block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--vscode-descriptionForeground, #999); border: 1px solid var(--vscode-panel-border, #333); border-radius: 8px; padding: 1px 7px; vertical-align: middle; }
+.bsl-native-chip { color: var(--vscode-charts-green, #5eba7d); border-color: var(--vscode-charts-green, #5eba7d); }
+.bsl-shim-chip { color: var(--vscode-inputValidation-warningForeground, #e8a838); border-color: var(--vscode-inputValidation-warningForeground, #e8a838); }
+.bsl-absent-chip { color: var(--muted, var(--vscode-descriptionForeground, #999)); }
+.bsl-sub { font-size: 12px; color: var(--muted, var(--vscode-descriptionForeground, #999)); line-height: 1.45; margin-bottom: 8px; }
+.bsl-table-wrap { overflow-x: auto; margin-top: 2px; }
+.bsl-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 12px; }
+.bsl-table th, .bsl-table td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border, var(--vscode-panel-border, #333)); vertical-align: top; }
+.bsl-table th { color: var(--muted, var(--vscode-descriptionForeground, #999)); font-weight: 500; font-size: 10px; text-transform: uppercase; }
+.bsl-backend { font-family: var(--vscode-editor-font-family, monospace); font-weight: 600; }
+.bsl-session { font-size: 12px; }
+.bsl-link { color: var(--accent, var(--vscode-textLink-foreground, #4af)); text-decoration: none; }
+.bsl-link:hover { text-decoration: underline; }
+.bsl-cell { font-size: 11px; white-space: nowrap; }
+.bsl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.bsl-native .bsl-dot { background: var(--vscode-charts-green, #5eba7d); }
+.bsl-shim .bsl-dot { background: var(--vscode-inputValidation-warningForeground, #e8a838); }
+.bsl-unsupported .bsl-dot { background: var(--muted, var(--vscode-descriptionForeground, #666)); }
+.bsl-native { color: var(--vscode-charts-green, #5eba7d); }
+.bsl-shim { color: var(--vscode-inputValidation-warningForeground, #e8a838); }
+.bsl-unsupported { color: var(--muted, var(--vscode-descriptionForeground, #999)); }
+.bsl-verb { font-size: 10px; color: var(--accent, var(--vscode-textLink-foreground, #4af)); text-decoration: none; font-family: var(--vscode-editor-font-family, monospace); }
+.bsl-verb:hover { text-decoration: underline; }
+.bsl-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--muted, var(--vscode-descriptionForeground, #999)); }
+.bsl-help { font-size: 11px; color: var(--muted, var(--vscode-descriptionForeground, #999)); margin-top: 8px; line-height: 1.45; }
+.bsl-help code { font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; }
+.bsl-disclaimer { font-size: 11px; color: var(--muted, var(--vscode-descriptionForeground, #999)); margin-top: 8px; line-height: 1.45; border-top: 1px solid var(--border, var(--vscode-panel-border, #333)); padding-top: 8px; }
+</style>
+</head>
+<body>
+<h2>Background-session lifecycle</h2>
+<section class="bsl-card" data-schema="code-sessions/background-session-lifecycle@1">
+  <div class="bsl-head"><span class="bsl-title">Background-session lifecycle</span>
+    <span class="bsl-chip" title="Traffic-light: native ACP/CLI · CB host shim · unsupported">3 open</span>
+    <span class="bsl-chip bsl-native-chip" title="Native ACP or CLI advertisement">5 native</span>
+    <span class="bsl-chip bsl-shim-chip" title="CB host shim (typically process-kill stop)">1 shim</span>
+    <span class="bsl-chip bsl-absent-chip" title="No advertisement and no host shim">9 absent</span>
+  </div>
+  <div class="bsl-sub">Capability × action matrix for open background/detached sessions. Cells are <b>native</b> (ACP/CLI advertised), <b>shim</b> (CB host teardown), or <b>—</b> (unsupported). Probe-sourced — Claude is not assumed to have 2.1.251 verbs without a version/help advertisement. Read-only; no action buttons.</div>
+  <div class="bsl-table-wrap"><table class="bsl-table"><tr><th>backend</th><th>session</th><th>attach</th><th>logs</th><th>stop</th><th>respawn</th><th>rm</th></tr>
+    <tr>
+      <td class="bsl-backend">claude</td>
+      <td class="bsl-session"><a class="bsl-link" href="#claude-bg-1">Claude background worker</a></td>
+      <td class="bsl-cell bsl-native" title="native Claude CLI 2.1.251"><span class="bsl-dot" aria-label="native"></span> native<br><a class="bsl-verb" href="https://code.claude.com/docs/en/changelog" title="claude attach claude-bg-1">claude attach</a></td>
+      <td class="bsl-cell bsl-native"><span class="bsl-dot"></span> native<br><a class="bsl-verb" href="https://code.claude.com/docs/en/changelog">claude logs</a></td>
+      <td class="bsl-cell bsl-native"><span class="bsl-dot"></span> native<br><a class="bsl-verb" href="https://code.claude.com/docs/en/changelog">claude stop</a></td>
+      <td class="bsl-cell bsl-native"><span class="bsl-dot"></span> native<br><a class="bsl-verb" href="https://code.claude.com/docs/en/changelog">claude respawn</a></td>
+      <td class="bsl-cell bsl-native"><span class="bsl-dot"></span> native<br><a class="bsl-verb" href="https://code.claude.com/docs/en/changelog">claude rm</a></td>
+    </tr>
+    <tr>
+      <td class="bsl-backend">grok</td>
+      <td class="bsl-session"><a class="bsl-link" href="#grok-bg-1">Grok detached run</a></td>
+      <td class="bsl-cell bsl-unsupported"><span class="bsl-dot" aria-label="unsupported"></span> —</td>
+      <td class="bsl-cell bsl-unsupported"><span class="bsl-dot"></span> —</td>
+      <td class="bsl-cell bsl-shim" title="CB host shim (process kill) — not session/stop"><span class="bsl-dot" aria-label="shim"></span> shim</td>
+      <td class="bsl-cell bsl-unsupported"><span class="bsl-dot"></span> —</td>
+      <td class="bsl-cell bsl-unsupported"><span class="bsl-dot"></span> —</td>
+    </tr>
+    <tr>
+      <td class="bsl-backend">codex</td>
+      <td class="bsl-session"><a class="bsl-link" href="#codex-bg-1">Codex overnight</a></td>
+      <td class="bsl-cell bsl-unsupported"><span class="bsl-dot" aria-label="unsupported"></span> —</td>
+      <td class="bsl-cell bsl-unsupported"><span class="bsl-dot"></span> —</td>
+      <td class="bsl-cell bsl-unsupported"><span class="bsl-dot"></span> —</td>
+      <td class="bsl-cell bsl-unsupported"><span class="bsl-dot"></span> —</td>
+      <td class="bsl-cell bsl-unsupported"><span class="bsl-dot"></span> —</td>
+    </tr>
+  </table></div>
+  <div class="bsl-legend"><span class="bsl-cell bsl-native"><span class="bsl-dot"></span> native ACP/CLI</span>
+    <span class="bsl-cell bsl-shim"><span class="bsl-dot"></span> CB host shim</span>
+    <span class="bsl-cell bsl-unsupported"><span class="bsl-dot"></span> unsupported</span></div>
+  <div class="bsl-help">Claude 2.1.251 verbs (<code>claude attach/logs/stop/respawn/rm</code>) deep-link only when the probe reports CLI ≥ 2.1.251 or lists the verb. ACP <code>session/stop</code> is rare; a Stop shim is host kill, not a protocol stop.</div>
+  <div class="bsl-disclaimer">Read-only matrix — does not send attach/stop/rm. Distinct from CB session/stop force-teardown (kill shim only) and ghost-teammate rehydrate (team mailbox). Honest absent &gt; fake Codex/Grok buttons.</div>
+</section>
+</body>
+</html>

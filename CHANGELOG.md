@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.73.0 — 2026-09-11
+
+### Background-session lifecycle matrix (Insights)
+
+- **Insights · Background-session lifecycle:** read-only capability × action matrix for open background/detached sessions with columns **Attach / Logs / Stop / Respawn / Rm**. Each cell is traffic-light **native ACP/CLI** · **CB host shim** · **unsupported**, sourced from a capability probe (advertised ACP methods, CLI verbs, Claude CLI version, host shims) — never from `source === claude` optimism. Claude 2.1.251 verbs (`claude attach/logs/stop/respawn/rm`) deep-link only when the probe reports CLI ≥ 2.1.251 or lists the verb. Codex/Grok stay honest-absent unless the probe advertises a method or a stop shim. Distinct from CB session/stop force-teardown (kill path only) and ghost-teammate rehydrate. No action buttons in v1. Pure module `src/backgroundSessionLifecycle.ts` + fixture unit tests.
+- (kp: ideas/csv-background-session-lifecycle-matrix-card-att)
+
 ## 1.72.0 — 2026-09-11
 
 ### Incomplete-continue tax card (Insights)

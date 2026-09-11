@@ -57,6 +57,12 @@ import {
   INCOMPLETE_CONTINUE_TAX_CARD_CSS,
 } from "./incompleteContinueTax";
 import {
+  computeBackgroundSessionLifecycle,
+  renderBackgroundSessionLifecycleHtml,
+  sessionsFromStoreRows as lifecycleSessionsFromStoreRows,
+  BACKGROUND_SESSION_LIFECYCLE_CARD_CSS,
+} from "./backgroundSessionLifecycle";
+import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
   DEFAULT_EXTRA_ENTRYPOINTS,
@@ -603,6 +609,7 @@ ${FORK_CACHE_BLEED_CARD_CSS}
 ${MEMORY_SILO_CARD_CSS}
 ${COMPACTION_FIDELITY_CARD_CSS}
 ${INCOMPLETE_CONTINUE_TAX_CARD_CSS}
+${BACKGROUND_SESSION_LIFECYCLE_CARD_CSS}
 `;
 
 function renderDashboard(opts: {
@@ -632,8 +639,10 @@ function renderDashboard(opts: {
   compactionFidelityHtml?: string;
   /** Incomplete-continue tax HTML ("" when no say-the-word soft-abandons). */
   incompleteContinueHtml?: string;
+  /** Background-session lifecycle matrix HTML ("" when no open background/detached sessions). */
+  backgroundLifecycleHtml?: string;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml, subagentBootstrapHtml, forkCacheBleedHtml, memorySiloHtml, compactionFidelityHtml, incompleteContinueHtml } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml, subagentBootstrapHtml, forkCacheBleedHtml, memorySiloHtml, compactionFidelityHtml, incompleteContinueHtml, backgroundLifecycleHtml } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -885,6 +894,7 @@ ${subagentBootstrapHtml ? `<h2 style="margin-top: 28px;">Subagent bootstrap econ
 ${forkCacheBleedHtml ? `<h2 style="margin-top: 28px;">Fork-cache inheritance bleed</h2>${forkCacheBleedHtml}` : ""}
 ${compactionFidelityHtml ? `<h2 style="margin-top: 28px;">Compaction fidelity</h2>${compactionFidelityHtml}` : ""}
 ${incompleteContinueHtml ? `<h2 style="margin-top: 28px;">Incomplete-continue tax</h2>${incompleteContinueHtml}` : ""}
+${backgroundLifecycleHtml ? `<h2 style="margin-top: 28px;">Background-session lifecycle</h2>${backgroundLifecycleHtml}` : ""}
 ${memorySiloHtml ? `<h2 style="margin-top: 28px;">Auto-memory worktree silos</h2>${memorySiloHtml}` : ""}
 
 ${effortDriftHtml ? `<h2 style="margin-top: 28px;">Effort drift canary</h2>${effortDriftHtml}` : ""}
@@ -1043,6 +1053,9 @@ export async function openInsightsView(
   let compactionFidelityHtml = "";
   // Incomplete-continue tax: say-the-word / continue-offer after Write/Edit.
   let incompleteContinueHtml = "";
+  // Background-session lifecycle matrix: attach/logs/stop/respawn/rm
+  // capability probe (native | shim | unsupported). Read-only.
+  let backgroundLifecycleHtml = "";
   try {
     if (store) {
       const sinceSec = Math.floor(Date.now() / 1000) - 8 * 86400;
@@ -1137,6 +1150,16 @@ export async function openInsightsView(
       } catch {
         /* advisory card — never block Insights */
       }
+      try {
+        backgroundLifecycleHtml = renderBackgroundSessionLifecycleHtml(
+          computeBackgroundSessionLifecycle(lifecycleSessionsFromStoreRows(canaryRows), {
+            nowMs: Date.now(),
+          }),
+          { openSessionCommand: "codeSessions.openSession" },
+        );
+      } catch {
+        /* advisory card — never block Insights */
+      }
     } else {
       try {
         memorySiloHtml = renderMemorySiloDoctorHtml(clusterMemorySilos(scanClaudeMemorySilos()));
@@ -1171,6 +1194,7 @@ export async function openInsightsView(
       memorySiloHtml,
       compactionFidelityHtml,
       incompleteContinueHtml,
+      backgroundLifecycleHtml,
     });
     return;
   }
@@ -1207,5 +1231,6 @@ export async function openInsightsView(
     memorySiloHtml,
     compactionFidelityHtml,
     incompleteContinueHtml,
+    backgroundLifecycleHtml,
   });
 }
