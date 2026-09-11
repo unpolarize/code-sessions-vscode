@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.70.0 — 2026-09-10
+
+### Auto-memory worktree silo doctor (Insights)
+
+- **Insights · Auto-memory worktree silos:** scans `~/.claude/projects/*/memory` and warns when the same repo has **≥2 MEMORY.md silos** — Claude keys auto-memory by slugified cwd, so each `.claude/worktrees/<name>` checkout is a separate silo while operators expect repo-scoped memory (#88579). Groups by git common-dir when the decoded cwd exists, else by a `--claude-worktrees-` / `--git-worktrees-` stem (dash-decode is lossy on hyphenated paths). Card lists diverging cwds with bytes / ~tokens (bytes/4), **Copy merge candidates**, and **Open silo paths**. Optional **bleed?** chip when a child session start lines up with a silo's mtime (#87613 class). Read-only — never deletes memory. Codex `~/.codex/memories/` is global (not per-cwd) so it does not fragment; OpenCode analog unknown in v1. Pure module `src/memoryWorktreeSilo.ts` + fixture unit tests.
+- (kp: ideas/csv-auto-memory-worktree-silo-doctor-detect-memo)
+
 ## 1.69.6 — 2026-09-10
 
 ### Fix: linked-session resume handed CB the claude store dir, not the cwd

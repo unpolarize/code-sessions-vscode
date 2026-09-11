@@ -23,6 +23,13 @@ import { computeWorkspaceRulesDoctor, openInsightsView } from "./insightsView";
 import { exportChecklist } from "./rulesDoctor";
 import { runMessagingDoctor } from "./messagingDoctor";
 import {
+  COPY_MEMORY_SILO_MERGE_COMMAND,
+  OPEN_MEMORY_SILO_PATHS_COMMAND,
+  clusterMemorySilos,
+  formatMergeCandidatesList,
+  scanClaudeMemorySilos,
+} from "./memoryWorktreeSilo";
+import {
   PIN_SEMANTICS_COMMAND,
   detectEffortDriftFromSessions,
   formatPinnedSemanticsNote,
@@ -3317,6 +3324,63 @@ export function activate(ctx: vscode.ExtensionContext) {
       vscode.window.showInformationMessage(
         `Copied unset snippet for ${result.reasons.map((r) => r.envVar).join(", ")}. Restart Claude Code from a shell where they are unset.`,
       );
+    }),
+    // Auto-memory silo doctor: copy the merge-candidates list (read-only).
+    vscode.commands.registerCommand(COPY_MEMORY_SILO_MERGE_COMMAND, async (snippet?: unknown) => {
+      try {
+        const text =
+          typeof snippet === "string" && snippet.trim().length > 0
+            ? snippet
+            : formatMergeCandidatesList(clusterMemorySilos(scanClaudeMemorySilos()));
+        await vscode.env.clipboard.writeText(text);
+        vscode.window.showInformationMessage("Copied auto-memory silo merge candidates (read-only; do not delete).");
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Memory silo merge list failed: ${e?.message || e}`);
+      }
+    }),
+    // Auto-memory silo doctor: open MEMORY.md (or reveal the memory dir).
+    vscode.commands.registerCommand(OPEN_MEMORY_SILO_PATHS_COMMAND, async (...args: unknown[]) => {
+      const flat: string[] = [];
+      const walk = (v: unknown) => {
+        if (typeof v === "string" && v.trim()) flat.push(v.trim());
+        else if (Array.isArray(v)) v.forEach(walk);
+      };
+      walk(args);
+      if (flat.length === 0) {
+        const card = clusterMemorySilos(scanClaudeMemorySilos());
+        for (const c of card.clusters) for (const s of c.silos) flat.push(s.memoryDir);
+      }
+      if (flat.length === 0) {
+        vscode.window.showInformationMessage("Memory silo doctor: no fragmented silos to open.");
+        return;
+      }
+      const cap = flat.slice(0, 8);
+      for (const p of cap) {
+        let target = p;
+        try {
+          if (fs.existsSync(p) && fs.statSync(p).isDirectory()) {
+            const md = path.join(p, "MEMORY.md");
+            if (fs.existsSync(md)) target = md;
+          }
+        } catch {
+          /* keep original */
+        }
+        try {
+          const uri = vscode.Uri.file(target);
+          if (fs.existsSync(target) && fs.statSync(target).isFile()) {
+            const doc = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(doc, {
+              preview: false,
+              preserveFocus: cap.length > 1,
+              viewColumn: preferredEditorColumn(),
+            });
+          } else {
+            await vscode.commands.executeCommand("revealFileInOS", uri);
+          }
+        } catch (e: any) {
+          vscode.window.showWarningMessage(`Cannot open ${p}: ${e?.message || e}`);
+        }
+      }
     }),
     // Effort-drift canary deep link: open the conversation viewer for a session id.
     vscode.commands.registerCommand("codeSessions.openSession", async (sessionId?: unknown) => {

@@ -38,6 +38,12 @@ import {
   FORK_CACHE_BLEED_CARD_CSS,
 } from "./forkCacheBleed";
 import {
+  scanClaudeMemorySilos,
+  clusterMemorySilos,
+  renderMemorySiloDoctorHtml,
+  MEMORY_SILO_CARD_CSS,
+} from "./memoryWorktreeSilo";
+import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
   DEFAULT_EXTRA_ENTRYPOINTS,
@@ -581,6 +587,7 @@ ${EFFORT_DRIFT_CARD_CSS}
 ${LOOP_ECON_CARD_CSS}
 ${SUBAGENT_BOOTSTRAP_CARD_CSS}
 ${FORK_CACHE_BLEED_CARD_CSS}
+${MEMORY_SILO_CARD_CSS}
 `;
 
 function renderDashboard(opts: {
@@ -604,8 +611,10 @@ function renderDashboard(opts: {
   subagentBootstrapHtml?: string;
   /** Fork-cache inheritance bleed HTML ("" when no #57751-class hits). */
   forkCacheBleedHtml?: string;
+  /** Auto-memory worktree silo doctor HTML ("" when no repo has ≥2 silos). */
+  memorySiloHtml?: string;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml, subagentBootstrapHtml, forkCacheBleedHtml } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml, subagentBootstrapHtml, forkCacheBleedHtml, memorySiloHtml } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -855,6 +864,7 @@ ${focusSession
 ${loopEconomicsHtml ? `<h2 style="margin-top: 28px;">Loop runaway economics</h2>${loopEconomicsHtml}` : ""}
 ${subagentBootstrapHtml ? `<h2 style="margin-top: 28px;">Subagent bootstrap economics</h2>${subagentBootstrapHtml}` : ""}
 ${forkCacheBleedHtml ? `<h2 style="margin-top: 28px;">Fork-cache inheritance bleed</h2>${forkCacheBleedHtml}` : ""}
+${memorySiloHtml ? `<h2 style="margin-top: 28px;">Auto-memory worktree silos</h2>${memorySiloHtml}` : ""}
 
 ${effortDriftHtml ? `<h2 style="margin-top: 28px;">Effort drift canary</h2>${effortDriftHtml}` : ""}
 
@@ -1003,6 +1013,10 @@ export async function openInsightsView(
   // Fork-cache inheritance bleed (#57751): same window; Claude children
   // where cache_read ≫ Agent brief (default 20×) or plan-mode refuse bleeds.
   let forkCacheBleedHtml = "";
+  // Auto-memory worktree silos (#88579): filesystem scan of
+  // ~/.claude/projects/*/memory, grouped by git common-dir / worktree stem.
+  // Optional bleed chip uses the same 8-day session window.
+  let memorySiloHtml = "";
   try {
     if (store) {
       const sinceSec = Math.floor(Date.now() / 1000) - 8 * 86400;
@@ -1057,6 +1071,19 @@ export async function openInsightsView(
       } catch {
         /* advisory card — never block Insights */
       }
+      try {
+        memorySiloHtml = renderMemorySiloDoctorHtml(
+          clusterMemorySilos(scanClaudeMemorySilos(), { sessions: canaryRows }),
+        );
+      } catch {
+        /* advisory card — never block Insights */
+      }
+    } else {
+      try {
+        memorySiloHtml = renderMemorySiloDoctorHtml(clusterMemorySilos(scanClaudeMemorySilos()));
+      } catch {
+        /* advisory card — never block Insights */
+      }
     }
   } catch {
     /* advisory card — never block Insights */
@@ -1082,6 +1109,7 @@ export async function openInsightsView(
       loopEconomicsHtml,
       subagentBootstrapHtml,
       forkCacheBleedHtml,
+      memorySiloHtml,
     });
     return;
   }
@@ -1115,5 +1143,6 @@ export async function openInsightsView(
     loopEconomicsHtml,
     subagentBootstrapHtml,
     forkCacheBleedHtml,
+    memorySiloHtml,
   });
 }
