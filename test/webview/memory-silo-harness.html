@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Memory silo doctor harness</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --vscode-font-family: ui-sans-serif, system-ui, sans-serif;
+  --vscode-editor-foreground: #ccc;
+  --vscode-editor-background: #1e1e1e;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-panel-border: #3c3c3c;
+  --vscode-textLink-foreground: #4fc1ff;
+  --vscode-editorWidget-background: #252526;
+  --vscode-sideBar-background: #252526;
+  --vscode-inputValidation-warningForeground: #e8a838;
+  --vscode-inputValidation-errorForeground: #f88;
+  --vscode-editor-font-family: ui-monospace, Menlo, monospace;
+  --card-bg: #252526;
+  --border: #3c3c3c;
+  --muted: #9d9d9d;
+  --accent: #4fc1ff;
+  --fg: #ccc;
+  --bg: #1e1e1e;
+}
+body { font-family: var(--vscode-font-family); color: var(--fg); background: var(--bg); margin: 0; padding: 16px 24px; }
+h2 { margin: 24px 0 8px 0; font-size: 14px; }
+.mws-card { background: var(--card-bg, var(--vscode-editorWidget-background, #1e1e1e)); border: 1px solid var(--border, var(--vscode-panel-border, #333)); border-radius: 6px; padding: 12px 14px; margin-top: 8px; }
+.mws-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.mws-title { font-size: 11px; text-transform: uppercase; color: var(--muted, var(--vscode-descriptionForeground, #999)); letter-spacing: 0.5px; font-weight: 600; }
+.mws-chip { display: inline-block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--vscode-inputValidation-warningForeground, #e8a838); border: 1px solid var(--vscode-inputValidation-warningForeground, #e8a838); border-radius: 8px; padding: 1px 7px; vertical-align: middle; }
+.mws-chip.mws-bleed { color: var(--vscode-inputValidation-errorForeground, #f88); border-color: var(--vscode-inputValidation-errorForeground, #f88); }
+.mws-actions { margin-left: auto; display: flex; gap: 12px; }
+.mws-action { font-size: 11px; color: var(--accent, var(--vscode-textLink-foreground, #4af)); text-decoration: none; font-weight: 500; }
+.mws-action:hover { text-decoration: underline; }
+.mws-sub { font-size: 12px; color: var(--muted, var(--vscode-descriptionForeground, #999)); line-height: 1.45; margin-bottom: 8px; }
+.mws-sub code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
+.mws-cluster { margin-top: 10px; }
+.mws-cluster-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.mws-repo { font-size: 12px; font-weight: 600; }
+.mws-muted { font-size: 11px; color: var(--muted, var(--vscode-descriptionForeground, #999)); }
+.mws-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 2px; }
+.mws-table th, .mws-table td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border, var(--vscode-panel-border, #333)); }
+.mws-table th { color: var(--muted, var(--vscode-descriptionForeground, #999)); font-weight: 500; font-size: 10px; text-transform: uppercase; }
+.mws-table td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.mws-table th:nth-child(n+2) { text-align: right; }
+.mws-path { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; word-break: break-all; }
+.mws-link { color: var(--accent, var(--vscode-textLink-foreground, #4af)); text-decoration: none; }
+.mws-link:hover { text-decoration: underline; }
+.mws-tag { font-size: 9px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--muted, var(--vscode-descriptionForeground, #999)); border: 1px solid var(--border, var(--vscode-panel-border, #333)); border-radius: 6px; padding: 0 5px; }
+.mws-help { font-size: 11px; color: var(--muted, var(--vscode-descriptionForeground, #999)); margin-top: 8px; line-height: 1.45; }
+.mws-help code { font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; }
+.mws-disclaimer { font-size: 11px; color: var(--muted, var(--vscode-descriptionForeground, #999)); margin-top: 8px; line-height: 1.45; border-top: 1px solid var(--border, var(--vscode-panel-border, #333)); padding-top: 8px; }
+</style>
+</head>
+<body>
+<h2>Auto-memory worktree silos</h2>
+<section class="mws-card" data-schema="code-sessions/auto-memory-worktree-silo@1">
+  <div class="mws-head"><span class="mws-title">Auto-memory worktree silos</span>
+    <span class="mws-chip" title="Claude keys MEMORY.md by slugified cwd, so each worktree is a separate silo (#88579)">2 silos / 1 repo</span>
+    <span class="mws-actions">
+      <a class="mws-action" href="#copy">Copy merge candidates</a>
+      <a class="mws-action" href="#open">Open silo paths</a>
+    </span>
+  </div>
+  <div class="mws-sub">Claude Code stores auto-memory at <code>~/.claude/projects/&lt;dash-encoded-cwd&gt;/memory/MEMORY.md</code>. Each worktree cwd becomes its own silo while you probably wanted repo-scoped memory (#88579). 2 silos across 1 repo below · 2 memory dirs scanned.</div>
+  <div class="mws-cluster">
+    <div class="mws-cluster-head"><span class="mws-repo">repo</span>
+      <span class="mws-chip" title="Grouped by worktree-stem">2 silos</span>
+      <span class="mws-muted">1.3 KB · ~340 tok · worktree-stem</span>
+    </div>
+    <table class="mws-table"><tr><th>cwd (decoded)</th><th>size</th><th>tokens</th></tr><tr>
+        <td class="mws-path"><a class="mws-link" href="#main">/Users/me/repo</a></td>
+        <td class="num">800 B</td>
+        <td class="num">~200</td>
+      </tr><tr>
+        <td class="mws-path"><a class="mws-link" href="#wt">/Users/me/repo/.claude/worktrees/feat</a> <span class="mws-tag">worktree</span></td>
+        <td class="num">560 B</td>
+        <td class="num">~140</td>
+      </tr></table>
+  </div>
+  <div class="mws-help">Grouping prefers a <code>.git</code> common-dir walk when the decoded cwd exists; otherwise a <code>--claude-worktrees-</code> / <code>--git-worktrees-</code> stem on the encoded name. Dash-decode is lossy when the real path contains hyphens. Token sizes are ~bytes/4. Codex <code>~/.codex/memories/</code> is global (not per-cwd) so it does not fragment; OpenCode analog unknown in v1.</div>
+  <div class="mws-disclaimer">Read-only doctor — lists paths and copies a merge-candidates checklist; never deletes or writes MEMORY.md. Distinct from fork-cache inheritance bleed (prompt cache). Confirm before any merge; auto-wipe is a separate flow.</div>
+</section>
+</body>
+</html>
