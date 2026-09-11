@@ -30,6 +30,7 @@ import {
   scanClaudeMemorySilos,
 } from "./memoryWorktreeSilo";
 import { EXPORT_FIDELITY_JSON_COMMAND } from "./compactionFidelity";
+import { COPY_CONTINUE_BINDER_COMMAND } from "./incompleteContinueTax";
 import {
   PIN_SEMANTICS_COMMAND,
   detectEffortDriftFromSessions,
@@ -3325,6 +3326,21 @@ export function activate(ctx: vscode.ExtensionContext) {
       vscode.window.showInformationMessage(
         `Copied unset snippet for ${result.reasons.map((r) => r.envVar).join(", ")}. Restart Claude Code from a shell where they are unset.`,
       );
+    }),
+    // Incomplete-continue tax: copy the KP-primed continue binder (never auto-sends).
+    vscode.commands.registerCommand(COPY_CONTINUE_BINDER_COMMAND, async (snippet?: unknown) => {
+      try {
+        if (typeof snippet === "string" && snippet.trim().length > 0) {
+          await vscode.env.clipboard.writeText(snippet);
+          vscode.window.showInformationMessage("Copied continue binder (not sent).");
+          return;
+        }
+        vscode.window.showInformationMessage(
+          "Open Insights and use Continue binder on an incomplete-continue tax row.",
+        );
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Continue-binder copy failed: ${e?.message || e}`);
+      }
     }),
     // Compaction fidelity leaderboard: copy night-report JSON (read-only).
     vscode.commands.registerCommand(EXPORT_FIDELITY_JSON_COMMAND, async (snippet?: unknown) => {

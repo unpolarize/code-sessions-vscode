@@ -50,6 +50,13 @@ import {
   COMPACTION_FIDELITY_CARD_CSS,
 } from "./compactionFidelity";
 import {
+  computeIncompleteContinueTax,
+  renderIncompleteContinueTaxHtml,
+  sessionsFromStoreRows,
+  turnsFromStoreRows,
+  INCOMPLETE_CONTINUE_TAX_CARD_CSS,
+} from "./incompleteContinueTax";
+import {
   isAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
   DEFAULT_EXTRA_ENTRYPOINTS,
@@ -595,6 +602,7 @@ ${SUBAGENT_BOOTSTRAP_CARD_CSS}
 ${FORK_CACHE_BLEED_CARD_CSS}
 ${MEMORY_SILO_CARD_CSS}
 ${COMPACTION_FIDELITY_CARD_CSS}
+${INCOMPLETE_CONTINUE_TAX_CARD_CSS}
 `;
 
 function renderDashboard(opts: {
@@ -622,8 +630,10 @@ function renderDashboard(opts: {
   memorySiloHtml?: string;
   /** Compaction fidelity leaderboard HTML ("" when no KP-linked compact events). */
   compactionFidelityHtml?: string;
+  /** Incomplete-continue tax HTML ("" when no say-the-word soft-abandons). */
+  incompleteContinueHtml?: string;
 }): string {
-  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml, subagentBootstrapHtml, forkCacheBleedHtml, memorySiloHtml, compactionFidelityHtml } = opts;
+  const { rows, deep, lookbackDays, showAutomated, parsedCount, focusSession, rulesDoctorHtml, messagingDoctorHtml, effortDriftHtml, loopEconomicsHtml, subagentBootstrapHtml, forkCacheBleedHtml, memorySiloHtml, compactionFidelityHtml, incompleteContinueHtml } = opts;
   // Per-source counts for the subtitle. Source is derived from the row's
   // entrypoint heuristic when not present on the view-row interface
   // (legacy in-memory shape doesn't carry it); falling back to entrypoint
@@ -874,6 +884,7 @@ ${loopEconomicsHtml ? `<h2 style="margin-top: 28px;">Loop runaway economics</h2>
 ${subagentBootstrapHtml ? `<h2 style="margin-top: 28px;">Subagent bootstrap economics</h2>${subagentBootstrapHtml}` : ""}
 ${forkCacheBleedHtml ? `<h2 style="margin-top: 28px;">Fork-cache inheritance bleed</h2>${forkCacheBleedHtml}` : ""}
 ${compactionFidelityHtml ? `<h2 style="margin-top: 28px;">Compaction fidelity</h2>${compactionFidelityHtml}` : ""}
+${incompleteContinueHtml ? `<h2 style="margin-top: 28px;">Incomplete-continue tax</h2>${incompleteContinueHtml}` : ""}
 ${memorySiloHtml ? `<h2 style="margin-top: 28px;">Auto-memory worktree silos</h2>${memorySiloHtml}` : ""}
 
 ${effortDriftHtml ? `<h2 style="margin-top: 28px;">Effort drift canary</h2>${effortDriftHtml}` : ""}
@@ -1030,6 +1041,8 @@ export async function openInsightsView(
   // Compaction fidelity leaderboard: KP-linked compact events ranked by
   // post-compact Acceptance-bullet retention (anti-lobotomy).
   let compactionFidelityHtml = "";
+  // Incomplete-continue tax: say-the-word / continue-offer after Write/Edit.
+  let incompleteContinueHtml = "";
   try {
     if (store) {
       const sinceSec = Math.floor(Date.now() / 1000) - 8 * 86400;
@@ -1100,6 +1113,30 @@ export async function openInsightsView(
       } catch {
         /* advisory card — never block Insights */
       }
+      try {
+        // Indexed turns are cheap vs JSONL reparse. Cap so Insights stays
+        // snappy on a large 8-day window; skip chat-only sessions.
+        const taxRows = canaryRows
+          .filter((r) => (r.tool_count ?? 0) > 0 && r.session_id)
+          .slice(0, 100);
+        const turnsBySession = new Map<
+          string,
+          ReturnType<typeof turnsFromStoreRows>
+        >();
+        for (const r of taxRows) {
+          try {
+            turnsBySession.set(r.session_id, turnsFromStoreRows(store.turnsForSession(r.session_id)));
+          } catch {
+            /* skip one session */
+          }
+        }
+        incompleteContinueHtml = renderIncompleteContinueTaxHtml(
+          computeIncompleteContinueTax(sessionsFromStoreRows(taxRows, turnsBySession)),
+          { openSessionCommand: "codeSessions.openSession" },
+        );
+      } catch {
+        /* advisory card — never block Insights */
+      }
     } else {
       try {
         memorySiloHtml = renderMemorySiloDoctorHtml(clusterMemorySilos(scanClaudeMemorySilos()));
@@ -1133,6 +1170,7 @@ export async function openInsightsView(
       forkCacheBleedHtml,
       memorySiloHtml,
       compactionFidelityHtml,
+      incompleteContinueHtml,
     });
     return;
   }
@@ -1168,5 +1206,6 @@ export async function openInsightsView(
     forkCacheBleedHtml,
     memorySiloHtml,
     compactionFidelityHtml,
+    incompleteContinueHtml,
   });
 }

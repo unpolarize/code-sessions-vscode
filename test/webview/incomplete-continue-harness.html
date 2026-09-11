@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Incomplete-continue tax harness</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --vscode-font-family: ui-sans-serif, system-ui, sans-serif;
+  --vscode-editor-foreground: #ccc;
+  --vscode-editor-background: #1e1e1e;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-panel-border: #3c3c3c;
+  --vscode-textLink-foreground: #4fc1ff;
+  --vscode-editorWidget-background: #252526;
+  --vscode-sideBar-background: #252526;
+  --vscode-inputValidation-warningForeground: #e8a838;
+  --vscode-charts-orange: #ff9c3a;
+  --vscode-editor-font-family: ui-monospace, Menlo, monospace;
+  --card-bg: #252526;
+  --border: #3c3c3c;
+  --muted: #9d9d9d;
+  --accent: #4fc1ff;
+  --fg: #ccc;
+  --bg: #1e1e1e;
+}
+body { font-family: var(--vscode-font-family); color: var(--fg); background: var(--bg); margin: 0; padding: 16px 24px; }
+h2 { margin: 24px 0 8px 0; font-size: 14px; }
+.ict-card { background: var(--card-bg, var(--vscode-editorWidget-background, #1e1e1e)); border: 1px solid var(--border, var(--vscode-panel-border, #333)); border-radius: 6px; padding: 12px 14px; margin-top: 8px; }
+.ict-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.ict-title { font-size: 11px; text-transform: uppercase; color: var(--muted, var(--vscode-descriptionForeground, #999)); letter-spacing: 0.5px; font-weight: 600; }
+.ict-chip { display: inline-block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--vscode-inputValidation-warningForeground, #e8a838); border: 1px solid var(--vscode-inputValidation-warningForeground, #e8a838); border-radius: 8px; padding: 1px 7px; vertical-align: middle; }
+.ict-today { color: var(--vscode-charts-orange, #ff9c3a); border-color: var(--vscode-charts-orange, #ff9c3a); }
+.ict-sub { font-size: 12px; color: var(--muted, var(--vscode-descriptionForeground, #999)); line-height: 1.45; margin-bottom: 8px; }
+.ict-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 2px; }
+.ict-table th, .ict-table td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border, var(--vscode-panel-border, #333)); vertical-align: top; }
+.ict-table th { color: var(--muted, var(--vscode-descriptionForeground, #999)); font-weight: 500; font-size: 10px; text-transform: uppercase; }
+.ict-table td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.ict-table th:nth-child(4), .ict-table th:nth-child(5) { text-align: right; }
+.ict-backend { font-family: var(--vscode-editor-font-family, monospace); font-weight: 600; }
+.ict-session { font-size: 12px; }
+.ict-link { color: var(--accent, var(--vscode-textLink-foreground, #4af)); text-decoration: none; }
+.ict-link:hover { text-decoration: underline; }
+.ict-phrases { font-size: 11px; color: var(--muted, var(--vscode-descriptionForeground, #999)); }
+.ict-binder { font-size: 11px; color: var(--accent, var(--vscode-textLink-foreground, #4af)); text-decoration: none; font-weight: 500; white-space: nowrap; }
+.ict-binder:hover { text-decoration: underline; }
+.ict-help { font-size: 11px; color: var(--muted, var(--vscode-descriptionForeground, #999)); margin-top: 8px; line-height: 1.45; }
+.ict-disclaimer { font-size: 11px; color: var(--muted, var(--vscode-descriptionForeground, #999)); margin-top: 8px; line-height: 1.45; border-top: 1px solid var(--border, var(--vscode-panel-border, #333)); padding-top: 8px; }
+</style>
+</head>
+<body>
+<h2>Incomplete-continue tax</h2>
+<section class="ict-card" data-schema="code-sessions/incomplete-continue-tax@1">
+  <div class="ict-head"><span class="ict-title">Incomplete-continue tax</span>
+    <span class="ict-chip" title="Soft-abandons after Write/Edit">2 abandons · 18m idle</span>
+    <span class="ict-chip ict-today" title="Soft-abandons whose assistant turn ended today (local)">2 today · 18m</span>
+  </div>
+  <div class="ict-sub">2 soft-abandons across 2 sessions. Idle is the gap from the offering turn until a human “continue” (or the next user message / still-open). Copy the binder — it is never auto-sent.</div>
+  <table class="ict-table"><tr><th>backend</th><th>session</th><th>phrase</th><th>idle</th><th>edits</th><th></th></tr>
+    <tr>
+      <td class="ict-backend">claude</td>
+      <td class="ict-session"><a class="ict-link" href="#claude-1">Claude say-the-word</a></td>
+      <td class="ict-phrases">say-the-word</td>
+      <td class="num">12m</td>
+      <td class="num">1</td>
+      <td><a class="ict-binder" href="#binder" title="Copy continue binder (does not send)">Continue binder</a></td>
+    </tr>
+    <tr>
+      <td class="ict-backend">grok</td>
+      <td class="ict-session"><a class="ict-link" href="#grok-1">Grok continue-offer</a></td>
+      <td class="ict-phrases">let-me-know-continue, want-me-to-continue</td>
+      <td class="num">6m</td>
+      <td class="num">1</td>
+      <td><a class="ict-binder" href="#binder" title="Copy continue binder (does not send)">Continue binder</a></td>
+    </tr>
+  </table>
+  <div class="ict-help">v1 heuristic: known phrases on assistant text after ≥1 successful Write/Edit in the same turn (Claude Write/Edit, Grok write/search_replace, Codex apply_patch). Precision over recall; no LLM judge. Distinct from wait-reason (permission vs thinking) and rejection digest (failed tools).</div>
+  <div class="ict-disclaimer">Copy-only continue binder (goal + open files + last acceptance). Does not auto-send. Store-indexed turns without per-tool errors treat listed Write/Edit names as success.</div>
+</section>
+</body>
+</html>

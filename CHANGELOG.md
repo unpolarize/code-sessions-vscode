@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.72.0 — 2026-09-11
+
+### Incomplete-continue tax card (Insights)
+
+- **Insights · Incomplete-continue tax:** detects **soft-abandons** — assistant turns that finish Write/Edit progress then stop with “say the word / let me know if you want me to continue / the rest would be a separate task.” Card shows abandon count per session/day plus estimated idle minutes until a human “continue” (or the next user message / still-open). **Continue binder** copies a KP-primed prompt (goal + open files + last acceptance); it never auto-sends. v1 heuristic is known phrases after ≥1 successful Write/Edit (Claude Write/Edit, Grok write/search_replace, Codex apply_patch); permission-wait copy and failed-only edits are excluded. Distinct from wait-reason and rejection digest. Pure module `src/incompleteContinueTax.ts` + fixture unit tests.
+- (kp: ideas/csv-say-the-word-incomplete-continue-tax-card-de)
+
 ## 1.71.0 — 2026-09-10
 
 ### Compaction fidelity leaderboard (Insights)
