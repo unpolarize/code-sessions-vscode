@@ -29,6 +29,12 @@ import {
   laterMeaningfulUserTexts,
   mergeAutomationExtras,
 } from "./automation";
+import {
+  estimateGrokCostUsd,
+  grokCostStampPresent,
+  grokUsageFromBlob,
+  type GrokCostTokenSource,
+} from "./grokPricing";
 
 export const GROK_SESSIONS_ROOT = path.join(os.homedir(), ".grok", "sessions");
 
@@ -62,12 +68,25 @@ function sessionInfoFromChatPath(chatPath: string): GrokSessionInfo | null {
       sessionDir,
       chatPath,
       summaryPath,
-      mtime_ns: st.mtimeMs * 1e6,
+      mtime_ns: grokCacheMtimeNs(sessionDir, st),
       size_bytes: st.size,
     };
   } catch {
     return null;
   }
+}
+
+/** Cache key mtime: chat_history plus usage.json so a late token ledger
+ * invalidates a row that was indexed from signals-only / $0.00. */
+function grokCacheMtimeNs(sessionDir: string, chatStat: fs.Stats): number {
+  let mtime = chatStat.mtimeMs * 1e6;
+  try {
+    const usageStat = fs.statSync(path.join(sessionDir, "usage.json"));
+    mtime = Math.max(mtime, usageStat.mtimeMs * 1e6);
+  } catch {
+    /* no usage.json */
+  }
+  return mtime;
 }
 
 // Truncations match the claude indexer so the downstream classifier sees
@@ -196,7 +215,7 @@ export function listAllGrokSessions(root = GROK_SESSIONS_ROOT): GrokSessionInfo[
         sessionDir: dir,
         chatPath,
         summaryPath,
-        mtime_ns: st.mtimeMs * 1e6,
+        mtime_ns: grokCacheMtimeNs(dir, st),
         size_bytes: st.size,
       });
     }
@@ -223,6 +242,61 @@ function readSignals(sessionDir: string): GrokSignals | null {
   } catch {
     return null;
   }
+}
+
+/** Best-effort read of `<sessionDir>/usage.json` — grok's token ledger
+ * (input/output/cache, written by newer Grok Build). Missing on older dirs. */
+function readUsageBlob(sessionDir: string): unknown | null {
+  const p = path.join(sessionDir, "usage.json");
+  if (!fs.existsSync(p)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function extrasByPathFromStore(
+  store: SessionStore,
+  prefix: string,
+): Map<string, string> {
+  const fn = (store as SessionStore & { extrasByPath?: (o?: { prefix?: string }) => Map<string, string> })
+    .extrasByPath;
+  if (typeof fn !== "function") return new Map();
+  return fn.call(store, { prefix });
+}
+
+function mergeCostExtras(
+  extrasJson: string,
+  stamp: { cost_estimated: boolean; cost_token_source: GrokCostTokenSource },
+): string {
+  let o: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(extrasJson);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      o = parsed as Record<string, unknown>;
+    }
+  } catch {
+    o = {};
+  }
+  o.cost_estimated = stamp.cost_estimated;
+  o.cost_token_source = stamp.cost_token_source;
+  return JSON.stringify(o);
+}
+
+function grokNeedsParse(
+  info: GrokSessionInfo,
+  cached: { mtime_ns: number; size_bytes: number } | undefined,
+  extrasJson: string | undefined,
+  force: boolean,
+): boolean {
+  if (force) return true;
+  if (!cached || cached.mtime_ns !== info.mtime_ns || cached.size_bytes !== info.size_bytes) {
+    return true;
+  }
+  // One-shot catch-up: rows indexed before as-if-API cost landed stay $0.00
+  // until we reparse and stamp cost_token_source.
+  return !grokCostStampPresent(extrasJson);
 }
 
 function tsToMs(s: string | undefined): number | null {
@@ -321,20 +395,48 @@ export function buildGrokRows(
 
   const projectsTouched = projectsTouchedFromGrokTurns(parsed.turns);
 
-  // Pull grok's own telemetry sidecar. signals.json doesn't break input vs
-  // output tokens (cost can't be computed), but it does record:
-  //   - contextTokensUsed: closest proxy to "session size in tokens"
-  //   - toolCallCount + toolsUsed: replaces our chat_history scan
-  //   - modelsUsed: multi-model sessions
-  //   - file-edit volume + peak RSS for the local process
-  // We stash contextTokensUsed into input_tokens so the headline "tok"
-  // column on the Sessions row is no longer 0 — the tooltip labels it
-  // honestly as "context tokens" since it isn't really an input/output
-  // split.
+  // Token + as-if-API cost. Prefer usage.json (input/output/cache split).
+  // Older sessions only have signals.contextTokensUsed — treat that as
+  // uncached input so the row isn't $0.00. SuperGrok is a subscription;
+  // we still stamp list-price dollars onto cost_usd so day totals match
+  // Claude's column (one source of truth — not recomputed at display).
   const signals = readSignals(info.sessionDir);
+  const usageParsed = grokUsageFromBlob(readUsageBlob(info.sessionDir));
   const contextTokens = signals?.contextTokensUsed ?? 0;
   const toolCount =
     typeof signals?.toolCallCount === "number" ? signals.toolCallCount : parsed.totalTools;
+
+  let inputTok = 0;
+  let outputTok = 0;
+  let cacheReadTok = 0;
+  let cacheWriteTok = 0;
+  let reasoningTok: number | null = null;
+  let costSource: GrokCostTokenSource = "none";
+  if (usageParsed) {
+    inputTok = usageParsed.usage.inputTokens;
+    outputTok = usageParsed.usage.outputTokens;
+    cacheReadTok = usageParsed.usage.cacheReadTokens;
+    cacheWriteTok = usageParsed.usage.cacheWriteTokens;
+    reasoningTok = usageParsed.reasoningTokens;
+    costSource = "usage.json";
+  } else if (contextTokens > 0) {
+    inputTok = contextTokens;
+    costSource = "signals.contextTokensUsed";
+  }
+  const model =
+    usageParsed?.model ?? signals?.primaryModelId ?? summary.current_model_id ?? null;
+  const costUsd =
+    costSource === "none"
+      ? 0
+      : estimateGrokCostUsd(
+          {
+            inputTokens: inputTok,
+            outputTokens: outputTok,
+            cacheReadTokens: cacheReadTok,
+            cacheWriteTokens: cacheWriteTok,
+          },
+          model,
+        );
 
   const autoInput = {
     is_automated: false,
@@ -347,9 +449,12 @@ export function buildGrokRows(
   };
   const automated = isAutomatedSession(autoInput);
   const continuedByHuman = automated && isHumanContinuedSession(autoInput);
-  const extrasJson = mergeAutomationExtras(
-    signals ? JSON.stringify(signals) : null,
-    { automated, continued_by_human: continuedByHuman },
+  const extrasJson = mergeCostExtras(
+    mergeAutomationExtras(signals ? JSON.stringify(signals) : null, {
+      automated,
+      continued_by_human: continuedByHuman,
+    }),
+    { cost_estimated: costSource !== "none", cost_token_source: costSource },
   );
 
   const session: SessionRow = {
@@ -366,14 +471,13 @@ export function buildGrokRows(
     message_count: parsed.rawMessageCount,
     tool_count: toolCount,
     subagent_count: 0,
-    input_tokens: contextTokens, // see comment above — proxy
-    output_tokens: 0,
-    cache_read_tokens: 0,
-    cache_write_tokens: 0,
-    // Grok CLI logs have no numeric reasoning_tokens today → NULL / n/a.
-    reasoning_tokens: null,
-    cost_usd: 0,
-    model: signals?.primaryModelId ?? summary.current_model_id ?? null,
+    input_tokens: inputTok,
+    output_tokens: outputTok,
+    cache_read_tokens: cacheReadTok,
+    cache_write_tokens: cacheWriteTok,
+    reasoning_tokens: reasoningTok,
+    cost_usd: costUsd,
+    model,
     title,
     first_user_msg: firstUserMsg,
     entrypoint: summary.agent_name ?? null,
@@ -421,10 +525,8 @@ export function buildGrokRows(
       tool_names_csv: t.toolNames.join(","),
       tool_count: t.toolNames.length,
       has_subagent: t.isSubagent,
-      // Grok's chat_history.jsonl doesn't carry per-turn token usage —
-      // the column stays 0 and the day-bucket rollup just won't include
-      // grok contributions (which matches the existing "Grok records no
-      // token usage" caveat surfaced in the Insights subtitle).
+      // Grok chat_history.jsonl has no per-turn usage; session-level
+      // cost_usd (from usage.json / contextTokensUsed) is the rollup SSOT.
       input_tokens: 0,
       output_tokens: 0,
       cache_read_tokens: 0,
@@ -480,11 +582,13 @@ export function planGrokSync(
 ): GrokSyncPlan {
   const root = opts.root ?? GROK_SESSIONS_ROOT;
   const disk = listAllGrokSessions(root);
-  const allKnown = store.knownPaths({ prefix: root + path.sep });
+  const prefix = root + path.sep;
+  const allKnown = store.knownPaths({ prefix });
   const known = new Map<string, { mtime_ns: number; size_bytes: number }>();
   for (const [p, v] of allKnown) {
-    if (p.startsWith(root + path.sep)) known.set(p, v);
+    if (p.startsWith(prefix)) known.set(p, v);
   }
+  const extras = extrasByPathFromStore(store, prefix);
   let forcedSet: Set<string> | null = null;
   if (opts.forceRecentN && opts.forceRecentN > 0) {
     const sorted = [...disk].sort((a, b) => b.mtime_ns - a.mtime_ns).slice(0, opts.forceRecentN);
@@ -496,8 +600,7 @@ export function planGrokSync(
       toParse.push(info);
       continue;
     }
-    const cached = known.get(info.chatPath);
-    if (!cached || cached.mtime_ns !== info.mtime_ns || cached.size_bytes !== info.size_bytes) {
+    if (grokNeedsParse(info, known.get(info.chatPath), extras.get(info.chatPath), false)) {
       toParse.push(info);
     }
   }
@@ -552,11 +655,13 @@ export function syncGrokToStore(
   // cache. `knownPaths` returns rows for both sources, so we filter to the
   // ones whose path starts with the grok root to avoid cross-source
   // confusion if any UUID-shaped collisions ever happened.
-  const allKnown = store.knownPaths({ prefix: GROK_SESSIONS_ROOT + path.sep });
+  const prefix = GROK_SESSIONS_ROOT + path.sep;
+  const allKnown = store.knownPaths({ prefix });
   const known = new Map<string, { mtime_ns: number; size_bytes: number }>();
   for (const [p, v] of allKnown) {
-    if (p.startsWith(GROK_SESSIONS_ROOT + path.sep)) known.set(p, v);
+    if (p.startsWith(prefix)) known.set(p, v);
   }
+  const extras = extrasByPathFromStore(store, prefix);
 
   let forcedSet: Set<string> | null = null;
   if (opts.forceRecentN && opts.forceRecentN > 0) {
@@ -570,8 +675,7 @@ export function syncGrokToStore(
       toParse.push(info);
       continue;
     }
-    const cached = known.get(info.chatPath);
-    if (!cached || cached.mtime_ns !== info.mtime_ns || cached.size_bytes !== info.size_bytes) {
+    if (grokNeedsParse(info, known.get(info.chatPath), extras.get(info.chatPath), false)) {
       toParse.push(info);
     }
   }

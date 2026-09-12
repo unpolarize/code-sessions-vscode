@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.73.1",
+  "version": "1.74.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -1129,6 +1129,20 @@
           "type": "number",
           "default": 0,
           "description": "Daily Claude-Code budget in USD. When > 0, a status-bar tile shows today's spend vs this number; it turns amber at 80% and red at 100%. Set to 0 (default) to hide the tile."
+        },
+        "codeSessions.grokApiPrices": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "input": { "type": "number" },
+              "output": { "type": "number" },
+              "cacheRead": { "type": "number" },
+              "cacheWrite": { "type": "number" }
+            }
+          },
+          "default": {},
+          "description": "Override Grok as-if-API list prices (USD per 1M tokens), keyed by model id prefix (`grok-4.6`, `grok-4.5`). Empty uses the built-in table. Applied at Grok index time so session rows and day totals stay in sync. Reindex Grok sessions after changing."
         },
         "codeSessions.classify.autoOnOpen": {
           "type": "boolean",

@@ -817,7 +817,7 @@ ${focusSession
   ? `<h1>${escapeHtml(focusSession.title || focusSession.session.slice(0, 8))}</h1>
      <div class="subtitle">${focusSession.source === "grok" ? "Grok Build" : "Claude Code"}${focusSession.model ? ` · <code>${escapeHtml(focusSession.model)}</code>` : ""} · <code>${escapeHtml(focusSession.session)}</code> · ${escapeHtml(focusSession.project || "—")}</div>`
   : `<h1>Code Sessions · Insights</h1>
-     <div class="subtitle">Last ${lookbackDays} days · ${rows.length} sessions (${claudeCount} Claude + ${grokCount} Grok${showAutomated ? "" : ", interactive only"}) · cost &amp; tokens are Claude-only (Grok records no token usage); deep metrics from top ${parsedCount} Claude sessions</div>`
+     <div class="subtitle">Last ${lookbackDays} days · ${rows.length} sessions (${claudeCount} Claude + ${grokCount} Grok${showAutomated ? "" : ", interactive only"}) · cost includes Claude billed + Grok as-if-API estimates; deep metrics from top ${parsedCount} Claude sessions</div>`
 }
 
 <section class="kpis">

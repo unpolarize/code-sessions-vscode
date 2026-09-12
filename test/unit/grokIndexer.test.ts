@@ -2,10 +2,13 @@
 // listAllGrokSessions/buildGrokRows run against a synthetic ~/.grok/sessions-shaped
 // tree under test/fixtures/grokstore (cwd-encoded parent / uuid dir) — no home-dir access.
 import { describe, it, expect } from "vitest";
+import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { listAllGrokSessions, buildGrokRows, locateGrokChatHistory, planGrokSync, applyGrokParsed, type GrokParsedItem } from "../../src/grokIndexer";
 import { handleWorkerRequest, type WorkerEvent } from "../../src/grokParseWorker";
 import type { SessionStore, SessionRow, TurnRow } from "../../src/db";
+import { estimateGrokCostUsd } from "../../src/grokPricing";
 
 /** In-memory stand-in mirroring jsonlIndexer.test.ts. */
 function fakeStore(seedKnown: Array<[string, { mtime_ns: number; size_bytes: number }]> = []) {
@@ -22,6 +25,13 @@ function fakeStore(seedKnown: Array<[string, { mtime_ns: number; size_bytes: num
     upsertSession: (s2: SessionRow) => {
       sessions.set(s2.session_id, s2);
       known.set(s2.jsonl_path, { mtime_ns: s2.mtime_ns, size_bytes: s2.size_bytes });
+    },
+    extrasByPath: () => {
+      const m = new Map<string, string>();
+      for (const s2 of sessions.values()) {
+        if (s2.extras_json) m.set(s2.jsonl_path, s2.extras_json);
+      }
+      return m;
     },
     deleteTurnsForSession: (id: string) => turns.delete(id),
     upsertTurns: (rows: TurnRow[]) => {
@@ -89,9 +99,16 @@ describe("buildGrokRows", () => {
     expect(session.title).toBe("Add health endpoint"); // generated_title wins
     expect(session.model).toBe("grok-4.5"); // signals.primaryModelId
     expect(session.entrypoint).toBe("grok"); // summary.agent_name
-    // signals.contextTokensUsed proxied into input_tokens; grok has no split.
+    // No usage.json in this fixture — contextTokensUsed is uncached input.
     expect(session.input_tokens).toBe(4321);
     expect(session.output_tokens).toBe(0);
+    expect(session.cost_usd).toBe(
+      estimateGrokCostUsd(
+        { inputTokens: 4321, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        "grok-4.5",
+      ),
+    );
+    expect(session.cost_usd).toBeGreaterThan(0);
     expect(session.tool_count).toBe(7); // signals.toolCallCount over chat scan
     expect(session.started_at).toBe(Date.parse("2026-07-20T10:00:00Z"));
     expect(session.ended_at).toBe(Date.parse("2026-07-20T10:06:00Z")); // last_active_at wins
@@ -100,6 +117,8 @@ describe("buildGrokRows", () => {
       contextTokensUsed: 4321,
       automated: false,
       continued_by_human: false,
+      cost_estimated: true,
+      cost_token_source: "signals.contextTokensUsed",
     });
     expect(session.is_automated).toBe(false);
 
@@ -123,6 +142,70 @@ describe("buildGrokRows", () => {
 
   it("corrupted summary.json → null, no throw", () => {
     expect(buildGrokRows(infoFor(S_CORRUPT_SUMMARY))).toBeNull();
+  });
+
+  it("usage.json input/output/cache drives as-if-API cost (exclusive buckets)", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "csv-grok-usage-"));
+    const src = infoFor(S_VALID);
+    fs.copyFileSync(src.chatPath, path.join(tmp, "chat_history.jsonl"));
+    fs.copyFileSync(src.summaryPath, path.join(tmp, "summary.json"));
+    fs.writeFileSync(
+      path.join(tmp, "usage.json"),
+      JSON.stringify({
+        session: {
+          inputTokens: 1000,
+          outputTokens: 40,
+          cachedReadTokens: 200,
+          cacheCreationTokens: 5,
+          reasoningTokens: 12,
+          primaryModelId: "grok-4.6-build",
+        },
+      }),
+    );
+    const rows = buildGrokRows({
+      sessionDir: tmp,
+      chatPath: path.join(tmp, "chat_history.jsonl"),
+      summaryPath: path.join(tmp, "summary.json"),
+      mtime_ns: 1,
+      size_bytes: 1,
+    });
+    expect(rows).not.toBeNull();
+    expect(rows!.session.input_tokens).toBe(800);
+    expect(rows!.session.output_tokens).toBe(40);
+    expect(rows!.session.cache_read_tokens).toBe(200);
+    expect(rows!.session.cache_write_tokens).toBe(5);
+    expect(rows!.session.reasoning_tokens).toBe(12);
+    expect(rows!.session.model).toBe("grok-4.6-build");
+    expect(rows!.session.cost_usd).toBe(
+      estimateGrokCostUsd(
+        { inputTokens: 800, outputTokens: 40, cacheReadTokens: 200, cacheWriteTokens: 5 },
+        "grok-4.6-build",
+      ),
+    );
+    expect(JSON.parse(rows!.session.extras_json!).cost_token_source).toBe("usage.json");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("missing tokens (no usage.json, no contextTokensUsed) → cost $0", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "csv-grok-notok-"));
+    const src = infoFor(S_VALID);
+    fs.copyFileSync(src.chatPath, path.join(tmp, "chat_history.jsonl"));
+    fs.copyFileSync(src.summaryPath, path.join(tmp, "summary.json"));
+    const rows = buildGrokRows({
+      sessionDir: tmp,
+      chatPath: path.join(tmp, "chat_history.jsonl"),
+      summaryPath: path.join(tmp, "summary.json"),
+      mtime_ns: 1,
+      size_bytes: 1,
+    });
+    expect(rows).not.toBeNull();
+    expect(rows!.session.input_tokens).toBe(0);
+    expect(rows!.session.cost_usd).toBe(0);
+    expect(JSON.parse(rows!.session.extras_json!)).toMatchObject({
+      cost_estimated: false,
+      cost_token_source: "none",
+    });
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 });
 

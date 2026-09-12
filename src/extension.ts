@@ -51,6 +51,7 @@ import { kickReembed } from "./reembedJob";
 import type { EmbedConfig } from "./embedding";
 import { syncToStore } from "./jsonlIndexer";
 import { locateGrokChatHistory, syncGrokToStore } from "./grokIndexer";
+import { grokRatesForModel, setGrokPriceOverrides, type GrokModelRates } from "./grokPricing";
 import { syncCodexToStore } from "./codexIndexer";
 import { syncGitToStore, gitSessionsRoot } from "./gitIndexer";
 import { cachedDaemonTasks, daemonIsUp, patchDaemonSessionTitle, refreshDaemonSessions, refreshDaemonTasks } from "./daemonClient";
@@ -705,6 +706,20 @@ function readGrokSignals(row: SessionRow): Record<string, any> | null {
   try { return JSON.parse(row.extras_json); } catch { return null; }
 }
 
+/** Apply `codeSessions.grokApiPrices` to the process-local Grok rate table. */
+function applyGrokPriceConfig(
+  cfg?: vscode.WorkspaceConfiguration,
+): Record<string, Partial<GrokModelRates>> | null {
+  const c = cfg ?? vscode.workspace.getConfiguration("codeSessions");
+  const raw = c.get<Record<string, Partial<GrokModelRates>>>("grokApiPrices") ?? null;
+  const overrides =
+    raw && typeof raw === "object" && !Array.isArray(raw) && Object.keys(raw).length > 0
+      ? raw
+      : null;
+  setGrokPriceOverrides(overrides);
+  return overrides;
+}
+
 function fmtBytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
@@ -721,13 +736,45 @@ function fmtBytes(n: number): string {
 function buildCostBreakdown(row: SessionRow): string[] {
   if (row.source === "grok") {
     const s = readGrokSignals(row);
+    const { rates, family } = grokRatesForModel(row.model);
+    const input = row.tokens_input ?? 0;
+    const output = row.tokens_output ?? 0;
+    const cacheR = row.tokens_cache_read ?? 0;
+    const cacheW = row.tokens_cache_write ?? 0;
+    const inputCost = (input * rates.input) / 1_000_000;
+    const outputCost = (output * rates.output) / 1_000_000;
+    const cacheRCost = (cacheR * rates.cacheRead) / 1_000_000;
+    const cacheWCost = (cacheW * rates.cacheWrite) / 1_000_000;
+    const estimated = s?.cost_estimated === true || row.cost_usd > 0;
+    const sourceNote =
+      s?.cost_token_source === "usage.json"
+        ? "from `usage.json` token ledger"
+        : s?.cost_token_source === "signals.contextTokensUsed"
+          ? "from `signals.json` contextTokensUsed (no input/output split)"
+          : "no token counts in the envelope";
+    const lines: string[] = [
+      "",
+      `**Estimated cost** — ${family} API list rates (USD per 1M tokens); SuperGrok subscription is not billed per token`,
+      "| Bucket | Tokens | Rate | Est. cost |",
+      "|---|---:|---:|---:|",
+      `| Input | ${fmtNum(input)} | $${rates.input} | $${inputCost.toFixed(2)} |`,
+      `| Output | ${fmtNum(output)} | $${rates.output} | $${outputCost.toFixed(2)} |`,
+      `| Cache **read** (hits) | ${fmtNum(cacheR)} | $${rates.cacheRead} | $${cacheRCost.toFixed(2)} |`,
+      `| Cache **write** (seeds) | ${fmtNum(cacheW)} | $${rates.cacheWrite} | $${cacheWCost.toFixed(2)} |`,
+      `| **Total (as-if-API)** | ${fmtNum(input + output + cacheR + cacheW)} | | **$${(row.cost_usd ?? 0).toFixed(2)}** |`,
+      "",
+      estimated
+        ? `_Estimated at API rates — subscription. Token source: ${sourceNote}._`
+        : `_No Grok token counts on disk — estimate stays $0.00 until usage.json or signals.contextTokensUsed appears._`,
+    ];
     if (!s) {
-      return [
+      lines.push(
         "",
         "**Grok session — no telemetry sidecar**",
         "This session was indexed before grok started writing `signals.json`,",
         "or the file was missing. Open the session in Grok Build to refresh it.",
-      ];
+      );
+      return lines;
     }
     const ctxPct =
       typeof s.contextWindowUsage === "number"
@@ -735,12 +782,12 @@ function buildCostBreakdown(row: SessionRow): string[] {
         : s.contextTokensUsed && s.contextWindowTokens
           ? `${Math.round((s.contextTokensUsed / s.contextWindowTokens) * 100)}%`
           : "";
-    const lines = [
+    lines.push(
       "",
-      `**Grok telemetry** — from \`signals.json\` (Grok Build doesn't record per-turn input/output token splits, so cost can't be computed — these are the closest metrics it does expose)`,
+      `**Grok telemetry** — from \`signals.json\` (${sourceNote})`,
       "| Metric | Value | Note |",
       "|---|---:|---|",
-    ];
+    );
     if (typeof s.contextTokensUsed === "number") {
       lines.push(
         `| Context tokens | ${fmtNum(s.contextTokensUsed)}${s.contextWindowTokens ? ` / ${fmtNum(s.contextWindowTokens)}` : ""}${ctxPct ? ` (${ctxPct})` : ""} | how full the context window got |`
@@ -773,7 +820,6 @@ function buildCostBreakdown(row: SessionRow): string[] {
     if (typeof s.sessionDurationSeconds === "number" && s.sessionDurationSeconds > 0) {
       lines.push(`| Duration | ${formatDurationSec(s.sessionDurationSeconds)} | wall-clock |`);
     }
-    lines.push("", "_Grok Build runs against xAI's API; per-turn input/output token splits are not persisted to disk, so $ cost can't be computed locally. xAI bills via subscription (SuperGrok Heavy) or API key (per-token, visible in console.x.ai)._");
     return lines;
   }
   const { rates, family } = ratesForModel(row.model);
@@ -1468,6 +1514,9 @@ class SessionItem extends vscode.TreeItem {
       vscode.TreeItemCollapsibleState.Collapsed,
     );
     const cost = row.cost_usd.toFixed(2);
+    const grokSignals = row.source === "grok" ? readGrokSignals(row) : null;
+    const grokEstimated =
+      row.source === "grok" && (grokSignals?.cost_estimated === true || row.cost_usd > 0);
     const durSec =
       row.first_ts_epoch && row.first_ts_epoch > 0
         ? Math.max(0, row.mtime_epoch - row.first_ts_epoch)
@@ -1475,7 +1524,8 @@ class SessionItem extends vscode.TreeItem {
     const durStr = durSec > 0 ? formatDurationSec(durSec) : null;
     // Description: msgs · cost · duration · topics. The leading "ago" lives in
     // the label (so it lines up); we drop it from the description here.
-    const parts = [`💬${row.messages.toLocaleString()}`, `$${cost}`];
+    // Grok SuperGrok is subscription — ~$ marks as-if-API list-price estimate.
+    const parts = [`💬${row.messages.toLocaleString()}`, grokEstimated ? `~$${cost}` : `$${cost}`];
     if ((row.children_cost_usd ?? 0) > 0) {
       parts.push(`🔀$${(row.children_cost_usd ?? 0).toFixed(2)}`);
     }
@@ -1492,10 +1542,8 @@ class SessionItem extends vscode.TreeItem {
             ...row.topic_counts.slice(0, 12).map(([t, n]) => `- \`${t}\` _(${n})_`),
           ]
         : [];
-    // Cost breakdown — split the headline figure across input/output/cache-R/cache-W
-    // at the model's list rates so the user sees where the spend went and what the
-    // cache lines mean. Falls back to the Sonnet rates for unknown models (matches
-    // the indexer's default).
+    // Cost breakdown — Claude: billed split at list rates. Grok: as-if-API
+    // estimate (subscription) from the same cost_usd the indexer wrote.
     const costLines = buildCostBreakdown(row);
     const md = new vscode.MarkdownString(
       [
@@ -2452,6 +2500,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     try {
     const s = store;
     const cfg = vscode.workspace.getConfiguration("codeSessions");
+    applyGrokPriceConfig(cfg);
     const includeGit = opts.includeGit !== false;
     const includeClaude = opts.includeClaude !== false;
     const includeGrok = opts.includeGrok !== false;
@@ -2604,6 +2653,7 @@ export function activate(ctx: vscode.ExtensionContext) {
         return;
       }
       s.touchWriter(ver);
+      const priceOverrides = applyGrokPriceConfig();
       const plan = planGrokSync(s);
       const workerPath = ctx.asAbsolutePath("out/grokParseWorker.js");
       if (plan.toParse.length > 0 && fs.existsSync(workerPath)) {
@@ -2634,7 +2684,7 @@ export function activate(ctx: vscode.ExtensionContext) {
           });
           child.on("error", (e) => (settled ? undefined : (settled = true, reject(e))));
           child.on("exit", finishOnce);
-          child.send({ kind: "parse", files: plan.toParse });
+          child.send({ kind: "parse", files: plan.toParse, priceOverrides });
         });
       } else if (plan.toParse.length > 0) {
         // Worker missing (dev build) — inline fallback, same result.
@@ -3997,12 +4047,16 @@ export function activate(ctx: vscode.ExtensionContext) {
   // the tree stay current without a 6 s full grok wasm pass on every Claude tick.
   const grokRoot = path.join(os.homedir(), ".grok", "sessions");
   const grokWatcher = vscode.workspace.createFileSystemWatcher(
-    new vscode.RelativePattern(vscode.Uri.file(grokRoot), "**/chat_history.jsonl"),
+    new vscode.RelativePattern(vscode.Uri.file(grokRoot), "**/{chat_history.jsonl,usage.json}"),
   );
   const pendingGrok = new Set<string>();
   let grokTimer: NodeJS.Timeout | undefined;
   const queueGrok = (uri: vscode.Uri) => {
-    pendingGrok.add(uri.fsPath);
+    let p = uri.fsPath;
+    if (path.basename(p) === "usage.json") {
+      p = path.join(path.dirname(p), "chat_history.jsonl");
+    }
+    pendingGrok.add(p);
     if (grokTimer) clearTimeout(grokTimer);
     grokTimer = setTimeout(() => {
       const paths = [...pendingGrok];
@@ -4010,6 +4064,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (!store || paths.length === 0) return;
       const span = startSpan("csv.index.grok");
       try {
+        applyGrokPriceConfig();
         const stats = syncGrokToStore(store, { onlyPaths: paths });
         span.end({ parsed: stats.parsed, elapsed_ms: stats.elapsed_ms });
         indexDiag.reportSource("grok", stats);

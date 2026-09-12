@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.74.0 — 2026-09-12
+
+### Grok sessions: as-if-API cost from token usage
+
+- **[G] rows were $0.00** because SuperGrok is a subscription and the indexer hardcoded `cost_usd: 0`. CSV now estimates list-price dollars from `usage.json` (input/output/cache) or, on older dirs, `signals.contextTokensUsed`, using a single table in `grokPricing.ts` (`grok-4.6` / `grok-4.5`; unknown model → grok-4.6). Written at index time onto `session.cost_usd` so day-group / Insights / live-monitor totals include Grok without double-counting. List shows `~$`; tooltip says estimated at API rates — subscription. Override via `codeSessions.grokApiPrices`. Claude billed cost unchanged.
+- (kp: tasks/csv-grok-sessions-show-0-00-estimate-as-if-api-c)
+
 ## 1.73.1 — 2026-09-12
 
 ### Hide-automated filter covers Grok machine lanes (except human-continued)

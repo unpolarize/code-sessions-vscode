@@ -5,10 +5,12 @@
  * It imports only the pure parse path (type-only db import — no wasm load).
  */
 import { buildGrokRows, type GrokSessionInfo } from "./grokIndexer";
+import { setGrokPriceOverrides, type GrokModelRates } from "./grokPricing";
 
 export interface WorkerRequest {
   kind: "parse";
   files: GrokSessionInfo[];
+  priceOverrides?: Record<string, Partial<GrokModelRates>> | null;
 }
 
 export type WorkerEvent =
@@ -17,6 +19,7 @@ export type WorkerEvent =
 
 function handle(msg: WorkerRequest, send: (ev: WorkerEvent) => void): void {
   if (!msg || msg.kind !== "parse") return;
+  if (msg.priceOverrides !== undefined) setGrokPriceOverrides(msg.priceOverrides);
   let parsed = 0;
   let errors = 0;
   for (const info of msg.files) {
