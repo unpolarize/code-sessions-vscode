@@ -146,11 +146,23 @@ describe("syncToStore", () => {
     });
 
     const main = sessions.get(S_MAIN)!;
-    expect(main.extras_json).toBe(JSON.stringify({ effort: "high" }));
-    // Lookup keys on the logical session uuid, so no-hit rows stay null —
-    // including children, whose inner id (sub-inner-1) is not in the lookup.
-    expect(sessions.get(S_AUTO)!.extras_json).toBeNull();
-    expect(sessions.get("sub-inner-1__subagent__agent-abc")!.extras_json).toBeNull();
+    expect(JSON.parse(main.extras_json!)).toMatchObject({
+      effort: "high",
+      automated: false,
+      continued_by_human: false,
+    });
+    // Lookup keys on the logical session uuid, so no-hit rows get automation
+    // stamps only — including children, whose inner id (sub-inner-1) is not
+    // in the lookup.
+    expect(JSON.parse(sessions.get(S_AUTO)!.extras_json!)).toMatchObject({
+      automated: true,
+      continued_by_human: false,
+    });
+    expect(JSON.parse(sessions.get(S_AUTO)!.extras_json!)).not.toHaveProperty("effort");
+    expect(JSON.parse(sessions.get("sub-inner-1__subagent__agent-abc")!.extras_json!)).toMatchObject({
+      automated: true,
+    });
+    expect(JSON.parse(sessions.get("sub-inner-1__subagent__agent-abc")!.extras_json!)).not.toHaveProperty("effort");
 
     // The stamped row resolves effort without any CB lookup at read time —
     // the whole point of index-time stamping.
@@ -183,23 +195,23 @@ describe("syncToStore", () => {
     };
 
     syncToStore(store, { projectsRoot: ROOT, effortBySessionId: new Map([[S_MAIN, "high"]]) });
-    expect(sessions.get(S_MAIN)!.extras_json).toBe(JSON.stringify({ effort: "high" }));
+    expect(JSON.parse(sessions.get(S_MAIN)!.extras_json!)).toMatchObject({ effort: "high" });
 
     // Reparse everything with the CB entry rotated away — the stamp survives.
     syncToStore(store, { projectsRoot: ROOT, effortBySessionId: new Map(), force: true });
-    expect(sessions.get(S_MAIN)!.extras_json).toBe(JSON.stringify({ effort: "high" }));
-    expect(sessions.get(S_AUTO)!.extras_json).toBeNull();
+    expect(JSON.parse(sessions.get(S_MAIN)!.extras_json!)).toMatchObject({ effort: "high" });
+    expect(JSON.parse(sessions.get(S_AUTO)!.extras_json!)).not.toHaveProperty("effort");
 
     // A fresh lookup hit still wins over the preserved prior.
     syncToStore(store, { projectsRoot: ROOT, effortBySessionId: new Map([[S_MAIN, "low"]]), force: true });
-    expect(sessions.get(S_MAIN)!.extras_json).toBe(JSON.stringify({ effort: "low" }));
+    expect(JSON.parse(sessions.get(S_MAIN)!.extras_json!)).toMatchObject({ effort: "low" });
   });
 
   it("skips effort stamping when the lookup is explicitly null", () => {
     const { store, sessions } = fakeStore();
     syncToStore(store, { projectsRoot: ROOT, effortBySessionId: null });
-    expect(sessions.get(S_MAIN)!.extras_json).toBeNull();
-    expect(sessions.get(S_AUTO)!.extras_json).toBeNull();
+    expect(JSON.parse(sessions.get(S_MAIN)!.extras_json!)).not.toHaveProperty("effort");
+    expect(JSON.parse(sessions.get(S_AUTO)!.extras_json!)).toMatchObject({ automated: true });
   });
 
   it("gives children synthetic distinct ids with parent/workflow linkage", () => {

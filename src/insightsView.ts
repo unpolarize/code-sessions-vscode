@@ -63,7 +63,7 @@ import {
   BACKGROUND_SESSION_LIFECYCLE_CARD_CSS,
 } from "./backgroundSessionLifecycle";
 import {
-  isAutomatedSession,
+  hideAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
   DEFAULT_EXTRA_ENTRYPOINTS,
   DEFAULT_AUTO_LABELS,
@@ -1207,7 +1207,7 @@ export async function openInsightsView(
     titlePatterns: cfg.get<string[]>("automation.titlePatterns", DEFAULT_TITLE_PATTERNS),
     extraLabels: cfg.get<string[]>("automation.labels", DEFAULT_AUTO_LABELS),
   };
-  const filtered = allRows.filter((r) => showAutomated || !isAutomatedSession(r, autoCfg));
+  const filtered = allRows.filter((r) => showAutomated || !hideAutomatedSession(r, autoCfg));
 
   // Limit to the lookback window (cost / heatmap / etc.).
   const nowSec = Math.floor(Date.now() / 1000);

@@ -13,6 +13,12 @@ import * as os from "os";
 import * as path from "path";
 import { SessionStore, SessionRow, TurnRow } from "./db";
 import { parseConversation, ParsedConversation } from "./conversationParser";
+import {
+  isAutomatedSession,
+  isHumanContinuedSession,
+  laterMeaningfulUserTexts,
+  mergeAutomationExtras,
+} from "./automation";
 import { extractReasoningTokens } from "./reasoningTokens";
 import { effortFromExtras } from "./effortDriftCanary";
 import { loadCodeBuildEffortLookup } from "./effortDriftHost";
@@ -37,6 +43,16 @@ export function cleanCommandText(text: string): string {
     return (args ? `${name} ${args}` : name).trim();
   }
   return text.replace(COMMAND_WRAPPER_RE, "").trim();
+}
+
+function safeJsonObject(raw: string | null | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const o = JSON.parse(raw);
+    return o && typeof o === "object" && !Array.isArray(o) ? (o as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }
 
 // Prices in USD per 1M tokens (2026 Anthropic list). Cache read = 0.1x input,
@@ -419,6 +435,31 @@ function aggregateFromParsed(
   const stampedEffort =
     effortBySessionId?.get(parsed.sessionId || "") || effortFromExtras(priorExtrasJson) || null;
 
+  const cleanedFirst = cleanCommandText(firstUserMsg).slice(0, 4096);
+  const laterMsgs = laterMeaningfulUserTexts(
+    parsed.turns.map((t) => cleanCommandText(t.userText || "")),
+  );
+  const autoInput = {
+    is_automated: isAutomated || kind !== "session",
+    entrypoint,
+    title: (parsed.title || cleanedFirst.slice(0, 70)) + (kind !== "session" ? ` [${kind}]` : ""),
+    first_user_msg: cleanedFirst,
+    extras_json: priorExtrasJson ?? null,
+    kind,
+    later_user_msgs: laterMsgs,
+  };
+  const automated = isAutomatedSession(autoInput) || kind !== "session";
+  const continuedByHuman = automated && kind === "session" && isHumanContinuedSession(autoInput);
+  const extrasJson = mergeAutomationExtras(
+    stampedEffort
+      ? JSON.stringify({
+          ...(priorExtrasJson ? safeJsonObject(priorExtrasJson) : {}),
+          effort: stampedEffort,
+        })
+      : priorExtrasJson,
+    { automated, continued_by_human: continuedByHuman },
+  );
+
   const session: SessionRow = {
     session_id: sid,
     source: "claude",
@@ -441,15 +482,13 @@ function aggregateFromParsed(
     reasoning_tokens: reasoningTok,
     cost_usd: Number(cost.toFixed(4)),
     model: sessionModel,
-    title: (parsed.title || cleanCommandText(firstUserMsg).slice(0, 70)) + (kind !== 'session' ? ` [${kind}]` : ''),
-    first_user_msg: cleanCommandText(firstUserMsg).slice(0, 4096),
+    title: (parsed.title || cleanedFirst.slice(0, 70)) + (kind !== 'session' ? ` [${kind}]` : ''),
+    first_user_msg: cleanedFirst,
     entrypoint,
-    is_automated: isAutomated || kind !== 'session',
+    is_automated: automated,
     indexed_at: Date.now(),
     last_assistant_text_at: parsed.lastAssistantTextMs,
-    // Claude-side extras are mostly tabular fields; the JSON blob only carries
-    // the declared effort label (when the CB index knows it) today.
-    extras_json: stampedEffort ? JSON.stringify({ effort: stampedEffort }) : null,
+    extras_json: extrasJson,
     kind,
     parent_session_id: txInfo?.parentSessionId || null,
     workflow_id: txInfo?.workflowId || null,

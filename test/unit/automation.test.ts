@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   isAutomatedSession,
+  hideAutomatedSession,
+  isHumanContinuedSession,
+  firstMeaningfulUserText,
   defaultAutomationConfig,
   DEFAULT_TITLE_PATTERNS,
 } from "../../src/automation";
@@ -110,5 +113,113 @@ describe("isAutomatedSession", () => {
   it("default pattern list includes the night-loop lead-in", () => {
     expect(DEFAULT_TITLE_PATTERNS.some((p) => p.includes("autonomous overnight"))).toBe(true);
     expect(defaultAutomationConfig().titlePatterns.length).toBeGreaterThan(5);
+  });
+
+  it("flags Grok IMPLEMENT / IDEATE / overnight-validate prompts on grok-build-plan", () => {
+    expect(
+      isAutomatedSession({
+        ...interactive,
+        entrypoint: "grok-build-plan",
+        title: "KP preflight gate implement slice",
+        first_user_msg:
+          "<user_query>\n# Grok IMPLEMENT — one-hour autonomous build slice\n\nYou are Grok Build running a 60-minute autonomous implementation slot.\nPrimary queue is KP:\n$KP implementable --json\n</user_query>",
+      }),
+    ).toBe(true);
+    expect(
+      isAutomatedSession({
+        ...interactive,
+        entrypoint: "grok-build-plan",
+        title: "Grok Ideate Market Research Product Directions",
+        first_user_msg:
+          "You are Grok Build running an autonomous ideation slot for the unpolarize org. You are the **divergent-thinking lane**.",
+      }),
+    ).toBe(true);
+    expect(
+      isAutomatedSession({
+        ...interactive,
+        entrypoint: "grok-build-plan",
+        title: "Validate Insights probe-provider overnight KP",
+        first_user_msg:
+          "Validate this KP task for overnight auto-implement: gaps, risks, sharper acceptance.",
+      }),
+    ).toBe(true);
+  });
+
+  it("skips Grok harness turns when locating the real prompt", () => {
+    expect(
+      firstMeaningfulUserText([
+        "<user_info>\nOS Version: macos\n</user_info>",
+        "<system-reminder>\nMCP servers connecting\n</system-reminder>",
+        "<user_query>\nYou are Grok Build running a 60-minute autonomous implementation slot.\n</user_query>",
+      ]),
+    ).toContain("autonomous implementation slot");
+  });
+
+  it("honors extras.automated and extras.phase provenance", () => {
+    expect(
+      isAutomatedSession({
+        ...interactive,
+        extras_json: JSON.stringify({ automated: true }),
+      }),
+    ).toBe(true);
+    expect(
+      isAutomatedSession({
+        ...interactive,
+        extras_json: JSON.stringify({ phase: "grok-implement" }),
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("hideAutomatedSession (filter rule)", () => {
+  it("hides automated-not-continued, shows automated-continued and human", () => {
+    const autoNotContinued = {
+      ...interactive,
+      entrypoint: "grok-build-plan",
+      title: "KP queue autonomous one-hour implement slice",
+      first_user_msg:
+        "# Grok IMPLEMENT — one-hour autonomous build slice from the KP queue\nYou are Grok Build running a 60-minute autonomous implementation slot.",
+    };
+    const autoContinued = {
+      ...autoNotContinued,
+      extras_json: JSON.stringify({ automated: true, continued_by_human: true }),
+      later_user_msgs: ["the resume stall is still reproducing — look at src/acp.ts"],
+    };
+    const human = {
+      ...interactive,
+      entrypoint: "grok-build-plan",
+      title: "Grok ACP resume stall, missing prompt, wipe",
+      first_user_msg:
+        "Deep research: CB bug — restarting/resuming a Grok ACP session shows a stall",
+    };
+
+    expect(hideAutomatedSession(autoNotContinued)).toBe(true);
+    expect(isAutomatedSession(autoNotContinued)).toBe(true);
+
+    expect(isAutomatedSession(autoContinued)).toBe(true);
+    expect(isHumanContinuedSession(autoContinued)).toBe(true);
+    expect(hideAutomatedSession(autoContinued)).toBe(false);
+
+    expect(isAutomatedSession(human)).toBe(false);
+    expect(hideAutomatedSession(human)).toBe(false);
+  });
+
+  it("treats a later non-machine user_query as human-continued", () => {
+    expect(
+      isHumanContinuedSession({
+        ...interactive,
+        first_user_msg: "You are Grok Build running a 60-minute autonomous implementation slot.",
+        later_user_msgs: ["ok, now fix the filter count on the tree tip"],
+      }),
+    ).toBe(true);
+    expect(
+      isHumanContinuedSession({
+        ...interactive,
+        first_user_msg: "You are Grok Build running a 60-minute autonomous implementation slot.",
+        later_user_msgs: [
+          "You are Grok Build running a 60-minute autonomous implementation slot. Primary queue is KP.",
+        ],
+      }),
+    ).toBe(false);
   });
 });

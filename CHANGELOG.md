@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.73.1 — 2026-09-12
+
+### Hide-automated filter covers Grok machine lanes (except human-continued)
+
+- **"Hide automated sessions" was leaking [G] night/orchestrator runs.** Grok `grok -p` sessions record entrypoint `grok-build-plan` (interactive allow-list) and stored `<user_info>` as `first_user_msg`, so `# Grok IMPLEMENT` / IDEATE / morning-email / "Validate this KP task for overnight auto-implement" never matched. The classifier now unwraps `<user_query>`, skips harness turns, and honors extras `automated` / `phase` / labels. Hide rule is **automated AND NOT human-continued** (a later real user prompt in Code Build, or `continued_by_human` / `continued-in-cb` labels). Indexers stamp those extras; a one-shot SQLite backfill rewrites existing grok rows from stored turns so yesterday's machine runs hide without waiting for mtime. Human-initiated sessions stay visible.
+- (kp: tasks/csv-hide-automated-sessions-filter-incomplete-hi)
+
 ## 1.73.0 — 2026-09-11
 
 ### Background-session lifecycle matrix (Insights)

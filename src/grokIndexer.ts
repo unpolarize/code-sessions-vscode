@@ -22,6 +22,13 @@ import * as os from "os";
 import * as path from "path";
 import type { SessionStore, SessionRow, TurnRow } from "./db";
 import { GrokTurn, parseGrokConversation } from "./grokConversationParser";
+import {
+  firstMeaningfulUserText,
+  isAutomatedSession,
+  isHumanContinuedSession,
+  laterMeaningfulUserTexts,
+  mergeAutomationExtras,
+} from "./automation";
 
 export const GROK_SESSIONS_ROOT = path.join(os.homedir(), ".grok", "sessions");
 
@@ -299,8 +306,13 @@ export function buildGrokRows(
   if (stillbornCatalog) return null;
 
   // Title preference: generated_title > session_summary > first user msg.
-  let firstUserMsg = "";
-  if (parsed.turns.length > 0) firstUserMsg = parsed.turns[0].userText.slice(0, 4096);
+  // Grok ACP prepends <user_info> / <system-reminder> as type:user turns —
+  // those are not the operator prompt. Prefer the first <user_query>.
+  const userTexts = parsed.turns.map((t) => t.userText);
+  const firstUserMsg = (
+    firstMeaningfulUserText(userTexts) ||
+    (parsed.turns.length > 0 ? parsed.turns[0].userText : "")
+  ).slice(0, 4096);
   const title =
     (summary.generated_title && summary.generated_title.trim()) ||
     (summary.session_summary && summary.session_summary.trim()) ||
@@ -323,6 +335,22 @@ export function buildGrokRows(
   const contextTokens = signals?.contextTokensUsed ?? 0;
   const toolCount =
     typeof signals?.toolCallCount === "number" ? signals.toolCallCount : parsed.totalTools;
+
+  const autoInput = {
+    is_automated: false,
+    entrypoint: summary.agent_name ?? null,
+    title,
+    first_user_msg: firstUserMsg,
+    extras_json: signals ? JSON.stringify(signals) : null,
+    kind: "session" as const,
+    later_user_msgs: laterMeaningfulUserTexts(userTexts),
+  };
+  const automated = isAutomatedSession(autoInput);
+  const continuedByHuman = automated && isHumanContinuedSession(autoInput);
+  const extrasJson = mergeAutomationExtras(
+    signals ? JSON.stringify(signals) : null,
+    { automated, continued_by_human: continuedByHuman },
+  );
 
   const session: SessionRow = {
     session_id: sessionId,
@@ -349,7 +377,7 @@ export function buildGrokRows(
     title,
     first_user_msg: firstUserMsg,
     entrypoint: summary.agent_name ?? null,
-    is_automated: false,
+    is_automated: automated,
     kind: 'session',
     parent_session_id: null,
     workflow_id: null,
@@ -364,7 +392,7 @@ export function buildGrokRows(
     // Whole signals blob — the tooltip / future Insights views can pick
     // out individual fields without re-reading the JSON sidecar on every
     // hover. Stored as a compact JSON string.
-    extras_json: signals ? JSON.stringify(signals) : null,
+    extras_json: extrasJson,
   };
 
   // Per-turn synthetic timestamps: spread evenly between started_at and

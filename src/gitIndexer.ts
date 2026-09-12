@@ -24,6 +24,12 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { SessionStore, SessionRow, TurnRow } from "./db";
+import {
+  isAutomatedSession,
+  isHumanContinuedSession,
+  laterMeaningfulUserTexts,
+  mergeAutomationExtras,
+} from "./automation";
 
 const DEFAULT_GIT_ROOT = path.join(os.homedir(), ".sessions");
 
@@ -254,6 +260,25 @@ export function buildGitRows(info: GitSessionInfo): { session: SessionRow; turns
   const endedAt = tsToMs(env.ended_at) ?? startedAt;
   const firstUserMsg = exchanges.find((e) => e.userText.trim().length > 0)?.userText.slice(0, 4096) ?? "";
   const title = (env.title && env.title.trim()) || firstUserMsg.slice(0, 70) || env.session_id.slice(0, 8);
+  const laterMsgs = laterMeaningfulUserTexts(exchanges.map((e) => e.userText));
+  const extrasBase = {
+    host: env.host,
+    agent: env.agent,
+    labels: env.labels ?? [],
+    open: !env.ended_at,
+    planning_refs: env.planning_refs ?? [],
+  };
+  const autoInput = {
+    is_automated: false,
+    entrypoint: env.agent ?? null,
+    title,
+    first_user_msg: firstUserMsg,
+    extras_json: JSON.stringify(extrasBase),
+    kind: "session" as const,
+    later_user_msgs: laterMsgs,
+  };
+  const automated = isAutomatedSession(autoInput);
+  const continuedByHuman = automated && isHumanContinuedSession(autoInput);
   const hasAssistant = exchanges.some((e) => e.assistantText.trim().length > 0);
   const lastAssistant = [...exchanges].reverse().find((e) => e.assistantText.trim().length > 0);
 
@@ -285,15 +310,12 @@ export function buildGitRows(info: GitSessionInfo): { session: SessionRow; turns
     title,
     first_user_msg: firstUserMsg,
     entrypoint: env.agent ?? null,
-    is_automated: false,
+    is_automated: automated,
     indexed_at: Date.now(),
     last_assistant_text_at: hasAssistant ? lastAssistant?.endMs ?? endedAt : null,
-    extras_json: JSON.stringify({
-      host: env.host,
-      agent: env.agent,
-      labels: env.labels ?? [],
-      open: !env.ended_at,
-      planning_refs: env.planning_refs ?? [],
+    extras_json: mergeAutomationExtras(JSON.stringify(extrasBase), {
+      automated,
+      continued_by_human: continuedByHuman,
     }),
   };
 

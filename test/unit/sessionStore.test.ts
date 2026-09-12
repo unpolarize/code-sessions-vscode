@@ -214,3 +214,52 @@ describe("listRecent requireReply window", () => {
     expect(byReply[0].title).toBe("today human chat");
   });
 });
+
+describe("backfillGrokAutomationFromTurns", () => {
+  it("rewrites harness first_user_msg and stamps grok machine-lane extras", () => {
+    store.db.prepare("DELETE FROM migration WHERE name = ?").run("grok_automation_prompt_backfill_v1");
+    const id = "bbbb2222-0000-4000-8000-00000000grk1";
+    store.upsertSession(
+      sessionRow({
+        session_id: id,
+        source: "grok",
+        jsonl_path: "/tmp/grok-auto-backfill.jsonl",
+        entrypoint: "grok-build-plan",
+        title: "KP queue autonomous one-hour implement slice",
+        first_user_msg: "<user_info>\nOS Version: macos\n</user_info>",
+        is_automated: false,
+        extras_json: JSON.stringify({ contextTokensUsed: 99 }),
+      }),
+    );
+    store.upsertTurns([
+      turnRow({
+        session_id: id,
+        turn_uuid: `${id}#0`,
+        turn_index: 0,
+        user_text: "<user_info>\nOS Version: macos\n</user_info>",
+      }),
+      turnRow({
+        session_id: id,
+        turn_uuid: `${id}#1`,
+        turn_index: 1,
+        user_text: "<system-reminder>\nskills catalog\n</system-reminder>",
+      }),
+      turnRow({
+        session_id: id,
+        turn_uuid: `${id}#2`,
+        turn_index: 2,
+        user_text:
+          "<user_query>\nYou are Grok Build running a 60-minute autonomous implementation slot.\nPrimary queue is KP.\n</user_query>",
+      }),
+    ]);
+    store.backfillGrokAutomationFromTurns();
+    const got = store.getById(id)!;
+    expect(got.first_user_msg).toContain("autonomous implementation slot");
+    expect(got.is_automated).toBe(true);
+    expect(JSON.parse(got.extras_json!)).toMatchObject({
+      contextTokensUsed: 99,
+      automated: true,
+      continued_by_human: false,
+    });
+  });
+});

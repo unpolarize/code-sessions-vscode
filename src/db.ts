@@ -11,6 +11,13 @@
 import { Database } from "./sqlite";
 import * as fs from "fs";
 import * as path from "path";
+import {
+  firstMeaningfulUserText,
+  isAutomatedSession,
+  isHumanContinuedSession,
+  laterMeaningfulUserTexts,
+  mergeAutomationExtras,
+} from "./automation";
 
 const MIGRATIONS: string[] = [
   // v1 — session + turn tables
@@ -516,6 +523,7 @@ export class SessionStore {
   private static tryCreateAndMigrate(dbPath: string): SessionStore {
     const store = new SessionStore(dbPath);
     store.migrate();
+    store.backfillGrokAutomationFromTurns();
     return store;
   }
 
@@ -832,6 +840,86 @@ export class SessionStore {
       this.db.pragma(`user_version = ${MIGRATIONS.length}`);
     });
     apply(current);
+  }
+
+  /**
+   * One-shot: grok rows stored `<user_info>` as first_user_msg, so the hide-
+   * automated filter never saw `# Grok IMPLEMENT` / IDEATE / validate prompts.
+   * Rebuild first_user_msg + extras.automated / continued_by_human from turns.
+   */
+  backfillGrokAutomationFromTurns(): void {
+    const NAME = "grok_automation_prompt_backfill_v1";
+    try {
+      const already = this.db.prepare("SELECT 1 FROM migration WHERE name = ?").get(NAME);
+      if (already) return;
+    } catch {
+      return;
+    }
+    const sessions = this.db
+      .prepare(
+        `SELECT session_id, title, first_user_msg, entrypoint, extras_json, is_automated, kind
+         FROM session WHERE source = 'grok'`,
+      )
+      .all() as Array<{
+        session_id: string;
+        title: string | null;
+        first_user_msg: string | null;
+        entrypoint: string | null;
+        extras_json: string | null;
+        is_automated: number;
+        kind: string | null;
+      }>;
+    if (sessions.length === 0) {
+      this.db
+        .prepare("INSERT OR IGNORE INTO migration (name, applied_at, detail) VALUES (?, ?, ?)")
+        .run(NAME, Date.now(), JSON.stringify({ updated: 0 }));
+      return;
+    }
+    const turns = this.db
+      .prepare(
+        `SELECT session_id, turn_index, user_text FROM turn
+         WHERE session_id IN (SELECT session_id FROM session WHERE source = 'grok')
+         ORDER BY session_id, turn_index`,
+      )
+      .all() as Array<{ session_id: string; turn_index: number; user_text: string | null }>;
+    const bySession = new Map<string, string[]>();
+    for (const t of turns) {
+      const list = bySession.get(t.session_id) ?? [];
+      list.push(t.user_text ?? "");
+      bySession.set(t.session_id, list);
+    }
+    const upd = this.db.prepare(
+      `UPDATE session SET first_user_msg = ?, is_automated = ?, extras_json = ? WHERE session_id = ?`,
+    );
+    const tx = this.db.transaction(() => {
+      let updated = 0;
+      for (const s of sessions) {
+        const texts = bySession.get(s.session_id) ?? [s.first_user_msg ?? ""];
+        const first = firstMeaningfulUserText(texts) || s.first_user_msg || "";
+        const later = laterMeaningfulUserTexts(texts);
+        const autoInput = {
+          is_automated: !!s.is_automated,
+          entrypoint: s.entrypoint,
+          title: s.title,
+          first_user_msg: first,
+          extras_json: s.extras_json,
+          kind: s.kind,
+          later_user_msgs: later,
+        };
+        const automated = isAutomatedSession(autoInput);
+        const continued = automated && isHumanContinuedSession(autoInput);
+        const extras = mergeAutomationExtras(s.extras_json, {
+          automated,
+          continued_by_human: continued,
+        });
+        upd.run(first.slice(0, 4096), automated ? 1 : 0, extras, s.session_id);
+        updated += 1;
+      }
+      this.db
+        .prepare("INSERT OR IGNORE INTO migration (name, applied_at, detail) VALUES (?, ?, ?)")
+        .run(NAME, Date.now(), JSON.stringify({ updated }));
+    });
+    tx();
   }
 
   // ---- session queries -------------------------------------------------- //

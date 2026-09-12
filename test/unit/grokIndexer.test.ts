@@ -96,7 +96,12 @@ describe("buildGrokRows", () => {
     expect(session.started_at).toBe(Date.parse("2026-07-20T10:00:00Z"));
     expect(session.ended_at).toBe(Date.parse("2026-07-20T10:06:00Z")); // last_active_at wins
     expect(session.last_assistant_text_at).toBe(Date.parse("2026-07-20T10:06:00Z"));
-    expect(JSON.parse(session.extras_json!)).toMatchObject({ contextTokensUsed: 4321 });
+    expect(JSON.parse(session.extras_json!)).toMatchObject({
+      contextTokensUsed: 4321,
+      automated: false,
+      continued_by_human: false,
+    });
+    expect(session.is_automated).toBe(false);
 
     expect(turns.length).toBe(2);
     expect(turns[0].user_text).toBe("add a health endpoint");

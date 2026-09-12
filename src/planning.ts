@@ -35,7 +35,7 @@ import { buildExplainPrompt, invokeClaudeP, parseLabelJson } from "./sessionExpl
 import { locateStoreTurns, turnsToConversation } from "./storeTranscript";
 import { parseConversation, type ParsedConversation } from "./conversationParser";
 import { invokeAskAgent, pickAskRuntime } from "./askAgent";
-import { isAutomatedSession } from "./automation";
+import { hideAutomatedSession } from "./automation";
 import { cachedDaemonSessions } from "./daemonClient";
 import {
   actionLabel,
@@ -122,7 +122,7 @@ function listSessionsRich(): FleetSession[] {
         planningRefs: extras.planning_refs ?? s.planningRefs,
         labels: extras.labels,
         firstUserMsg: r.first_user_msg ?? undefined,
-        automated: isAutomatedSession({
+        automated: hideAutomatedSession({
           is_automated: r.is_automated,
           entrypoint: r.entrypoint,
           title: s.title,
@@ -157,7 +157,7 @@ function listSessionsRich(): FleetSession[] {
         cost: s.cost,
         planningRefs: s.planningRefs,
         labels: s.labels,
-        automated: isAutomatedSession({
+        automated: hideAutomatedSession({
           title: s.title,
           first_user_msg: undefined,
           extras_json: JSON.stringify({ labels: s.labels ?? [] }),

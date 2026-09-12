@@ -2,7 +2,7 @@
   "name": "code-sessions",
   "displayName": "Code Sessions",
   "description": "Central sidebar for coding-agent CLI activity: Claude Code + Grok Build sessions across projects (with tokens/cost/subagents/projects-touched), KB file changes by day, and per-project file changes by day. Jump to resume, file, or diff.",
-  "version": "1.73.0",
+  "version": "1.73.1",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -911,7 +911,20 @@
             "ideation phase of a 5-hour",
             "no user interaction",
             "kp implementable",
-            "grok-ideate"
+            "grok-ideate",
+            "you are grok build running",
+            "you are grok build composing",
+            "60-minute autonomous implementation",
+            "autonomous implementation slot",
+            "autonomous ideation slot",
+            "# grok implement",
+            "# grok ideate",
+            "primary queue is kp",
+            "you are headless (`grok -p`)",
+            "grok-implement-result",
+            "validate this kp task",
+            "overnight auto-implement",
+            "divergent-thinking lane"
           ],
           "description": "Case-insensitive substrings matched against session title + first user message. Hits are treated as automated (hidden unless Show Automated is on). Covers night-loop / cron prompts that record entrypoint sdk-cli like Code Build."
         },
@@ -943,7 +956,12 @@
             "fleet",
             "night-loop",
             "night-ideate",
-            "night-implement"
+            "night-implement",
+            "grok-implement",
+            "grok-ideate",
+            "grok-email",
+            "lane-kick",
+            "kp-validate"
           ],
           "description": "Git-store extras.labels values that mark a session as automated."
         },

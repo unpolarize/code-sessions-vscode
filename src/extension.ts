@@ -94,6 +94,7 @@ import {
 } from "./openSessionLink";
 import {
   isAutomatedSession,
+  hideAutomatedSession,
   DEFAULT_TITLE_PATTERNS,
   DEFAULT_EXTRA_ENTRYPOINTS,
   DEFAULT_AUTO_LABELS,
@@ -596,6 +597,18 @@ function rowIsAutomated(r: {
   return isAutomatedSession(r, readAutomationConfig());
 }
 
+/** Hide-automated filter: machine lanes except those a human continued in CB. */
+function rowHideAutomated(r: {
+  is_automated?: boolean;
+  entrypoint?: string;
+  title?: string;
+  first_user_msg?: string;
+  extras_json?: string | null;
+  kind?: string;
+}): boolean {
+  return hideAutomatedSession(r, readAutomationConfig());
+}
+
 async function syncShowAutomatedContext(): Promise<void> {
   const on = vscode.workspace.getConfiguration("codeSessions").get<boolean>("showAutomated", false);
   await vscode.commands.executeCommand("setContext", "codeSessions.showAutomated", on);
@@ -1028,7 +1041,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     const showAutomated = this.showAutomatedNow();
     const showHidden = cfg.get<boolean>("showHidden", false);
     return rows
-      .filter((r) => showAutomated || !rowIsAutomated(r))
+      .filter((r) => showAutomated || !rowHideAutomated(r))
       .filter((r) => showHidden || !r.is_hidden)
       .filter((r) => (r.last_response_epoch ?? 0) > 0);
   }
@@ -1053,7 +1066,7 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     const cfg = vscode.workspace.getConfiguration("codeSessions");
     if (this.showAutomatedNow()) return 0;
     const showHidden = cfg.get<boolean>("showHidden", false);
-    return this.rows.filter((r) => rowIsAutomated(r) && (showHidden || !r.is_hidden) && this.inScope(r)).length;
+    return this.rows.filter((r) => rowHideAutomated(r) && (showHidden || !r.is_hidden) && this.inScope(r)).length;
   }
 
   /** Returns the epoch-second timestamp we treat as the session's
@@ -1165,16 +1178,16 @@ class SessionsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     // suppressed only by the named axis, so the user sees actionable
     // numbers instead of cumulative hides.
     const automatedCount = showAutomated ? 0 :
-      allRows.filter((r) => rowIsAutomated(r) && (showHidden || !r.is_hidden)
+      allRows.filter((r) => rowHideAutomated(r) && (showHidden || !r.is_hidden)
         && this.inScope(r)).length;
     const hiddenCount = showHidden ? 0 :
-      allRows.filter((r) => r.is_hidden && (showAutomated || !rowIsAutomated(r))
+      allRows.filter((r) => r.is_hidden && (showAutomated || !rowHideAutomated(r))
         && this.inScope(r)).length;
 
     const out: vscode.TreeItem[] = [];
 
     if (wsFilter || hostFilter) {
-      const hiddenByScope = allRows.filter((r) => (showAutomated || !rowIsAutomated(r))
+      const hiddenByScope = allRows.filter((r) => (showAutomated || !rowHideAutomated(r))
         && (showHidden || !r.is_hidden)
         && (r.last_response_epoch ?? 0) > 0
         && !this.inScope(r)).length;
