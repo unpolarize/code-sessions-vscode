@@ -384,6 +384,17 @@ function liveRefMap(){
   return {byRef:byRef, byUuid:byUuid};
 }
 function sessIntent(s){ const hit=(s.labels||[]).find(l=>String(l).indexOf('intent:')===0); return hit?String(hit).slice(7).trim():''; }
+// Ended/open sessions linked to an item in the last 24h. Never KP status.
+// Cutoff is inline: a later const is TDZ if setView('flight') paints at boot.
+function recentSessOf(o){
+  const cutoff=Date.now()-24*3600*1000;
+  return sessionsFor(o).filter(s=>{
+    if(!s||!s.uuid) return false;
+    if(s.status==='live-local'||s.status==='active-remote') return false;
+    const t=s.lastActivity||s.mtime||0;
+    return t>=cutoff;
+  });
+}
 function renderLiveStrip(board){
   const rows=liveSessions().sort((a,b)=>((b.lastActivity||b.mtime||0)-(a.lastActivity||a.mtime||0)));
   if(!rows.length)return;
@@ -431,16 +442,21 @@ function renderFlight(){
   const buckets=[
     {key:'live',label:'▶ live session now',color:'#89d185',rows:[]},
     {key:'machine',label:'🤖 machine implementing',color:'#ce9178',rows:[]},
-    {key:'claimed',label:'⏳ claimed in progress',color:'#dcdcaa',rows:[]}];
+    {key:'recent',label:'✅ recently implemented',color:'#4ec9b0',rows:[]}];
   pool.forEach(o=>{
     const lv=liveOf(o);
     const rec=activeImplOf(o.id);
+    const recent=recentSessOf(o);
     if(lv.length)buckets[0].rows.push({o:o,live:lv,rec:rec});
     else if(rec&&rec.kind==='running')buckets[1].rows.push({o:o,rec:rec});
-    else if(String(o.status)==='in_progress'||(o.type==='idea'&&String(o.status)==='plan'))buckets[2].rows.push({o:o});
+    else if(recent.length)buckets[2].rows.push({o:o,recent:recent});
   });
   const n=buckets.reduce((a,b)=>a+b.rows.length,0);
-  root.appendChild(el('div','livehead','<b>'+n+' item(s) in flight</b><span style="opacity:.6">live sessions · machine runs · claimed in-progress — every type, one view. Click a card to open it.</span>'));
+  if(!n){
+    root.appendChild(el('div','livehead flightempty','<b>Nothing in flight</b><span style="opacity:.6">No live sessions or machine implement runs right now. In-progress knowledge objects stay on the Board / Pipeline until a session is working on them.</span>'));
+    return;
+  }
+  root.appendChild(el('div','livehead','<b>'+n+' item(s) in flight</b><span style="opacity:.6">live sessions · machine runs · recently finished sessions — every type, one view. Click a card to open it.</span>'));
   const lanesWrap=el('div','lanes');root.appendChild(lanesWrap);
   buckets.forEach(bk=>{
     const col=el('div','col'); col.dataset.lane=bk.key;
@@ -448,13 +464,14 @@ function renderFlight(){
     const cards=el('div','cards');
     if(!bk.rows.length)cards.appendChild(el('div',null,'<div style="opacity:.45;padding:8px;font-size:11px">none</div>'));
     bk.rows.forEach(r=>{
-      const o=r.o, kind=issueKindOf(o), top=r.live&&r.live[0];
-      const c=el('div','card'+(top?' haslive':'')); c.dataset.id=o.id;
+      const o=r.o, kind=issueKindOf(o), top=(r.live&&r.live[0])||(r.recent&&r.recent[0]);
+      const c=el('div','card'+(r.live&&r.live[0]?' haslive':'')); c.dataset.id=o.id;
       c.innerHTML='<div class="ct">'+esc(o.title||o.id)+'</div><div class="cm">'+
         '<span class="badge">'+o.type+'</span>'+
         (kind?'<span class="badge '+(kind==='bug'?'kindbug':'kindfeat')+'">'+(kind==='bug'?'🐛':'✨')+' '+kind+'</span>':'')+
         (o.status?'<span class="badge">'+esc(o.status)+'</span>':'')+
-        (top?'<span class="sesschip live" data-sess="'+esc(top.uuid)+'" title="'+esc((top.title||top.uuid)+(top.host?' · '+top.host:''))+'"><span class="livedot"></span> live'+(r.live.length>1?' ×'+r.live.length:'')+'</span>':'')+
+        (r.live&&r.live[0]?'<span class="sesschip live" data-sess="'+esc(r.live[0].uuid)+'" title="'+esc((r.live[0].title||r.live[0].uuid)+(r.live[0].host?' · '+r.live[0].host:''))+'"><span class="livedot"></span> live'+(r.live.length>1?' ×'+r.live.length:'')+'</span>':'')+
+        (r.recent&&r.recent[0]?'<span class="sesschip" data-sess="'+esc(r.recent[0].uuid)+'" title="'+esc((r.recent[0].title||r.recent[0].uuid)+(r.recent[0].host?' · '+r.recent[0].host:''))+'">▸ '+esc(sessStateLabel(r.recent[0]))+'</span>':'')+
         (r.rec&&r.rec.kind==='running'?'<span class="runchip">▶ implementing</span><span class="badge">'+esc(r.rec.lane)+'</span>':'')+
         (o.priority?'<span class="prio '+esc(o.priority)+'">'+esc(o.priority)+'</span>':'')+
         (o.project?'<span>· '+esc(String(o.project).split('/').pop())+'</span>':'')+

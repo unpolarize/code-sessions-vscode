@@ -271,7 +271,7 @@ export class DashboardPanel {
   <div class="seg" id="viewSeg">
     <button data-view="board" class="on">Board</button>
     <button data-view="pipeline" title="Coding pipeline: bugs/features/auto items — inbox → approved → in progress → implementation → done">🚀 Pipeline</button>
-    <button data-view="flight" title="Everything in flight across all types — items with a live session, machine implement runs, claimed in-progress work">⚡ In flight</button>
+    <button data-view="flight" title="Everything in flight across all types — live sessions, machine implement runs, recently finished sessions">⚡ In flight</button>
     <button data-view="issues">Bugs / Features</button>
     <button data-view="inbox">Inbox</button>
     <button data-view="autonomous">🤖 Auto</button>

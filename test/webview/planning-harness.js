@@ -10,12 +10,13 @@
       { id: "tasks/appr2", type: "task", status: "today", title: "Approved task", target_repo: "code-build-vscode" },
       { id: "tasks/wip", type: "task", status: "in_progress", title: "Being built", issue_kind: "feature", linked_sessions: '["sess-live"]', has_screenshot: false },
       { id: "ideas/planned", type: "idea", status: "plan", title: "Started idea", target_repo: "code-sessions-vscode" },
+      { id: "tasks/lone", type: "task", status: "in_progress", title: "Claimed with no session", target_repo: "code-sessions-vscode" },
       { id: "tasks/wip2", type: "task", status: "in_progress", title: "Built earlier, session ended", target_repo: "code-sessions-vscode", linked_sessions: '["sess-old"]', has_screenshot: false },
       { id: "ideas/running", type: "idea", status: "plan", title: "Running now", linked_sessions: '["sess-live"]' },
       { id: "tasks/shipped", type: "task", status: "done", title: "Shipped", target_repo: "knowledge-planning", updated: today, linked_sessions: '["sess-old"]', has_screenshot: true },
       { id: "tasks/noproof", type: "task", status: "done", title: "Done, no screenshot", target_repo: "code-sessions-vscode", updated: today, has_screenshot: false }
     ],
-    counts: { task: 6, idea: 2 },
+    counts: { task: 7, idea: 4 },
     blocked: [],
     board: { date: today },
     autonomous: {

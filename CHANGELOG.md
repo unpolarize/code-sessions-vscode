@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.76.0 — 2026-09-12
+
+### In-flight view is session-driven (no claimed-in-progress lane)
+
+- **⚡ In flight** no longer lists knowledge objects just because their KP status is `in_progress` (or idea `@plan`). Those long-lived claims stay on Board / Pipeline.
+- Buckets are **live session now**, **machine implementing**, and **recently implemented** (ended/open sessions linked to the item in the last 24h). A knowledge object appears only via the session working on it.
+- Honest empty state: if nothing is live, machine-running, or recently session-linked, the view says so instead of padding with stale objects. Card click still opens the same centered item panel (editor 2/3 + session pane 1/3).
+- (kp: tasks/csv-in-flight-view-drop-claimed-in-progress-know)
+
 ## 1.75.0 — 2026-09-12
 
 ### Planning board item view shows KP object path

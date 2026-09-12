@@ -667,7 +667,7 @@ describe("pipeline session chips", () => {
     expect(byId.get("drawer")!.classList.contains("hidden")).toBe(false);
   });
 
-  it("⚡ in-flight view buckets live / machine / claimed and opens the same centered panel as the board", () => {
+  it("⚡ in-flight view buckets live / machine / recent from sessions only and opens the same centered panel as the board", () => {
     const snap = JSON.parse(JSON.stringify(sessSnapshot));
     snap.autonomous = {
       enabled: true,
@@ -679,13 +679,15 @@ describe("pipeline session chips", () => {
     const { sandbox, byId, posted, host } = miniDom(snap, {}, "flight", fleet);
     runInNewContext(src, sandbox, { filename: "planning-dashboard.js" });
     const lanes = lanesOf(byId, "flight");
+    expect(Object.keys(lanes)).toEqual(["live", "machine", "recent"]);
+    expect(lanes.claimed).toBeUndefined();
     expect(cardIds(lanes.live)).toEqual(["tasks/wip"]); // linked live session
     expect(cardIds(lanes.machine)).toEqual(["tasks/wip2"]); // night implement running
-    expect(cardIds(lanes.claimed)).toContain("tasks/lone"); // in_progress, no session
-    // closed and merely-scheduled items stay out of flight entirely
-    const all = [...cardIds(lanes.live), ...cardIds(lanes.machine), ...cardIds(lanes.claimed)];
+    expect(cardIds(lanes.recent)).toEqual(["tasks/refonly"]); // ended session via planning_refs
+    // in_progress with no session must not leak in from KP status
+    const all = [...cardIds(lanes.live), ...cardIds(lanes.machine), ...cardIds(lanes.recent)];
+    expect(all).not.toContain("tasks/lone");
     expect(all).not.toContain("tasks/noproof");
-    expect(all).not.toContain("tasks/refonly");
     const card = lanes.live.querySelectorAll(".card")[0]!;
     fire(card, "click", { target: card });
     expect(posted.find((m) => m.type === "show")).toMatchObject({ id: "tasks/wip" });
@@ -734,6 +736,18 @@ describe("pipeline session chips", () => {
       id: "tasks/wip",
       relpath: "tasks/wip.md",
     });
+  });
+
+  it("⚡ in-flight empty state is honest when nothing has a live/machine/recent session", () => {
+    const snap = JSON.parse(JSON.stringify(sessSnapshot));
+    snap.autonomous = { enabled: true };
+    const { sandbox, byId } = miniDom(snap, {}, "flight", []);
+    runInNewContext(src, sandbox, { filename: "planning-dashboard.js" });
+    const root = byId.get("flight")!;
+    expect(allText(root)).toContain("Nothing in flight");
+    expect(lanesOf(byId, "flight").claimed).toBeUndefined();
+    expect(lanesOf(byId, "flight").live).toBeUndefined();
+    expect(root.querySelectorAll(".card")).toHaveLength(0);
   });
 
   it("also picks up sessions linked only via the envelope's planning_refs", () => {
