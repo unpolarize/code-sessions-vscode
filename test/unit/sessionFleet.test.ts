@@ -60,6 +60,11 @@ describe("parseIntent / extras", () => {
       labels: ["intent:docs"],
       open: true,
       planning_refs: [],
+      agent: undefined,
+    });
+    expect(parseExtras('{"agent":"grok-build","planning_refs":["tasks/x"]}')).toMatchObject({
+      agent: "grok-build",
+      planning_refs: ["tasks/x"],
     });
     expect(parseExtras("not-json").labels).toEqual([]);
   });
@@ -147,5 +152,38 @@ describe("daemonRowsToFleet", () => {
     expect(rows[0]?.uuid).toBe("live-1");
     expect(rows[0]?.projectPath).toBe("/Users/me/docs");
     expect(rows[0]?.source).toBe("git");
+  });
+});
+
+describe("mergeFleetSessions source", () => {
+  it("keeps claude/grok over a later git duplicate of the same uuid", () => {
+    const native = toFleetSession(
+      {
+        uuid: "same",
+        source: "grok",
+        startedAt: NOW - 1000,
+        mtime: NOW - 1000,
+        lastActivity: NOW - 1000,
+        projectPath: "/Users/me/docs",
+        planningRefs: [],
+      },
+      { now: NOW, localHost: "air" },
+    );
+    const gitDup = toFleetSession(
+      {
+        uuid: "same",
+        source: "git",
+        agent: "grok",
+        startedAt: NOW - 1000,
+        mtime: NOW,
+        lastActivity: NOW - 1000,
+        projectPath: "/Users/me/docs",
+        planningRefs: [],
+      },
+      { now: NOW, localHost: "air" },
+    );
+    const merged = mergeFleetSessions([native, gitDup]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.source).toBe("grok");
   });
 });

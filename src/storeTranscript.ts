@@ -75,6 +75,25 @@ export function buildResumeSeed(ref: StoreTurnsRef, sessionId: string, maxTurns 
   );
 }
 
+/** CB `historyLoaded` records from git-store turns (no native JSONL). */
+export type StoreReplayRecord =
+  | { type: "user"; text: string }
+  | { type: "update"; update: { kind: "agent_message_chunk"; content: { type: "text"; text: string } } };
+
+export function turnsToReplayRecords(conv: ParsedConversation): StoreReplayRecord[] {
+  const out: StoreReplayRecord[] = [];
+  for (const t of conv.turns) {
+    if (t.userText.trim()) out.push({ type: "user", text: t.userText });
+    if (t.assistantText.trim()) {
+      out.push({
+        type: "update",
+        update: { kind: "agent_message_chunk", content: { type: "text", text: t.assistantText } },
+      });
+    }
+  }
+  return out;
+}
+
 function tsMs(s: unknown): number {
   if (typeof s !== "string") return 0;
   const v = Date.parse(s);

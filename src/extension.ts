@@ -18,7 +18,8 @@ import {
   type ChecklistItemState,
 } from "./planAssumptions";
 import { EMIT_HANDOFF_COMMAND } from "./compactionCliff";
-import { locateStoreTurns, buildResumeSeed } from "./storeTranscript";
+import { locateStoreTurns, buildResumeSeed, turnsToConversation, turnsToReplayRecords } from "./storeTranscript";
+import { isNativeTranscriptPath, planContinueInCodeBuild } from "./planningPipeline";
 import { computeWorkspaceRulesDoctor, openInsightsView } from "./insightsView";
 import { exportChecklist } from "./rulesDoctor";
 import { runMessagingDoctor } from "./messagingDoctor";
@@ -3598,7 +3599,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.commands.registerCommand("codeProjectsActivity.refresh", () => projects.refresh()),
 
     vscode.commands.registerCommand("codeSessions.resume", async (arg: SessionRow | SessionItem | undefined) => {
-      const row = unwrapRow(arg);
+      const row = enrichResumeRow(unwrapRow(arg), store);
       if (!row) { vscode.window.showWarningMessage("No session to resume."); return; }
       const cfg = vscode.workspace.getConfiguration("codeSessions");
       const preferredBackend = cfg.get<"code-build" | "native">("resumeBackend", "code-build");
@@ -3609,12 +3610,12 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
     }),
     vscode.commands.registerCommand("codeSessions.resumeInCodeBuild", async (arg: SessionRow | SessionItem | undefined) => {
-      const row = unwrapRow(arg);
+      const row = enrichResumeRow(unwrapRow(arg), store);
       if (!row) { vscode.window.showWarningMessage("No session to resume."); return; }
       await resumeInCodeBuild(row);
     }),
     vscode.commands.registerCommand("codeSessions.resumeInNative", async (arg: SessionRow | SessionItem | undefined) => {
-      const row = unwrapRow(arg);
+      const row = enrichResumeRow(unwrapRow(arg), store);
       if (!row) { vscode.window.showWarningMessage("No session to resume."); return; }
       await resumeInNative(row);
     }),
@@ -4313,6 +4314,31 @@ function unwrapRow(arg: SessionRow | SessionItem | undefined): SessionRow | null
   return arg as SessionRow;
 }
 
+function extrasAgent(row: SessionRow): string | undefined {
+  if (!row.extras_json) return undefined;
+  try {
+    const a = JSON.parse(row.extras_json)?.agent;
+    return typeof a === "string" && a ? a : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Board/webview resume often sends only {session,title}. Fill source/cwd/jsonl from SQLite. */
+function enrichResumeRow(row: SessionRow | null, dbStore: SessionStore | null): SessionRow | null {
+  if (!row?.session) return row;
+  const db = dbStore?.getById(row.session);
+  if (!db) return row;
+  return {
+    ...row,
+    source: db.source || row.source,
+    project_path: row.project_path || db.project_path,
+    jsonl_path: db.jsonl_path || row.jsonl_path,
+    title: row.title || db.title,
+    extras_json: db.extras_json ?? row.extras_json,
+  };
+}
+
 /** Open the session in zhirafovod.code-build-vscode's chat UI. Falls back
  * to the native per-source extension when code-build isn't installed. */
 async function resumeInCodeBuild(row: SessionRow): Promise<void> {
@@ -4323,62 +4349,96 @@ async function resumeInCodeBuild(row: SessionRow): Promise<void> {
 }
 
 async function resumeInCodeBuildInner(row: SessionRow): Promise<void> {
-  const cwd = SessionsProvider.sessionCwd(row) ?? undefined;
-  const codeBuildExt = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
-  // Prefer the indexed jsonl_path — walking ~/.claude/projects for a Grok id
-  // is why "Open in Code Build" felt frozen.
-  const nativeJsonl =
-    row.jsonl_path && fs.existsSync(row.jsonl_path)
+  const fallbackCwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const indexedNative =
+    isNativeTranscriptPath(row.jsonl_path) && row.jsonl_path && fs.existsSync(row.jsonl_path)
       ? row.jsonl_path
-      : row.source === "claude"
-        ? await locateSessionJsonl(row.session)
-        : null;
-  if (!nativeJsonl) {
-    const storeRef = locateStoreTurns(row.session);
-    if (storeRef) {
-      const seed = buildResumeSeed(storeRef, row.session);
-      if (seed) {
-        await vscode.env.clipboard.writeText(seed);
-        if (codeBuildExt) {
-          try {
-            if (!codeBuildExt.isActive) await codeBuildExt.activate();
-            await vscode.commands.executeCommand("codeBuild.newConversation");
-          } catch {
-            /* fall through to the message */
-          }
-        }
-        vscode.window.showInformationMessage(
-          `This session ran on ${storeRef.host}; its transcript isn't on this device. ` +
-            `A resume prompt (recent history) was copied — paste it into Code Build to continue.`,
-        );
-        return;
+      : null;
+  const grokJsonl = indexedNative || locateGrokChatHistory(row.session);
+  const claudeJsonl =
+    grokJsonl ||
+    (row.source === "grok" ? null : await locateSessionJsonl(row.session));
+  const nativeJsonl = indexedNative || grokJsonl || claudeJsonl;
+  const nativeOk = !!nativeJsonl && isNativeTranscriptPath(nativeJsonl);
+  const storeRef = locateStoreTurns(row.session);
+  const plan = planContinueInCodeBuild(
+    {
+      uuid: row.session,
+      source: row.source,
+      agent: extrasAgent(row),
+      projectPath: row.project_path,
+      title: row.title,
+      nativeJsonl: nativeOk,
+      storeTurns: !!storeRef,
+      storeHost: storeRef?.host,
+    },
+    fallbackCwd,
+  );
+  const codeBuildExt = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
+
+  const openFresh = async (toast: string) => {
+    vscode.window.showWarningMessage(toast);
+    if (codeBuildExt) {
+      try {
+        if (!codeBuildExt.isActive) await codeBuildExt.activate();
+        await vscode.commands.executeCommand("codeBuild.newConversation");
+      } catch {
+        /* ignore */
       }
     }
+  };
+
+  if (plan.action === "missing") {
+    await openFresh("no resumable transcript — opening fresh session");
+    if (!codeBuildExt) await resumeInNative(row);
+    return;
   }
+
+  const records =
+    plan.action === "git-store" && storeRef
+      ? turnsToReplayRecords(turnsToConversation(storeRef, row.session))
+      : undefined;
+  if (plan.action === "git-store" && (!records || records.length === 0)) {
+    await openFresh("no resumable transcript — opening fresh session");
+    return;
+  }
+
   if (codeBuildExt) {
     try {
       if (!codeBuildExt.isActive) await codeBuildExt.activate();
       const allCommands = await vscode.commands.getCommands(true);
-      if (allCommands.includes("codeBuild.openExternalSession") && cwd) {
+      if (allCommands.includes("codeBuild.openExternalSession") && plan.cwd) {
         await vscode.commands.executeCommand("codeBuild.openExternalSession", {
-          source: row.source,
-          sessionId: row.session,
-          cwd,
-          title: row.title,
+          source: plan.source,
+          sessionId: plan.uuid,
+          cwd: plan.cwd,
+          title: plan.title ?? row.title,
+          records: plan.action === "git-store" ? records : undefined,
         });
         vscode.window.setStatusBarMessage(
-          row.source === "claude"
-            ? `Code Build is resuming claude session ${row.session.slice(0, 8)}…`
-            : `Code Build opened a Grok session in ${path.basename(cwd)} (grok has no external resume yet — pick from clock-icon if needed).`,
+          plan.action === "git-store"
+            ? `Code Build is restoring session ${plan.uuid.slice(0, 8)} from the git store${plan.host ? ` (${plan.host})` : ""}…`
+            : plan.source === "claude"
+              ? `Code Build is resuming claude session ${plan.uuid.slice(0, 8)}…`
+              : `Code Build opened a ${plan.source} session in ${path.basename(plan.cwd)}.`,
           8000,
         );
-      } else {
-        await vscode.commands.executeCommand("codeBuild.newConversation");
-        vscode.window.setStatusBarMessage(
-          `Code Build opened (new conversation; upgrade code-build for true session import). Original ${row.source} session ${row.session.slice(0, 8)} stays in "View conversation".`,
-          8000,
-        );
+        return;
       }
+      // Older CB: git-store still copies a seed so continue isn't silent-empty.
+      if (plan.action === "git-store" && storeRef) {
+        const seed = buildResumeSeed(storeRef, row.session);
+        if (seed) await vscode.env.clipboard.writeText(seed);
+        await vscode.commands.executeCommand("codeBuild.newConversation");
+        vscode.window.showWarningMessage(
+          `no native transcript — resume seed copied to clipboard (upgrade Code Build to restore history in-chat)`,
+        );
+        return;
+      }
+      await vscode.commands.executeCommand("codeBuild.newConversation");
+      vscode.window.showWarningMessage(
+        "no resumable transcript — opening fresh session",
+      );
       return;
     } catch {
       // fall through to native dispatch below

@@ -49,33 +49,100 @@ export type OpenCbSession = {
   projectPath?: string;
   mtime?: number;
   title?: string;
+  /** Git-store / daemon rows keep source "git" and put claude|grok here. */
+  agent?: string;
 };
 
 export type OpenCbTarget =
-  | { mode: "resume"; uuid: string; source: string; cwd: string; title?: string }
+  | { mode: "resume"; uuid: string; source: "claude" | "grok"; cwd: string; title?: string }
+  | { mode: "missing"; uuid?: string }
   | { mode: "new" };
 
-/** Item-view "Open in Code Build": resume the item's linked session when one is
- * resumable locally (codeBuild.openExternalSession needs a source + cwd, so
- * git-store-only rows don't qualify); otherwise open a new seeded conversation. */
+export type CbBackend = "claude" | "grok";
+
+/** Map a CSV/fleet source (+ optional git-store agent) onto a CB backend.
+ * Never return "git" — CB openExternalSession silently no-ops that source. */
+export function mapCbBackend(source?: string | null, agent?: string | null): CbBackend | null {
+  const s = (source || "").toLowerCase();
+  const a = (agent || "").toLowerCase();
+  if (s === "grok" || a.includes("grok")) return "grok";
+  if (s === "claude" || a.includes("claude")) return "claude";
+  if (s === "codex" || a.includes("codex")) return null;
+  // Daemon / git-indexer rows. Kick/night-build default is grok.
+  if (s === "git") return "grok";
+  return null;
+}
+
+/** True when jsonl_path is a real claude/grok/codex transcript, not the git
+ * store's session.json metadata file (which exists and used to skip the
+ * git-store resume path). */
+export function isNativeTranscriptPath(p?: string | null): boolean {
+  if (!p) return false;
+  const n = p.replace(/\\/g, "/");
+  if (n.includes("/.sessions/hosts/")) return false;
+  return n.endsWith(".jsonl");
+}
+
+export type ContinueCbFact = {
+  uuid: string;
+  source?: string | null;
+  agent?: string | null;
+  projectPath?: string | null;
+  title?: string | null;
+  nativeJsonl: boolean;
+  storeTurns: boolean;
+  storeHost?: string;
+};
+
+export type ContinueCbPlan =
+  | { action: "native"; source: CbBackend; cwd: string; uuid: string; title?: string }
+  | { action: "git-store"; source: CbBackend; cwd: string; uuid: string; title?: string; host?: string }
+  | { action: "missing" };
+
+/** Decide how Continue-in-CB should open: local JSONL, git-store hydrate, or
+ * explicit missing (never a silent empty chat). */
+export function planContinueInCodeBuild(fact: ContinueCbFact, fallbackCwd?: string): ContinueCbPlan {
+  const source = mapCbBackend(fact.source, fact.agent) ?? "grok";
+  const cwdRaw = fact.projectPath ? decodeSessionCwd(fact.projectPath) : undefined;
+  const cwd = cwdRaw || fallbackCwd;
+  const title = fact.title || undefined;
+  if (fact.nativeJsonl && cwd) return { action: "native", source, cwd, uuid: fact.uuid, title };
+  if (fact.storeTurns && cwd) {
+    return { action: "git-store", source, cwd, uuid: fact.uuid, title, host: fact.storeHost };
+  }
+  return { action: "missing" };
+}
+
+/** Item-view "Open in Code Build": resume a linked session (including git-store
+ * rows with a cwd — CB hydrates from injected records). Linked-but-unresumable
+ * is `missing` (toast), not a silent new chat. Nothing linked → new. */
 export function resolveOpenCbTarget(
   linked: readonly string[] | undefined,
   sessions: readonly OpenCbSession[],
 ): OpenCbTarget {
   const ids = new Set((linked ?? []).filter(Boolean));
   if (ids.size === 0) return { mode: "new" };
-  const hit = sessions
-    .filter((s) => ids.has(s.uuid) && s.source !== "git" && !!s.projectPath)
-    .sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0))[0];
-  if (!hit) return { mode: "new" };
-  return { mode: "resume", uuid: hit.uuid, source: hit.source, cwd: decodeSessionCwd(hit.projectPath!), title: hit.title };
+  const matches = sessions
+    .filter((s) => ids.has(s.uuid))
+    .sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
+  const hit = matches.find((s) => !!s.projectPath) ?? matches[0];
+  if (!hit) return { mode: "missing" };
+  const source = mapCbBackend(hit.source, hit.agent);
+  if (!source || !hit.projectPath) return { mode: "missing", uuid: hit.uuid };
+  return {
+    mode: "resume",
+    uuid: hit.uuid,
+    source,
+    cwd: decodeSessionCwd(hit.projectPath),
+    title: hit.title,
+  };
 }
 
 /** Claude rows carry the `~/.claude/projects/-Users-...` store dir, not the cwd;
  * CB re-encodes whatever cwd it is handed to find the transcript, so the raw
  * form must be decoded here (same dash-basename heuristic as SessionsProvider.
  * decodeClaudeProjectDir). Grok / already-decoded paths pass through. */
-function decodeSessionCwd(projectPath: string): string {
+export function decodeSessionCwd(projectPath: string): string {
   const base = projectPath.split("/").filter(Boolean).pop() ?? "";
   if (!base.startsWith("-")) return projectPath;
   return "/" + base.replace(/^-/, "").replace(/-/g, "/");

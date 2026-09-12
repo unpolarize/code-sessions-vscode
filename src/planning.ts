@@ -19,6 +19,8 @@ import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
 import { KpClient, type KpResult } from "./kpClient";
 import { DEFAULT_UI_REPOS, screenshotApplies } from "./screenshotPolicy";
 import { pipelineMoveKicks, pipelineStatusForLane, resolveImplRoute, resolveOpenCbTarget, type ImplRoute } from "./planningPipeline";
+import { locateGrokChatHistory } from "./grokIndexer";
+import { parseGrokConversationAsParsed, parserKindForSource } from "./grokConversationParser";
 import { resolveObjectMarkdown } from "./planningObjectPath";
 import { ReloadGate } from "./reloadGate";
 import { startSpan } from "./hostTrace";
@@ -73,6 +75,7 @@ type CsSessionRow = {
   title?: string;
   source?: string;
   project_path?: string | null;
+  jsonl_path?: string | null;
   mtime_ns?: number; // nanoseconds
   started_at?: number; // epoch ms
   ended_at?: number | null;
@@ -108,7 +111,7 @@ function listSessionsRich(): FleetSession[] {
       {
         uuid: s.uuid,
         title: s.title,
-        agent: s.agent,
+        agent: extras.agent || s.agent,
         host: extras.host || s.host || hostMap[s.uuid] || (r.source === "git" ? undefined : localHost),
         project: s.project,
         projectPath: s.projectPath,
@@ -1088,28 +1091,21 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     const linked = Array.isArray(d?.linked_sessions) ? (d.linked_sessions as string[]) : [];
     const target = resolveOpenCbTarget(linked, listSessionsRich());
     if (target.mode === "resume") {
-      const ext = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
-      if (ext && !ext.isActive) {
-        try {
-          await ext.activate();
-        } catch (e) {
-          log?.appendLine(`[planning] Code Build activate failed: ${String(e)}`);
-        }
-      }
-      const cmds = await vscode.commands.getCommands(true);
-      if (cmds.includes("codeBuild.openExternalSession")) {
-        await vscode.commands.executeCommand("codeBuild.openExternalSession", {
-          source: target.source,
-          sessionId: target.uuid,
-          cwd: target.cwd,
-          title: target.title,
-        });
-        void vscode.window.setStatusBarMessage(
-          `Code Build is opening ${id}'s linked session ${target.uuid.slice(0, 8)}…`,
-          8000,
-        );
-        return;
-      }
+      // Same path as the session-pane ▶ Code Build button so git-store-only
+      // rows hydrate via resumeInCodeBuild (records + toast) instead of CB
+      // getting source:"git" and opening an empty panel.
+      await vscode.commands.executeCommand("codeSessions.resume", {
+        session: target.uuid,
+        title: target.title ?? "",
+        source: target.source,
+        project_path: target.cwd,
+      });
+      return;
+    }
+    if (target.mode === "missing") {
+      void vscode.window.showWarningMessage(
+        "no resumable transcript — opening fresh session",
+      );
     }
     const refs = linkedRefs(d);
     let seed = d ? agentPrompt("execute", d) : id;
@@ -1687,13 +1683,18 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         void vscode.commands.executeCommand("codeSessions.showTrajectory", String(msg.uuid), String(msg.title || msg.uuid));
         break;
       case "resumeSession": {
-        // Delegate to codeSessions.resume so cross-device sessions (no native
-        // transcript here) get the ~/.sessions seed fallback, not a blank chat.
+        // Look up fleet metadata so a pane click that only sent {uuid,title}
+        // still carries source + cwd. Never default source to claude — that
+        // made grok/git-store continues open an empty CB chat.
+        const uuid = String(msg.uuid || "");
+        const fleet = listSessionsRich().find((s) => s.uuid === uuid);
+        const source = String(msg.source || fleet?.source || "");
+        const cwd = msg.cwd ? String(msg.cwd) : fleet?.projectPath ?? null;
         void vscode.commands.executeCommand("codeSessions.resume", {
-          session: String(msg.uuid),
-          title: msg.title ? String(msg.title) : "",
-          source: String(msg.source || "claude"),
-          project_path: msg.cwd ? String(msg.cwd) : null,
+          session: uuid,
+          title: msg.title ? String(msg.title) : fleet?.title ?? "",
+          source: source || fleet?.agent || "claude",
+          project_path: cwd,
         });
         break;
       }
@@ -2057,15 +2058,26 @@ exec "${chatInv.node}" "${chatInv.cli}" "$@"
         const ref = locateStoreTurns(uuid);
         let conv: ParsedConversation | null = ref ? turnsToConversation(ref, uuid) : null;
         if (!conv || !conv.turns.length) {
-          const root = path.join(os.homedir(), ".claude", "projects");
+          const rows = _sessionProvider?.() ?? [];
+          const row = rows.find((r) => r.session_id === uuid);
           let jsonl = "";
-          try {
-            for (const d of readdirSync(root)) {
-              const p = path.join(root, d, uuid + ".jsonl");
-              if (existsSync(p)) { jsonl = p; break; }
-            }
-          } catch { /* no native transcripts root */ }
-          if (jsonl) conv = parseConversation(jsonl);
+          if (row?.jsonl_path && row.source !== "git" && existsSync(row.jsonl_path)) {
+            jsonl = row.jsonl_path;
+          }
+          if (!jsonl) jsonl = locateGrokChatHistory(uuid) ?? "";
+          if (!jsonl) {
+            const root = path.join(os.homedir(), ".claude", "projects");
+            try {
+              for (const d of readdirSync(root)) {
+                const p = path.join(root, d, uuid + ".jsonl");
+                if (existsSync(p)) { jsonl = p; break; }
+              }
+            } catch { /* no native transcripts root */ }
+          }
+          if (jsonl) {
+            const kind = parserKindForSource(row?.source, jsonl);
+            conv = kind === "grok" ? parseGrokConversationAsParsed(jsonl) : parseConversation(jsonl);
+          }
         }
         const all = conv?.turns ?? [];
         return {

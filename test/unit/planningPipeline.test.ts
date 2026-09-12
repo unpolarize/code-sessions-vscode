@@ -12,6 +12,9 @@ import {
   pipelineStatusForLane,
   resolveImplRoute,
   resolveOpenCbTarget,
+  mapCbBackend,
+  isNativeTranscriptPath,
+  planContinueInCodeBuild,
 } from "../../src/planningPipeline";
 
 const src = readFileSync(resolve(__dirname, "../../media/planning-dashboard.js"), "utf8");
@@ -645,8 +648,8 @@ const sessSnapshot = {
   autonomous: { enabled: true },
 };
 const fleet = [
-  { uuid: "sess-live", title: "Implementing now", host: "air-15", agent: "claude", status: "live-local", lastActivity: Date.now() - 30_000, mtime: Date.now() - 30_000, planningRefs: [], labels: [] },
-  { uuid: "sess-ref", title: "Envelope linked", host: "air", agent: "grok", status: "ended", lastActivity: Date.now() - 7_200_000, mtime: Date.now() - 7_200_000, planningRefs: ["tasks/refonly"], labels: [] },
+  { uuid: "sess-live", title: "Implementing now", host: "air-15", agent: "claude", source: "claude", projectPath: "/Users/me/docs", status: "live-local", lastActivity: Date.now() - 30_000, mtime: Date.now() - 30_000, planningRefs: [], labels: [] },
+  { uuid: "sess-ref", title: "Envelope linked", host: "air", agent: "grok", source: "grok", projectPath: "/Users/me/csv", status: "ended", lastActivity: Date.now() - 7_200_000, mtime: Date.now() - 7_200_000, planningRefs: ["tasks/refonly"], labels: [] },
 ];
 
 describe("pipeline session chips", () => {
@@ -735,6 +738,17 @@ describe("pipeline session chips", () => {
       action: "copyPath",
       id: "tasks/wip",
       relpath: "tasks/wip.md",
+    });
+    posted.length = 0;
+    const cbBtn = byId.get("sessPane")!.querySelectorAll("button").find((b) => b.textContent.includes("Code Build"));
+    expect(cbBtn).toBeTruthy();
+    fire(cbBtn!, "click", { target: cbBtn! });
+    expect(posted.find((m) => m.action === "resumeSession")).toMatchObject({
+      type: "action",
+      action: "resumeSession",
+      uuid: "sess-live",
+      source: "claude",
+      cwd: "/Users/me/docs",
     });
   });
 
@@ -973,7 +987,7 @@ describe("host pipeline move: kick vs claim + default route", () => {
 });
 
 describe("item-view Open in Code Build: linked session over new conversation", () => {
-  const fleetSess = (over: Partial<{ uuid: string; source: string; projectPath?: string; mtime: number; title?: string }>) => ({
+  const fleetSess = (over: Partial<{ uuid: string; source: string; projectPath?: string; mtime: number; title?: string; agent?: string }>) => ({
     uuid: "u-default",
     source: "claude",
     projectPath: "/Users/me/projects/repo",
@@ -1001,16 +1015,25 @@ describe("item-view Open in Code Build: linked session over new conversation", (
     expect(t).toMatchObject({ mode: "resume", uuid: "u-new" });
   });
 
-  it("falls back to a new conversation when nothing is linked or nothing resolves", () => {
+  it("falls back to a new conversation when nothing is linked", () => {
     expect(resolveOpenCbTarget([], [fleetSess({})])).toEqual({ mode: "new" });
     expect(resolveOpenCbTarget(undefined, [fleetSess({})])).toEqual({ mode: "new" });
-    expect(resolveOpenCbTarget(["u-gone"], [fleetSess({ uuid: "u-other" })])).toEqual({ mode: "new" });
   });
 
-  it("skips git-store-only rows and rows without a cwd (openExternalSession needs both)", () => {
-    expect(resolveOpenCbTarget(["u-1"], [fleetSess({ uuid: "u-1", source: "git" })])).toEqual({ mode: "new" });
-    expect(resolveOpenCbTarget(["u-1"], [fleetSess({ uuid: "u-1", projectPath: undefined })])).toEqual({ mode: "new" });
-    // a resumable duplicate of the same uuid still wins over the git row
+  it("missing — linked uuid not in the fleet, or no cwd — is not a silent new chat", () => {
+    expect(resolveOpenCbTarget(["u-gone"], [fleetSess({ uuid: "u-other" })])).toEqual({ mode: "missing" });
+    expect(resolveOpenCbTarget(["u-1"], [fleetSess({ uuid: "u-1", projectPath: undefined })])).toEqual({
+      mode: "missing",
+      uuid: "u-1",
+    });
+  });
+
+  it("resumes git-store-only rows (maps source git → grok) instead of opening new", () => {
+    const t = resolveOpenCbTarget(["u-1"], [fleetSess({ uuid: "u-1", source: "git", agent: "grok-build" })]);
+    expect(t).toMatchObject({ mode: "resume", uuid: "u-1", source: "grok", cwd: "/Users/me/projects/repo" });
+  });
+
+  it("a native duplicate of the same uuid still wins over a git row without cwd", () => {
     const t = resolveOpenCbTarget(
       ["u-1"],
       [fleetSess({ uuid: "u-1", source: "git", projectPath: undefined, mtime: 900 }), fleetSess({ uuid: "u-1", mtime: 100 })],
@@ -1028,5 +1051,84 @@ describe("item-view Open in Code Build: linked session over new conversation", (
     // grok / already-decoded rows pass through unchanged
     const g = resolveOpenCbTarget(["u-2"], [fleetSess({ uuid: "u-2", source: "grok", projectPath: "/Users/me/docs" })]);
     expect(g).toMatchObject({ mode: "resume", cwd: "/Users/me/docs" });
+  });
+});
+
+describe("Continue in Code Build: local JSONL / git-store / missing", () => {
+  it("mapCbBackend never returns git (CB would open an empty panel)", () => {
+    expect(mapCbBackend("git", "grok-build")).toBe("grok");
+    expect(mapCbBackend("git", "claude")).toBe("claude");
+    expect(mapCbBackend("claude", undefined)).toBe("claude");
+    expect(mapCbBackend("grok", undefined)).toBe("grok");
+    expect(mapCbBackend("git", undefined)).toBe("grok");
+    expect(mapCbBackend("codex", undefined)).toBeNull();
+  });
+
+  it("isNativeTranscriptPath rejects git-store session.json", () => {
+    expect(isNativeTranscriptPath("/Users/me/.sessions/hosts/air/2026-09/abc/session.json")).toBe(false);
+    expect(isNativeTranscriptPath("/Users/me/.claude/projects/-Users-me-docs/abc.jsonl")).toBe(true);
+    expect(isNativeTranscriptPath("/Users/me/.grok/sessions/%2Fdocs/abc/chat_history.jsonl")).toBe(true);
+    expect(isNativeTranscriptPath(undefined)).toBe(false);
+  });
+
+  it("plan: local JSONL present → native resume", () => {
+    const p = planContinueInCodeBuild({
+      uuid: "u-1",
+      source: "claude",
+      projectPath: "/Users/me/docs",
+      nativeJsonl: true,
+      storeTurns: false,
+    });
+    expect(p).toEqual({ action: "native", source: "claude", cwd: "/Users/me/docs", uuid: "u-1", title: undefined });
+  });
+
+  it("plan: git-store-only transcript → hydrate (not missing, not silent new)", () => {
+    const p = planContinueInCodeBuild(
+      {
+        uuid: "u-2",
+        source: "git",
+        agent: "grok-build",
+        projectPath: "/Users/me/projects/csv",
+        nativeJsonl: false,
+        storeTurns: true,
+        storeHost: "air-15",
+        title: "done item",
+      },
+      "/fallback",
+    );
+    expect(p).toEqual({
+      action: "git-store",
+      source: "grok",
+      cwd: "/Users/me/projects/csv",
+      uuid: "u-2",
+      title: "done item",
+      host: "air-15",
+    });
+  });
+
+  it("plan: missing transcript → missing (toast path)", () => {
+    expect(
+      planContinueInCodeBuild({
+        uuid: "u-3",
+        source: "git",
+        nativeJsonl: false,
+        storeTurns: false,
+      }),
+    ).toEqual({ action: "missing" });
+    expect(
+      planContinueInCodeBuild({
+        uuid: "u-3",
+        nativeJsonl: false,
+        storeTurns: true,
+      }),
+    ).toEqual({ action: "missing" });
+  });
+
+  it("plan: git-store without cwd uses fallback cwd", () => {
+    const p = planContinueInCodeBuild(
+      { uuid: "u-4", source: "git", nativeJsonl: false, storeTurns: true, storeHost: "air" },
+      "/Users/me/docs",
+    );
+    expect(p).toMatchObject({ action: "git-store", cwd: "/Users/me/docs", source: "grok" });
   });
 });

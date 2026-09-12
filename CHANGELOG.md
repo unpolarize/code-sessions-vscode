@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.77.0 — 2026-09-12
+
+### Continue in Code Build restores git-store / done-session history
+
+- **"Continue in Code Build" on done items opened a new empty chat.** Board resume sent only `{uuid,title}` (defaulting source to claude); git-indexer/daemon rows used `source:"git"` and treated `session.json` as a native JSONL, so CB created a blank panel and returned. Continue now looks up the SQLite/fleet row, maps git→claude|grok, hydrates CB with git-store turns when the native JSONL is missing, and toasts **"no resumable transcript — opening fresh session"** instead of failing silent.
+- Item-pane **▶ Code Build** posts source + cwd. Focus-mode transcript loader also reads grok `chat_history.jsonl` (not only `~/.claude/projects`).
+- (kp: tasks/csv-cb-continue-in-code-build-on-done-sessions-o)
+
 ## 1.76.0 — 2026-09-12
 
 ### In-flight view is session-driven (no claimed-in-progress lane)

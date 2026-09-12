@@ -51,6 +51,7 @@ export function parseExtras(json: string | null | undefined): {
   labels: string[];
   open?: boolean;
   planning_refs: string[];
+  agent?: string;
 } {
   if (!json) return { labels: [], planning_refs: [] };
   try {
@@ -59,12 +60,14 @@ export function parseExtras(json: string | null | undefined): {
       labels?: string[];
       open?: boolean;
       planning_refs?: string[];
+      agent?: string;
     };
     return {
       host: typeof o.host === "string" ? o.host : undefined,
       labels: Array.isArray(o.labels) ? o.labels.map(String) : [],
       open: o.open === true,
       planning_refs: Array.isArray(o.planning_refs) ? o.planning_refs.map(String) : [],
+      agent: typeof o.agent === "string" && o.agent ? o.agent : undefined,
     };
   } catch {
     return { labels: [], planning_refs: [] };
@@ -201,6 +204,9 @@ export function mergeFleetSessions(parts: FleetSession[]): FleetSession[] {
     map.set(s.uuid, {
       ...prev,
       ...s,
+      // Prefer a real backend over indexer/daemon `git` so Continue-in-CB
+      // does not pass source:"git" (CB treats that as an empty panel).
+      source: s.source !== "git" ? s.source : prev.source !== "git" ? prev.source : s.source,
       title: s.title || prev.title,
       host: s.host && s.host !== "unknown" ? s.host : prev.host,
       labels: s.labels.length ? s.labels : prev.labels,

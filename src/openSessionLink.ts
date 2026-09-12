@@ -1,6 +1,4 @@
 import * as vscode from "vscode";
-import * as os from "os";
-import * as path from "path";
 import { execFile } from "child_process";
 import type { SessionStore } from "./db";
 import { gitSessionsRoot } from "./gitIndexer";
@@ -104,27 +102,8 @@ export async function openSessionFromLink(opts: {
 
   if (link.view === "cb") {
     const dbRow = store?.getById(link.session);
-    const cwd = dbRow?.project_path
-      ? path.resolve(dbRow.project_path.startsWith("~")
-        ? dbRow.project_path.replace(/^~/, os.homedir())
-        : dbRow.project_path)
-      : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const source = (dbRow?.source === "grok" ? "grok" : dbRow?.source === "git" ? "codebuild" : "claude") as
-      | "claude"
-      | "grok"
-      | "codebuild";
-    const commands = await vscode.commands.getCommands(true);
-    if (commands.includes("codeBuild.openExternalSession") && cwd) {
-      const ext = vscode.extensions.getExtension("zhirafovod.code-build-vscode");
-      if (ext && !ext.isActive) await ext.activate();
-      await vscode.commands.executeCommand("codeBuild.openExternalSession", {
-        source,
-        sessionId: link.session,
-        cwd,
-        title,
-      });
-      return;
-    }
+    // Always go through codeSessions.resume so git-store-only rows hydrate
+    // (and we never pass source "git"/"codebuild" into openExternalSession).
     await vscode.commands.executeCommand("codeSessions.resume", {
       session: link.session,
       title,

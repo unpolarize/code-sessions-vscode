@@ -536,7 +536,12 @@ function renderSessPane(o){
     og.addEventListener('click',()=>{ if(drawerSess.uuid)vscode.postMessage({type:'action',action:'openSession',uuid:drawerSess.uuid,title:o.title||o.id}); });
     tabs.appendChild(og);
     const cb=el('button','ghost mini','▶ Code Build'); cb.title='resume the linked session (or open a new one with this item’s context)';
-    cb.addEventListener('click',()=>{ if(drawerSess.uuid)vscode.postMessage({type:'action',action:'resumeSession',uuid:drawerSess.uuid,title:o.title||o.id}); else vscode.postMessage({type:'action',action:'openCB',id:o.id}); });
+    cb.addEventListener('click',()=>{
+      if(drawerSess.uuid){
+        const s=ss.find(function(x){return x.uuid===drawerSess.uuid;});
+        vscode.postMessage({type:'action',action:'resumeSession',uuid:drawerSess.uuid,title:o.title||o.id,source:s&&s.source,cwd:s&&s.projectPath});
+      } else vscode.postMessage({type:'action',action:'openCB',id:o.id});
+    });
     tabs.appendChild(cb);
   }
   pane.appendChild(tabs);
