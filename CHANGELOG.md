@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.75.0 — 2026-09-12
+
+### Planning board item view shows KP object path
+
+- **Opened board items showed only the title.** The centered item panel (and the skinny create-style drawer) now render the KP object id (`tasks/<slug>`) under the title as a link: click opens the backing markdown under the configured `codeSessions.planning.storeRoot` (never a hardcoded `~/docs`). A compact **copy** control copies the resolved absolute path. Host resolution is `src/planningObjectPath.ts` (id → `{type}/{slug}.md`).
+- (kp: tasks/csv-planning-board-opened-item-shows-only-title)
+
 ## 1.74.0 — 2026-09-12
 
 ### Grok sessions: as-if-API cost from token usage

@@ -19,6 +19,7 @@ import { DashboardPanel, type DashboardDeps } from "./planningDashboard";
 import { KpClient, type KpResult } from "./kpClient";
 import { DEFAULT_UI_REPOS, screenshotApplies } from "./screenshotPolicy";
 import { pipelineMoveKicks, pipelineStatusForLane, resolveImplRoute, resolveOpenCbTarget, type ImplRoute } from "./planningPipeline";
+import { resolveObjectMarkdown } from "./planningObjectPath";
 import { ReloadGate } from "./reloadGate";
 import { startSpan } from "./hostTrace";
 import { syncBridge } from "./storeSync";
@@ -1400,9 +1401,14 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
     const snap = model.get();
     if (msg.type === "open") {
       if (msg.kbPath && snap) void vscode.window.showTextDocument(vscode.Uri.file(path.join(snap.kb_root, msg.kbPath)));
-      else if (msg.id && snap) {
-        const o = (snap.objects || []).find((x: any) => x.id === msg.id);
-        if (o) void vscode.window.showTextDocument(vscode.Uri.file(path.join(snap.root, o.path)));
+      else if (msg.id) {
+        const o = (snap?.objects || []).find((x: any) => x.id === msg.id);
+        const resolved = resolveObjectMarkdown({
+          storeRoot: snap?.root || storeRoot(),
+          id: String(msg.id),
+          relpath: (o?.path as string | undefined) ?? (msg.relpath as string | undefined),
+        });
+        if (resolved) void vscode.window.showTextDocument(vscode.Uri.file(resolved.absPath), { preview: true });
       } else if (msg.path) void vscode.window.showTextDocument(vscode.Uri.file(msg.path));
       return;
     }
@@ -1413,8 +1419,20 @@ export function registerPlanning(ctx: vscode.ExtensionContext, log?: vscode.Outp
         await createItemFromFields((msg.fields as Record<string, string>) || {});
         break;
       case "openFile":
-        await dashAction({ type: "open", id });
+        await dashAction({ type: "open", id, relpath: msg.relpath });
         break;
+      case "copyPath": {
+        const o = (snap?.objects || []).find((x: any) => x.id === id);
+        const resolved = resolveObjectMarkdown({
+          storeRoot: snap?.root || storeRoot(),
+          id,
+          relpath: (o?.path as string | undefined) ?? (msg.relpath as string | undefined),
+        });
+        const text = resolved?.absPath || id;
+        await vscode.env.clipboard.writeText(text);
+        void vscode.window.setStatusBarMessage(`Copied ${resolved?.relpath || id}`, 2500);
+        break;
+      }
       case "promote": {
         const r = await runKp(["promote", id]);
         void vscode.window.showInformationMessage(r.ok ? r.stdout.trim() : `promote failed: ${r.stderr}`);

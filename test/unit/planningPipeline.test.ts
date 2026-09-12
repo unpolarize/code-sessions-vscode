@@ -714,6 +714,26 @@ describe("pipeline session chips", () => {
     expect(byId.get("sessPane")!.className).toContain("sesspane");
     expect(allText(byId.get("sessPane")!)).toContain("Session activity");
     expect(posted.some((m) => m.type === "requestTranscript" && m.uuid === "sess-live")).toBe(true);
+    expect(text).toContain("tasks/wip");
+    const openBtn = byId.get("dpathOpen")!;
+    expect(openBtn).toBeTruthy();
+    expect(openBtn.textContent).toContain("tasks/wip");
+    posted.length = 0;
+    fire(openBtn, "click", { target: openBtn });
+    expect(posted.find((m) => m.action === "openFile")).toMatchObject({
+      type: "action",
+      action: "openFile",
+      id: "tasks/wip",
+      relpath: "tasks/wip.md",
+    });
+    const copyBtn = byId.get("dpathCopy")!;
+    fire(copyBtn, "click", { target: copyBtn });
+    expect(posted.find((m) => m.action === "copyPath")).toMatchObject({
+      type: "action",
+      action: "copyPath",
+      id: "tasks/wip",
+      relpath: "tasks/wip.md",
+    });
   });
 
   it("also picks up sessions linked only via the envelope's planning_refs", () => {

@@ -1664,9 +1664,31 @@ function openCreateDrawer(prefill){
 function mdLite(s){ return esc(s).replace(/!\[([^\]]*)\]\(([^)]+)\)/g,'<img alt="$1" src="$2" style="max-width:100%;border-radius:6px;margin:8px 0">').replace(/^### (.*)$/gm,'<h3>$1</h3>').replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h2>$1</h2>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>'); }
 function extractImgs(s){ const out=[]; const re=/!\[([^\]]*)\]\(([^)]+)\)/g; let m; while((m=re.exec(s||''))) out.push({alt:m[1],src:m[2]}); return out; }
 function refRow(r,bad,onclick){ const d=el('div','refitem'+(bad?' bad':'')); d.innerHTML=esc(r.title||r.id||r.path); if(r.status)d.innerHTML+=' <span class="badge">'+esc(r.status)+'</span>'; if(onclick)d.addEventListener('click',onclick); return d; }
+function objectRelpath(id, known){
+  const k=String(known||'').replace(/\\/g,'/').replace(/^\.?\//,'');
+  if(k && k.indexOf('..')<0 && !/^([a-zA-Z]:)?\//.test(k)) return k.endsWith('.md')?k:k.replace(/\.md$/i,'')+'.md';
+  const clean=String(id||'').replace(/\\/g,'/').replace(/^\/+/,'').replace(/\.md$/i,'');
+  if(!clean || clean.split('/').indexOf('..')>=0) return '';
+  return clean+'.md';
+}
 function renderDrawer(o){
   const I=$('#drawerInner'); I.innerHTML='';
-  const head=el('div','dh'); const ti=el('input','titleEdit'); ti.value=o.title||''; ti.title='Edit name — Enter or click away to save'; ti.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:'title',value:ti.value})); head.appendChild(ti); const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
+  const head=el('div','dh');
+  const titles=el('div','dhtitles');
+  const ti=el('input','titleEdit'); ti.value=o.title||''; ti.title='Edit name — Enter or click away to save'; ti.addEventListener('change',()=>vscode.postMessage({type:'action',action:'updateField',id:o.id,field:'title',value:ti.value})); titles.appendChild(ti);
+  const rel=objectRelpath(o.id, o.relpath||(o.path&&!String(o.path).startsWith('/')?o.path:''));
+  const pathRow=el('div','dpath');
+  const idLink=el('button','dpathid',esc(o.id||'')); idLink.id='dpathOpen'; idLink.type='button';
+  idLink.title='Open '+(rel||o.id)+' in the editor';
+  idLink.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openFile',id:o.id,relpath:rel||undefined}));
+  pathRow.appendChild(idLink);
+  const copy=el('button','ghost mini dpathcopy','copy'); copy.id='dpathCopy'; copy.type='button';
+  copy.title='Copy path';
+  copy.addEventListener('click',ev=>{ if(ev&&ev.stopPropagation)ev.stopPropagation(); vscode.postMessage({type:'action',action:'copyPath',id:o.id,relpath:rel||undefined}); });
+  pathRow.appendChild(copy);
+  titles.appendChild(pathRow);
+  head.appendChild(titles);
+  const x=el('button','dclose','✕'); x.addEventListener('click',closeDrawer); head.appendChild(x); I.appendChild(head);
   const fm=o.frontmatter||{};
   const meta=el('div','drow'); meta.innerHTML='<span class="badge">'+o.type+'</span>'+(o.status?'<span class="badge">'+esc(o.status)+'</span>':'')+(o.domain?'<span class="badge">'+esc(o.domain)+'</span>':'')+(fm.priority?'<span class="badge">'+esc(fm.priority)+'</span>':'')+(fm.target_repo?'<span class="badge">'+esc(fm.target_repo)+'</span>':'')+(fm.context?'<span class="badge" title="captured under">◔ '+esc(fm.context)+'</span>':'')+(fm.surfaced_on?'<span class="badge" title="surfaced on">'+esc(fm.surfaced_on)+'</span>':''); I.appendChild(meta);
   if(fm.source_url){ const sr=el('div','drow'); const a=el('span','badge','↗ '+esc(fm.source||'source')); a.style.cursor='pointer'; a.title=fm.source_url; a.addEventListener('click',()=>vscode.postMessage({type:'action',action:'openUrl',url:fm.source_url})); sr.appendChild(a); I.appendChild(sr); }
